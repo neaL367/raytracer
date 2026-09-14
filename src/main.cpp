@@ -1,4 +1,5 @@
 #include "core/vec3.h"
+#include "core/ray.h"
 
 #include <fstream>
 #include <iostream>
@@ -11,16 +12,16 @@ int main()
 
     // vec3 v(1, 1, 1);
     // v += vec3(2, 2, 2);
-    // std::cout << v.x() << ", " << v.y() << ", " << v.z() << "\n"; 
+    // std::cout << v.x() << ", " << v.y() << ", " << v.z() << "\n";
 
-    vec3 v(6, 5, 5);
-    std::cout << "v = " << v << "\n";
+    // vec3 v(6, 5, 5);
+    // std::cout << "v = " << v << "\n";
 
     // vec3 u(1,2,1);
     // vec3 v(2,1,2);
 
     // dot(u, v);
-    // cross(u, v); 
+    // cross(u, v);
 
     // std::cout << "Dot product of u and v: " << dot(u, v) << "\n";
     // std::cout << "Cross product of u and v: (" << cross(u, v).x() << ", " << cross(u, v).y() << ", " << cross(u, v).z() << ")\n";
@@ -31,6 +32,9 @@ int main()
     // std::cout << "Length of (3,4,0): " << vec3(3,4,0).length() << "\n";
     // std::cout << "Length of unit vector of (3,4,0): " << unit_vector(vec3(3,4,0)).length() << "\n";
 
+    ray r(vec3(0, 0, 0), vec3(1, 0, 0));
+    std::cout << "at t=0: " << r.at(0) << "\n"; // expect 0 0 0
+    std::cout << "at t=2: " << r.at(2) << "\n"; // expect 2 0 0
 
     const int width = 256;
     const int height = 256;
