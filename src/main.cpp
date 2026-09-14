@@ -9,9 +9,18 @@ int main()
     // v + vec3(1.0, 2.0, 3.0);
     // std::cout << v.x() << ", " << v.y() << ", " << v.z() << "\n";
 
-    vec3 v(1, 1, 1);
-    v += vec3(2, 2, 2);
-    std::cout << v.x() << ", " << v.y() << ", " << v.z() << "\n"; // expect 3, 3, 3
+    // vec3 v(1, 1, 1);
+    // v += vec3(2, 2, 2);
+    // std::cout << v.x() << ", " << v.y() << ", " << v.z() << "\n"; 
+
+    vec3 u(1,2,1);
+    vec3 v(2,1,2);
+
+    dot(u, v);
+    cross(u, v); 
+
+    std::cout << "Dot product of u and v: " << dot(u, v) << "\n";
+    std::cout << "Cross product of u and v: (" << cross(u, v).x() << ", " << cross(u, v).y() << ", " << cross(u, v).z() << ")\n";
 
     const int width = 256;
     const int height = 256;

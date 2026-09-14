@@ -46,3 +46,15 @@ vec3 operator/(const vec3 &v, double t) // vector / scalar: implemented as multi
 {
     return v * (1.0 / t);
 }
+
+double dot(const vec3 &u, const vec3 &v) // dot product: returns a scalar, not a vector
+{
+    return u.x() * v.x() + u.y() * v.y() + u.z() * v.z();
+}
+
+vec3 cross(const vec3 &u, const vec3 &v) // cross product: returns a vector perpendicular to both u and v, following the right-hand rule
+{
+    return vec3(u.y() * v.z() - u.z() * v.y(),
+                u.z() * v.x() - u.x() * v.z(),
+                u.x() * v.y() - u.y() * v.x());
+}
