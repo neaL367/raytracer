@@ -10,7 +10,7 @@ int main() {
 
     for (int j = 0; j < height; ++j) {
         for (int i = 0; i < width; ++i) {
-            int r = i;      // varies left to right
+            int r = 255 - i;      // varies left to right
             int g = j;      // varies top to bottom
             int b = 128;    // constant
 
