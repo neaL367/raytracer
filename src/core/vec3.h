@@ -1,4 +1,6 @@
-#pragma once // include guard: prevents this header's contents being seen twice in one translation unit
+#pragma once       // include guard: prevents this header's contents being seen twice in one translation unit
+#include <cmath>   // for std::sqrt, used in vec3::length()
+#include <ostream> // for std::ostream, used in operator<< overload
 
 class vec3 // 3D vector: represents a point, direction, or color depending on context
 {
@@ -16,6 +18,16 @@ public:
         e[1] += other.y();
         e[2] += other.z();
         return *this; // return a reference to the modified object, enabling chaining (a += b += c)
+    }
+
+    double length_squared() const // returns the squared length of the vector, which is faster to compute than the actual length and often sufficient for comparisons
+    {
+        return e[0] * e[0] + e[1] * e[1] + e[2] * e[2];
+    }
+
+    double length() const // returns the actual length of the vector, which is the square root of the squared length
+    {
+        return std::sqrt(length_squared());
     }
 
 private:
@@ -47,6 +59,11 @@ vec3 operator/(const vec3 &v, double t) // vector / scalar: implemented as multi
     return v * (1.0 / t);
 }
 
+std::ostream &operator<<(std::ostream &out, const vec3 &v) // overloads the << operator for easy printing of vec3 objects, e.g., std::cout << v;
+{
+    return out << v.x() << ' ' << v.y() << ' ' << v.z();
+}
+
 double dot(const vec3 &u, const vec3 &v) // dot product: returns a scalar, not a vector
 {
     return u.x() * v.x() + u.y() * v.y() + u.z() * v.z();
@@ -57,4 +74,9 @@ vec3 cross(const vec3 &u, const vec3 &v) // cross product: returns a vector perp
     return vec3(u.y() * v.z() - u.z() * v.y(),
                 u.z() * v.x() - u.x() * v.z(),
                 u.x() * v.y() - u.y() * v.x());
+}
+
+vec3 unit_vector(const vec3 &v) // returns a new vector in the same direction as v but with length 1, useful for normalization
+{
+    return v / v.length();
 }

@@ -13,14 +13,24 @@ int main()
     // v += vec3(2, 2, 2);
     // std::cout << v.x() << ", " << v.y() << ", " << v.z() << "\n"; 
 
-    vec3 u(1,2,1);
-    vec3 v(2,1,2);
+    vec3 v(6, 5, 5);
+    std::cout << "v = " << v << "\n";
 
-    dot(u, v);
-    cross(u, v); 
+    // vec3 u(1,2,1);
+    // vec3 v(2,1,2);
 
-    std::cout << "Dot product of u and v: " << dot(u, v) << "\n";
-    std::cout << "Cross product of u and v: (" << cross(u, v).x() << ", " << cross(u, v).y() << ", " << cross(u, v).z() << ")\n";
+    // dot(u, v);
+    // cross(u, v); 
+
+    // std::cout << "Dot product of u and v: " << dot(u, v) << "\n";
+    // std::cout << "Cross product of u and v: (" << cross(u, v).x() << ", " << cross(u, v).y() << ", " << cross(u, v).z() << ")\n";
+
+    // vec3(3,4,0).length();
+    // unit_vector(vec3(3,4,0)).length();
+
+    // std::cout << "Length of (3,4,0): " << vec3(3,4,0).length() << "\n";
+    // std::cout << "Length of unit vector of (3,4,0): " << unit_vector(vec3(3,4,0)).length() << "\n";
+
 
     const int width = 256;
     const int height = 256;
