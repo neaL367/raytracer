@@ -4,8 +4,6 @@
 #include "core/hittable_list.h"
 #include "core/camera.h"
 #include "core/random.h"
-#include "core/lambertian.h"
-#include "core/matel.h"
 
 #include <fstream>
 #include <iostream>
@@ -45,8 +43,8 @@ int main()
     hittable_list world;
 
     auto material_ground = std::make_shared<lambertian>(vec3(0.8, 0.8, 0.0));
-    auto material_center = std::make_shared<lambertian>(vec3(0.7, 0.3, 0.3));
-    auto material_left = std::make_shared<metal>(vec3(0.8, 0.8, 0.8));
+    auto material_center = std::make_shared<lambertian>(vec3(1.0, 0.0, 0.0));
+    auto material_left = std::make_shared<dielectric>(1.5);
     auto material_right = std::make_shared<metal>(vec3(0.8, 0.6, 0.2));
 
     world.add(std::make_shared<sphere>(vec3(0, -100.5, -1), 100, material_ground));

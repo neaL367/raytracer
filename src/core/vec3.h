@@ -44,6 +44,11 @@ vec3 operator-(const vec3 &lhs, const vec3 &rhs) // free function: component-wis
     return vec3(lhs.x() - rhs.x(), lhs.y() - rhs.y(), lhs.z() - rhs.z());
 }
 
+vec3 operator-(const vec3 &v) // unary negation: returns a new vec3 with all components negated
+{
+    return vec3(-v.x(), -v.y(), -v.z());
+}
+
 vec3 operator*(const vec3 &v, double t) // vector * scalar: does the actual component-wise multiplication
 {
     return vec3(v.x() * t, v.y() * t, v.z() * t);
@@ -86,7 +91,15 @@ vec3 unit_vector(const vec3 &v) // returns a new vector in the same direction as
     return v / v.length();
 }
 
-vec3 reflect(const vec3 &v, const vec3 &n)
+vec3 reflect(const vec3 &v, const vec3 &n) // reflection formula: reflects vector v around normal n, assuming n is a unit vector
 {
     return v - 2 * dot(v, n) * n;
+}
+
+vec3 refract(const vec3 &uv, const vec3 &n, double etai_over_etat) // Snell's law: computes the refracted ray direction given an incident unit vector uv, a normal n, and the ratio of indices of refraction etai_over_etat
+{
+    double cos_theta = std::fmin(dot(-uv, n), 1.0);
+    vec3 r_out_perp = etai_over_etat * (uv + cos_theta * n);
+    vec3 r_out_parallel = -std::sqrt(std::fabs(1.0 - r_out_perp.length_squared())) * n;
+    return r_out_perp + r_out_parallel;
 }

@@ -36,7 +36,8 @@ public:
 
         rec.t = root;
         rec.point = r.at(rec.t);
-        rec.normal = (rec.point - center) / radius;
+        vec3 outward_normal = (rec.point - center) / radius;
+        rec.set_face_normal(r, outward_normal);
         rec.mat = mat;
 
         return true;
