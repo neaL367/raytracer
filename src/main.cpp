@@ -10,6 +10,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <chrono>
 
 vec3 ray_color(const ray &r, const hittable &world, int depth)
 {
@@ -35,10 +36,12 @@ vec3 ray_color(const ray &r, const hittable &world, int depth)
 
 int main()
 {
+    auto start = std::chrono::high_resolution_clock::now();
+
     // image
-    const int image_width = 720;
+    const int image_width = 800;
     const int image_height = static_cast<int>(image_width / (16.0 / 9.0));
-    const int samples_per_pixel = 100;
+    const int samples_per_pixel = 200;
     const int max_depth = 50;
 
     // world
@@ -161,5 +164,10 @@ int main()
     }
 
     std::cout << "Wrote output.ppm\n";
+
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = end - start;
+    std::cout << "Render time: " << elapsed.count() << " seconds\n";
+
     return 0;
 }
