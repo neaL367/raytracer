@@ -209,6 +209,24 @@ TEST(image_texture_load)
     EXPECT_NEAR_EPS(corner.y(), 1.0, 1e-2);
 }
 
+TEST(png_matches_ppm_decode)
+{
+    // Same picture, two containers: stb's PNG decode must agree byte for
+    // byte with the in-house PPM reader, or sampling diverges by format.
+    image_texture ppm("assets/uv_check.ppm");
+    image_texture png("assets/uv_check.png");
+    EXPECT_TRUE(png.pixel_width() == ppm.pixel_width());
+    EXPECT_TRUE(png.pixel_height() == ppm.pixel_height());
+    const auto &a = ppm.bytes();
+    const auto &b = png.bytes();
+    EXPECT_TRUE(a.size() == b.size() && !a.empty());
+    size_t diff = 0;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (a[i] != b[i])
+            ++diff;
+    EXPECT_TRUE(diff == 0);
+}
+
 TEST(onb_orthonormal)
 {
     onb basis(vec3(0, 0, 1));

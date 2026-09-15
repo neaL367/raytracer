@@ -4,7 +4,8 @@ project(raytracer LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_executable(raytracer src/main.cpp)
+add_executable(raytracer src/main.cpp src/io/stb_image.cpp)
+target_include_directories(raytracer PRIVATE src external/stb)
 
 # SIMD baseline: MSVC targets SSE2 unless told otherwise, which caps the
 # auto-vectorizer at 128-bit. AVX2 (2013+) allows 256-bit vector code.
@@ -21,8 +22,8 @@ add_custom_command(TARGET raytracer POST_BUILD
 
 # Unit tests: dependency-free (see tests/test_all.cpp), run with ctest.
 enable_testing()
-add_executable(raytracer_tests tests/test_all.cpp)
-target_include_directories(raytracer_tests PRIVATE src)
+add_executable(raytracer_tests tests/test_all.cpp src/io/stb_image.cpp)
+target_include_directories(raytracer_tests PRIVATE src external/stb)
 add_test(NAME unit_tests COMMAND raytracer_tests WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # GPU scaffold: headless Vulkan compute (see src/gpu/main.cpp). CPU binary untouched.
@@ -42,8 +43,8 @@ foreach(shader fill normal path)
 endforeach()
 add_custom_target(gpu_shaders DEPENDS ${GPU_SHADERS_COMPILED})
 
-add_executable(rt_gpu src/gpu/main.cpp)
-target_include_directories(rt_gpu PRIVATE src)
+add_executable(rt_gpu src/gpu/main.cpp src/io/stb_image.cpp)
+target_include_directories(rt_gpu PRIVATE src external/stb)
 target_link_libraries(rt_gpu PRIVATE Vulkan::Vulkan)
 add_dependencies(rt_gpu gpu_shaders)
 add_custom_command(TARGET rt_gpu POST_BUILD

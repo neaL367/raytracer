@@ -43,9 +43,10 @@ src/core/     math + scene primitives (vec3, ray, shapes, BVH, materials)
 src/app/      CLI configuration
 src/scene/    scene assembly shared by CPU and GPU backends
 src/render/   tile-scheduled multithreaded renderer
-src/io/       tonemapping + PPM output
+src/io/       tonemapping + PPM output + image decoding glue
 src/gpu/      headless Vulkan compute (rt_gpu) + GLSL kernels
 src/main.cpp  scene/BVH setup + bench report
+external/stb/ vendored stb_image v2.30 (PNG/JPG/BMP/TGA decoding)
 tests/        unit tests (no external framework) + PPM compare script
 assets/       mesh + calibration textures (copied next to the binary)
 ```

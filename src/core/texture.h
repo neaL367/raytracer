@@ -7,6 +7,17 @@
 #include <string>
 #include <vector>
 
+// Minimal stb_image surface (v2.30, vendored under external/stb, implemented
+// once in io/stb_image.cpp). Forward-declared here so third-party headers
+// never enter every translation unit; signatures and C linkage must match
+// stb_image.h (it wraps everything in extern "C").
+extern "C" {
+extern unsigned char *stbi_load(char const *filename, int *x, int *y, int *channels_in_file,
+                                int desired_channels);
+extern void stbi_image_free(void *retval_from_stbi_load);
+extern const char *stbi_failure_reason(void);
+}
+
 // Texture: color as a function of surface position. Materials sample this
 // instead of holding a flat albedo, so one lambertian covers solids,
 // checkers, and (next) image maps. u/v come from the hit record; p is the
@@ -66,14 +77,16 @@ private:
     std::shared_ptr<texture> odd;
 };
 
-// Image texture over a PPM file (P3 text or P6 binary, 8-bit). No third-party
-// decoder: uncompressed PPM parses in ~40 lines and the project already
-// speaks the format. Nearest sampling with clamped UVs; bilinear filtering
-// is a later slice, not smuggled in here.
+// Image texture: PPM (P3/P6, in-house reader) or anything stb_image decodes
+// (PNG/JPG/BMP/TGA...). Sampling is format-blind — pixels land in the same
+// byte buffer either way, so a PNG and PPM of one picture render identically.
 class image_texture : public texture
 {
 public:
-    image_texture(const char *filename, bool bilinear = true) : bilinear(bilinear) { load_ppm(filename); }
+    image_texture(const char *filename, bool bilinear = true) : bilinear(bilinear)
+    {
+        load_image(filename);
+    }
 
     vec3 value(double u, double v, const vec3 &) const override
     {
@@ -128,6 +141,36 @@ private:
         size_t i = static_cast<size_t>(y * width + x) * 3;
         const double s = 1.0 / 255.0;
         return vec3(data[i] * s, data[i + 1] * s, data[i + 2] * s);
+    }
+
+    static bool has_ppm_suffix(const char *filename)
+    {
+        std::string name = filename;
+        if (name.size() < 4)
+            return false;
+        std::string ext = name.substr(name.size() - 4);
+        return ext == ".ppm" || ext == ".PPM";
+    }
+
+    void load_image(const char *filename)
+    {
+        if (has_ppm_suffix(filename))
+        {
+            load_ppm(filename);
+            return;
+        }
+        int w = 0, h = 0, channels = 0;
+        unsigned char *px = stbi_load(filename, &w, &h, &channels, 3);
+        if (!px)
+        {
+            std::cerr << "image_texture: cannot decode " << filename
+                      << " (" << stbi_failure_reason() << ")\n";
+            return; // data stays empty -> magenta fallback
+        }
+        width = w;
+        height = h;
+        data.assign(px, px + static_cast<size_t>(w) * h * 3);
+        stbi_image_free(px);
     }
 
     // Next whitespace-separated integer, skipping '#' comment lines.
