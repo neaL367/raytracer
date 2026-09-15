@@ -14,6 +14,10 @@ public:
     sphere(const vec3 &center, double radius, std::shared_ptr<material> mat)
         : center(center), radius(radius), mat(mat) {}
 
+    // Read access for scene upload to GPU buffers (SoA flattening).
+    const vec3 &position() const { return center; }
+    double size() const { return radius; }
+
     bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const override
     {
         count_prim_test();

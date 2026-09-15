@@ -2,6 +2,7 @@
 
 #include "vec3.h"
 #include "ray.h"
+#include "random.h"
 
 class camera
 {
@@ -34,6 +35,12 @@ public:
         return ray(origin + offset,
                    lower_left_corner + s * horizontal + t * vertical - origin - offset);
     }
+
+    // Read access for GPU upload: the device builds identical primary rays.
+    const vec3 &eye() const { return origin; }
+    const vec3 &corner() const { return lower_left_corner; }
+    const vec3 &span_h() const { return horizontal; }
+    const vec3 &span_v() const { return vertical; }
 
 private:
     vec3 origin;

@@ -1,0 +1,176 @@
+#version 450
+// Normal-shade reference kernel: primary rays over the flat SoA scene,
+// closest hit mapped to color. Mirrors normal_integrator on the CPU;
+// fp32 vs fp64 means tolerant comparison (see tests/compare_ppm.py),
+// never bit equality.
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(push_constant) uniform Push
+{
+    vec4 origin;
+    vec4 llc;
+    vec4 horiz;
+    vec4 vert;
+    uvec4 meta;  // width, height, n_spheres, n_tris
+    uvec4 meta2; // n_quads, 0, 0, 0
+} pc;
+
+layout(binding = 0) readonly buffer Spheres
+{
+    vec4 sph[]; // xyz = center, w = radius
+};
+
+layout(binding = 1) readonly buffer Tris
+{
+    vec4 tri[]; // 3 per triangle: xyz = vertex
+};
+
+layout(binding = 2) readonly buffer Quads
+{
+    vec4 qd[]; // 3 per quad: corner, edge u, edge v
+};
+
+layout(binding = 3) buffer Frame
+{
+    float pixels[];
+};
+
+bool hit_sphere(vec3 o, vec3 d, vec4 s, float tmin, float tmax, out float th, out vec3 n)
+{
+    vec3 oc = o - s.xyz;
+    float a = dot(d, d);
+    float hb = dot(oc, d);
+    float c = dot(oc, oc) - s.w * s.w;
+    float disc = hb * hb - a * c;
+    if (disc < 0.0)
+        return false;
+    float sqrtd = sqrt(disc);
+    float root = (-hb - sqrtd) / a;
+    if (root < tmin || root > tmax)
+    {
+        root = (-hb + sqrtd) / a;
+        if (root < tmin || root > tmax)
+            return false;
+    }
+    th = root;
+    vec3 outward = (o + d * root - s.xyz) / s.w;
+    n = (dot(d, outward) < 0.0) ? outward : -outward;
+    return true;
+}
+
+bool hit_tri(vec3 o, vec3 d, vec3 v0, vec3 v1, vec3 v2, float tmin, float tmax, out float th, out vec3 n)
+{
+    const float epsilon = 1e-8;
+    vec3 edge1 = v1 - v0;
+    vec3 edge2 = v2 - v0;
+    vec3 h = cross(d, edge2);
+    float a = dot(edge1, h);
+    if (abs(a) < epsilon)
+        return false;
+    float f = 1.0 / a;
+    vec3 s = o - v0;
+    float u = f * dot(s, h);
+    if (u < 0.0 || u > 1.0)
+        return false;
+    vec3 q = cross(s, edge1);
+    float v = f * dot(d, q);
+    if (v < 0.0 || u + v > 1.0)
+        return false;
+    float t = f * dot(edge2, q);
+    if (t < tmin || t > tmax)
+        return false;
+    th = t;
+    vec3 outward = normalize(cross(edge1, edge2));
+    n = (dot(d, outward) < 0.0) ? outward : -outward;
+    return true;
+}
+
+bool hit_quad(vec3 o, vec3 d, vec3 Q, vec3 u, vec3 v, float tmin, float tmax, out float th, out vec3 n)
+{
+    const float epsilon = 1e-8;
+    vec3 nv = cross(u, v);
+    vec3 normal = normalize(nv);
+    float denom = dot(normal, d);
+    if (abs(denom) < epsilon)
+        return false;
+    float D = dot(normal, Q);
+    float t = (D - dot(normal, o)) / denom;
+    if (t < tmin || t > tmax)
+        return false;
+    vec3 w = nv / dot(nv, nv);
+    vec3 planar = o + d * t - Q;
+    float alpha = dot(w, cross(planar, v));
+    float beta = dot(w, cross(u, planar));
+    if (alpha < 0.0 || alpha > 1.0 || beta < 0.0 || beta > 1.0)
+        return false;
+    th = t;
+    n = (dot(d, normal) < 0.0) ? normal : -normal;
+    return true;
+}
+
+void main()
+{
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    uint w = pc.meta.x;
+    uint h = pc.meta.y;
+    if (x >= w || y >= h)
+        return;
+
+    // Pixel centers: matches the CPU samples==1 rule exactly.
+    float s = (float(x) + 0.5) / float(w - 1u);
+    float t = (float(y) + 0.5) / float(h - 1u);
+    vec3 o = pc.origin.xyz;
+    vec3 d = pc.llc.xyz + s * pc.horiz.xyz + t * pc.vert.xyz - o;
+
+    float closest = 1000.0;
+    vec3 nrm = vec3(0.0);
+    bool hit = false;
+    float th;
+    vec3 n;
+
+    for (uint i = 0u; i < pc.meta.z; ++i)
+    {
+        if (hit_sphere(o, d, sph[i], 0.001, closest, th, n))
+        {
+            closest = th;
+            nrm = n;
+            hit = true;
+        }
+    }
+    for (uint i = 0u; i < pc.meta.w; ++i)
+    {
+        if (hit_tri(o, d, tri[i * 3u].xyz, tri[i * 3u + 1u].xyz, tri[i * 3u + 2u].xyz, 0.001, closest, th, n))
+        {
+            closest = th;
+            nrm = n;
+            hit = true;
+        }
+    }
+    for (uint i = 0u; i < pc.meta2.x; ++i)
+    {
+        if (hit_quad(o, d, qd[i * 3u].xyz, qd[i * 3u + 1u].xyz, qd[i * 3u + 2u].xyz, 0.001, closest, th, n))
+        {
+            closest = th;
+            nrm = n;
+            hit = true;
+        }
+    }
+
+    vec3 color;
+    if (hit)
+    {
+        color = nrm * 0.5 + vec3(0.5);
+    }
+    else
+    {
+        vec3 unit_dir = d / length(d);
+        float a = 0.5 * (unit_dir.y + 1.0);
+        color = (1.0 - a) * vec3(1.0) + a * vec3(0.5, 0.7, 1.0);
+    }
+
+    uint i = (y * w + x) * 3u;
+    pixels[i + 0u] = color.x;
+    pixels[i + 1u] = color.y;
+    pixels[i + 2u] = color.z;
+}

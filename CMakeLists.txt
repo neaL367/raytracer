@@ -31,13 +31,16 @@ find_program(GLSLC_EXECUTABLE glslc HINTS "$ENV{VULKAN_SDK}/Bin" REQUIRED)
 
 set(GPU_SHADER_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${GPU_SHADER_DIR})
-add_custom_command(
-    OUTPUT ${GPU_SHADER_DIR}/fill.spv
-    COMMAND ${GLSLC_EXECUTABLE} -O ${CMAKE_SOURCE_DIR}/src/gpu/shaders/fill.comp
-            -o ${GPU_SHADER_DIR}/fill.spv
-    DEPENDS ${CMAKE_SOURCE_DIR}/src/gpu/shaders/fill.comp
-    COMMENT "compiling fill.comp")
-add_custom_target(gpu_shaders DEPENDS ${GPU_SHADER_DIR}/fill.spv)
+foreach(shader fill normal)
+    add_custom_command(
+        OUTPUT ${GPU_SHADER_DIR}/${shader}.spv
+        COMMAND ${GLSLC_EXECUTABLE} -O ${CMAKE_SOURCE_DIR}/src/gpu/shaders/${shader}.comp
+                -o ${GPU_SHADER_DIR}/${shader}.spv
+        DEPENDS ${CMAKE_SOURCE_DIR}/src/gpu/shaders/${shader}.comp
+        COMMENT "compiling ${shader}.comp")
+    list(APPEND GPU_SHADERS_COMPILED ${GPU_SHADER_DIR}/${shader}.spv)
+endforeach()
+add_custom_target(gpu_shaders DEPENDS ${GPU_SHADERS_COMPILED})
 
 add_executable(rt_gpu src/gpu/main.cpp)
 target_include_directories(rt_gpu PRIVATE src)

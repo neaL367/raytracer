@@ -152,3 +152,24 @@ private:
     bool nee;
     bool roulette;
 };
+
+// Reference integrator for GPU parity: closest hit mapped to color, no
+// materials, no lights, no RNG. Any backend tracing the same scene must
+// produce the same normals (within float precision) — that is the whole
+// test.
+class normal_integrator : public integrator
+{
+public:
+    vec3 Li(const ray &r, const hittable &world,
+            const std::vector<std::shared_ptr<quad>> &, int) const override
+    {
+        hit_record rec;
+        if (!world.hit(r, 0.001, 1000.0, rec))
+        {
+            vec3 unit_direction = unit_vector(r.direction());
+            double a = 0.5 * (unit_direction.y() + 1.0);
+            return (1.0 - a) * vec3(1.0, 1.0, 1.0) + a * vec3(0.5, 0.7, 1.0);
+        }
+        return rec.normal * 0.5 + vec3(0.5, 0.5, 0.5);
+    }
+};

@@ -12,6 +12,11 @@ public:
           edge1(v1 - v0), edge2(v2 - v0),
           face_normal(unit_vector(cross(v1 - v0, v2 - v0))) {}
 
+    // Read access for scene upload to GPU buffers.
+    const vec3 &a() const { return v0; }
+    const vec3 &b() const { return v1; }
+    const vec3 &c() const { return v2; }
+
     bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const override
     {
         const double epsilon = 1e-8;

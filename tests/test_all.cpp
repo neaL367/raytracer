@@ -14,6 +14,8 @@
 #include "core/texture.h"
 #include "core/onb.h"
 #include "core/random.h"
+#include "core/integrator.h"
+#include "app/config.h"
 
 #include <cmath>
 #include <cstdio>
@@ -290,6 +292,43 @@ TEST(deterministic_rng)
     EXPECT_NEAR(random_double(), a1);
     EXPECT_NEAR(random_double(), a2);
     set_deterministic_rng(false);
+}
+
+TEST(normal_integrator_shade)
+{
+    // Up-facing normal maps to (0.5, 1.0, 0.5); miss maps to sky, same as
+    // the GPU kernel's else-branch must produce.
+    auto mat = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));
+    hittable_list world;
+    world.add(std::make_shared<sphere>(vec3(0, 0, -1), 0.5, mat));
+    normal_integrator shade;
+    std::vector<std::shared_ptr<quad>> no_lights;
+    // Straight down onto the sphere top: normal (0,1,0) -> (0.5,1.0,0.5).
+    vec3 c = shade.Li(ray(vec3(0, 2, -1), vec3(0, -1, 0)), world, no_lights, 50);
+    EXPECT_NEAR(c.x(), 0.5);
+    EXPECT_NEAR(c.y(), 1.0);
+    EXPECT_NEAR(c.z(), 0.5);
+    vec3 sky = shade.Li(ray(vec3(0, 0, 0), vec3(0, 0, 1)), world, no_lights, 50);
+    EXPECT_NEAR(sky.x(), 0.75); // horizon: half white, half (0.5,0.7,1.0)
+    EXPECT_NEAR(sky.y(), 0.85);
+    EXPECT_NEAR(sky.z(), 1.0);
+}
+
+TEST(cli_shade_mode)
+{
+    // parse_cli takes argv-style char**; string literals need the cast.
+    char *ok_argv[] = {const_cast<char *>("prog"), const_cast<char *>("--shade"),
+                       const_cast<char *>("normal")};
+    render_config cfg;
+    EXPECT_TRUE(parse_cli(3, ok_argv, cfg) == cli_result::run);
+    EXPECT_TRUE(cfg.shade_mode == "normal");
+    char *bad_argv[] = {const_cast<char *>("prog"), const_cast<char *>("--shade"),
+                        const_cast<char *>("phong")};
+    render_config cfg2;
+    EXPECT_TRUE(parse_cli(3, bad_argv, cfg2) == cli_result::error);
+    char *unknown_argv[] = {const_cast<char *>("prog"), const_cast<char *>("--frobnicate")};
+    render_config cfg3;
+    EXPECT_TRUE(parse_cli(2, unknown_argv, cfg3) == cli_result::error);
 }
 
 int main()

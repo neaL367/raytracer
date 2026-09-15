@@ -1,15 +1,21 @@
-// Headless Vulkan compute scaffold. No surface, no swapchain, no validation
-// layers: instance -> discrete GPU -> compute queue -> one dispatch filling
-// a linear-HDR buffer -> host readback -> existing PPM writer. Every later
-// GPU slice (intersection kernels, wavefront stages) reuses this exact
-// setup/teardown shape with different shaders.
+// Headless Vulkan compute: `rt_gpu fill` runs the gradient scaffold kernel,
+// `rt_gpu normal` traces primary rays over the shared scene (scene/scene.h)
+// with normal shading for CPU parity. No surface, no swapchain: instance ->
+// GPU -> compute queue -> dispatch -> host readback -> existing PPM writer.
+#include "../app/config.h"
+#include "../core/camera.h"
+#include "../core/quad.h"
+#include "../core/sphere.h"
+#include "../core/triangle.h"
 #include "../io/ppm.h"
+#include "../scene/scene.h"
 
 #include <vulkan/vulkan.h>
 
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <vector>
@@ -21,19 +27,28 @@
 #include <windows.h>
 #endif
 
-#define VK_CHECK(x)                                                                               \
-    do                                                                                            \
-    {                                                                                             \
-        VkResult vk_check_r = (x);                                                                \
-        if (vk_check_r != VK_SUCCESS)                                                             \
-        {                                                                                         \
-            std::fprintf(stderr, "Vulkan error %d at %s:%d\n", vk_check_r, __FILE__, __LINE__);    \
-            std::exit(1);                                                                         \
-        }                                                                                         \
+#define VK_CHECK(x)                                                                            \
+    do                                                                                         \
+    {                                                                                          \
+        VkResult vk_check_r = (x);                                                             \
+        if (vk_check_r != VK_SUCCESS)                                                          \
+        {                                                                                      \
+            std::fprintf(stderr, "Vulkan error %d at %s:%d\n", vk_check_r, __FILE__, __LINE__); \
+            std::exit(1);                                                                      \
+        }                                                                                      \
     } while (0)
 
 namespace
 {
+
+struct Gpu
+{
+    VkInstance instance = nullptr;
+    VkPhysicalDevice physical = nullptr;
+    VkDevice device = nullptr;
+    VkQueue queue = nullptr;
+    uint32_t qfamily = 0;
+};
 
 // Directory holding this executable: shaders ship next to the binary (see
 // CMake POST_BUILD copy), so the app runs from anywhere.
@@ -62,8 +77,8 @@ std::vector<char> read_file(const std::filesystem::path &path)
     return bytes;
 }
 
-// First queue family on device that serves compute (dedicated compute
-// preferred over a shared graphics+compute one: async-friendly later).
+// First queue family serving compute; dedicated compute preferred over a
+// shared graphics+compute one (async-friendly later).
 uint32_t find_compute_family(VkPhysicalDevice device)
 {
     uint32_t count = 0;
@@ -91,104 +106,271 @@ uint32_t find_memory_type(VkPhysicalDevice device, uint32_t bits, VkMemoryProper
     std::exit(1);
 }
 
-} // namespace
-
-int main(int, char **argv)
+Gpu init_gpu()
 {
-    const uint32_t width = 800;
-    const uint32_t height = 450;
-
-    // --- instance (no extensions: headless compute needs none) ---
+    Gpu g;
     VkApplicationInfo app = {};
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app.apiVersion = VK_API_VERSION_1_3;
     VkInstanceCreateInfo ici = {};
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &app;
-    VkInstance instance = nullptr;
-    VK_CHECK(vkCreateInstance(&ici, nullptr, &instance));
+    VK_CHECK(vkCreateInstance(&ici, nullptr, &g.instance));
 
-    // --- physical device: first discrete GPU, else first compute-capable ---
     uint32_t gpu_count = 0;
-    VK_CHECK(vkEnumeratePhysicalDevices(instance, &gpu_count, nullptr));
+    VK_CHECK(vkEnumeratePhysicalDevices(g.instance, &gpu_count, nullptr));
     if (gpu_count == 0)
     {
         std::fprintf(stderr, "no Vulkan physical devices\n");
-        return 1;
+        std::exit(1);
     }
     std::vector<VkPhysicalDevice> gpus(gpu_count);
-    VK_CHECK(vkEnumeratePhysicalDevices(instance, &gpu_count, gpus.data()));
-    VkPhysicalDevice gpu = gpus[0];
-    for (auto g : gpus)
+    VK_CHECK(vkEnumeratePhysicalDevices(g.instance, &gpu_count, gpus.data()));
+    g.physical = gpus[0];
+    for (auto candidate : gpus)
     {
         VkPhysicalDeviceProperties props = {};
-        vkGetPhysicalDeviceProperties(g, &props);
+        vkGetPhysicalDeviceProperties(candidate, &props);
         std::printf("GPU: %s\n", props.deviceName);
         if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
         {
-            gpu = g;
+            g.physical = candidate;
             break;
         }
     }
     VkPhysicalDeviceProperties chosen = {};
-    vkGetPhysicalDeviceProperties(gpu, &chosen);
+    vkGetPhysicalDeviceProperties(g.physical, &chosen);
     std::printf("using: %s\n", chosen.deviceName);
 
-    uint32_t qfamily = find_compute_family(gpu);
-
-    // --- logical device + queue ---
+    g.qfamily = find_compute_family(g.physical);
     float priority = 1.0f;
     VkDeviceQueueCreateInfo qci = {};
     qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    qci.queueFamilyIndex = qfamily;
+    qci.queueFamilyIndex = g.qfamily;
     qci.queueCount = 1;
     qci.pQueuePriorities = &priority;
     VkDeviceCreateInfo dci = {};
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dci.queueCreateInfoCount = 1;
     dci.pQueueCreateInfos = &qci;
-    VkDevice device = nullptr;
-    VK_CHECK(vkCreateDevice(gpu, &dci, nullptr, &device));
-    VkQueue queue = nullptr;
-    vkGetDeviceQueue(device, qfamily, 0, &queue);
+    VK_CHECK(vkCreateDevice(g.physical, &dci, nullptr, &g.device));
+    vkGetDeviceQueue(g.device, g.qfamily, 0, &g.queue);
+    return g;
+}
 
-    // --- storage buffer: W*H RGB floats, host-visible for direct readback.
-    // A real renderer stages through device-local memory; the scaffold skips
-    // that copy on purpose (one allocation, zero transfers to get wrong).
-    const VkDeviceSize buf_size = static_cast<VkDeviceSize>(width) * height * 3 * sizeof(float);
+void shutdown_gpu(Gpu &g)
+{
+    vkDestroyDevice(g.device, nullptr);
+    vkDestroyInstance(g.instance, nullptr);
+}
+
+struct Buffer
+{
+    VkBuffer handle = nullptr;
+    VkDeviceMemory memory = nullptr;
+    VkDeviceSize size = 0;
+};
+
+// Host-visible coherent allocation: one allocation, direct readback. A real
+// renderer stages through device-local memory; scaffolding skips that copy
+// on purpose (nothing to get wrong yet).
+Buffer make_buffer(const Gpu &g, VkDeviceSize size)
+{
+    Buffer b;
+    b.size = size;
     VkBufferCreateInfo bci = {};
     bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bci.size = buf_size;
+    bci.size = size;
     bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    VkBuffer buffer = nullptr;
-    VK_CHECK(vkCreateBuffer(device, &bci, nullptr, &buffer));
+    VK_CHECK(vkCreateBuffer(g.device, &bci, nullptr, &b.handle));
     VkMemoryRequirements reqs = {};
-    vkGetBufferMemoryRequirements(device, buffer, &reqs);
+    vkGetBufferMemoryRequirements(g.device, b.handle, &reqs);
     VkMemoryAllocateInfo mai = {};
     mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     mai.allocationSize = reqs.size;
-    mai.memoryTypeIndex = find_memory_type(gpu, reqs.memoryTypeBits,
+    mai.memoryTypeIndex = find_memory_type(g.physical, reqs.memoryTypeBits,
                                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    VkDeviceMemory memory = nullptr;
-    VK_CHECK(vkAllocateMemory(device, &mai, nullptr, &memory));
-    VK_CHECK(vkBindBufferMemory(device, buffer, memory, 0));
+    VK_CHECK(vkAllocateMemory(g.device, &mai, nullptr, &b.memory));
+    VK_CHECK(vkBindBufferMemory(g.device, b.handle, b.memory, 0));
+    return b;
+}
 
-    // --- descriptor set: binding 0 = the frame buffer ---
-    VkDescriptorSetLayoutBinding binding = {};
-    binding.binding = 0;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+void free_buffer(const Gpu &g, Buffer &b)
+{
+    vkFreeMemory(g.device, b.memory, nullptr);
+    vkDestroyBuffer(g.device, b.handle, nullptr);
+}
+
+void upload_floats(const Gpu &g, const Buffer &b, const std::vector<float> &data)
+{
+    void *mapped = nullptr;
+    VK_CHECK(vkMapMemory(g.device, b.memory, 0, b.size, 0, &mapped));
+    std::memcpy(mapped, data.data(), data.size() * sizeof(float));
+    vkUnmapMemory(g.device, b.memory);
+}
+
+VkShaderModule load_shader(const Gpu &g, const std::filesystem::path &path)
+{
+    std::vector<char> spirv = read_file(path);
+    VkShaderModuleCreateInfo smci = {};
+    smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    smci.codeSize = spirv.size();
+    smci.pCode = reinterpret_cast<const uint32_t *>(spirv.data());
+    VkShaderModule module = nullptr;
+    VK_CHECK(vkCreateShaderModule(g.device, &smci, nullptr, &module));
+    return module;
+}
+
+// Records, submits, and waits for a single dispatch of an already-bound
+// pipeline, then barriers the frame buffer for host read.
+void dispatch_and_wait(const Gpu &g, VkPipeline pipeline, VkPipelineLayout layout,
+                       VkDescriptorSet set, const void *push_data, size_t push_size,
+                       const Buffer &frame, uint32_t gx, uint32_t gy)
+{
+    VkCommandPoolCreateInfo cpci = {};
+    cpci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    cpci.queueFamilyIndex = g.qfamily;
+    VkCommandPool cmd_pool = nullptr;
+    VK_CHECK(vkCreateCommandPool(g.device, &cpci, nullptr, &cmd_pool));
+    VkCommandBufferAllocateInfo cbai = {};
+    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cbai.commandPool = cmd_pool;
+    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbai.commandBufferCount = 1;
+    VkCommandBuffer cmd = nullptr;
+    VK_CHECK(vkAllocateCommandBuffers(g.device, &cbai, &cmd));
+    VkCommandBufferBeginInfo begin = {};
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(cmd, &begin));
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, nullptr);
+    vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                       static_cast<uint32_t>(push_size), push_data);
+    vkCmdDispatch(cmd, gx, gy, 1);
+    VkBufferMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    barrier.srcQueueFamilyIndex = g.qfamily;
+    barrier.dstQueueFamilyIndex = g.qfamily;
+    barrier.buffer = frame.handle;
+    barrier.size = frame.size;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                         0, 0, nullptr, 1, &barrier, 0, nullptr);
+    VK_CHECK(vkEndCommandBuffer(cmd));
+    VkFenceCreateInfo fci = {};
+    fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    VkFence fence = nullptr;
+    VK_CHECK(vkCreateFence(g.device, &fci, nullptr, &fence));
+    VkSubmitInfo si = {};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd;
+    VK_CHECK(vkQueueSubmit(g.queue, 1, &si, fence));
+    VK_CHECK(vkWaitForFences(g.device, 1, &fence, VK_TRUE, UINT64_MAX));
+    vkDestroyFence(g.device, fence, nullptr);
+    vkDestroyCommandPool(g.device, cmd_pool, nullptr);
+}
+
+VkDescriptorSetLayout make_layout(const Gpu &g, uint32_t bindings)
+{
+    std::vector<VkDescriptorSetLayoutBinding> b(bindings);
+    for (uint32_t i = 0; i < bindings; ++i)
+    {
+        b[i].binding = i;
+        b[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        b[i].descriptorCount = 1;
+        b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    }
     VkDescriptorSetLayoutCreateInfo dsli = {};
     dsli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    dsli.bindingCount = 1;
-    dsli.pBindings = &binding;
+    dsli.bindingCount = bindings;
+    dsli.pBindings = b.data();
     VkDescriptorSetLayout layout = nullptr;
-    VK_CHECK(vkCreateDescriptorSetLayout(device, &dsli, nullptr, &layout));
+    VK_CHECK(vkCreateDescriptorSetLayout(g.device, &dsli, nullptr, &layout));
+    return layout;
+}
 
-    // Push constants carry width/height: 8 bytes, no buffer round-trip.
+VkPipeline make_pipeline(const Gpu &g, VkShaderModule module, VkPipelineLayout layout)
+{
+    VkPipelineShaderStageCreateInfo stage = {};
+    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stage.module = module;
+    stage.pName = "main";
+    VkComputePipelineCreateInfo pci = {};
+    pci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pci.stage = stage;
+    pci.layout = layout;
+    VkPipeline pipeline = nullptr;
+    VK_CHECK(vkCreateComputePipelines(g.device, nullptr, 1, &pci, nullptr, &pipeline));
+    return pipeline;
+}
+
+// Binds an array of storage buffers to consecutive bindings of one set.
+VkDescriptorSet bind_buffers(const Gpu &g, VkDescriptorSetLayout layout,
+                             const std::vector<Buffer> &buffers)
+{
+    VkDescriptorPoolSize pool_size = {};
+    pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    pool_size.descriptorCount = static_cast<uint32_t>(buffers.size());
+    VkDescriptorPoolCreateInfo dpi = {};
+    dpi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    dpi.maxSets = 1;
+    dpi.pPoolSizes = &pool_size;
+    dpi.poolSizeCount = 1;
+    VkDescriptorPool pool = nullptr;
+    VK_CHECK(vkCreateDescriptorPool(g.device, &dpi, nullptr, &pool));
+    VkDescriptorSetAllocateInfo dsai = {};
+    dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    dsai.descriptorPool = pool;
+    dsai.descriptorSetCount = 1;
+    dsai.pSetLayouts = &layout;
+    VkDescriptorSet set = nullptr;
+    VK_CHECK(vkAllocateDescriptorSets(g.device, &dsai, &set));
+    std::vector<VkDescriptorBufferInfo> infos(buffers.size());
+    std::vector<VkWriteDescriptorSet> writes(buffers.size());
+    for (size_t i = 0; i < buffers.size(); ++i)
+    {
+        infos[i].buffer = buffers[i].handle;
+        infos[i].range = buffers[i].size;
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = set;
+        writes[i].dstBinding = static_cast<uint32_t>(i);
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[i].pBufferInfo = &infos[i];
+    }
+    vkUpdateDescriptorSets(g.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    // Pool intentionally leaked until device teardown: one set per run, and
+    // the pool dies with the device. A long-lived app would retain and reset it.
+    (void)pool;
+    return set;
+}
+
+std::vector<vec3> download_frame(const Gpu &g, const Buffer &frame, uint32_t width, uint32_t height)
+{
+    void *mapped = nullptr;
+    VK_CHECK(vkMapMemory(g.device, frame.memory, 0, frame.size, 0, &mapped));
+    const float *pixels = static_cast<const float *>(mapped);
+    std::vector<vec3> fb(static_cast<size_t>(width) * height);
+    for (size_t i = 0; i < fb.size(); ++i)
+        fb[i] = vec3(pixels[i * 3], pixels[i * 3 + 1], pixels[i * 3 + 2]);
+    vkUnmapMemory(g.device, frame.memory);
+    return fb;
+}
+
+int run_fill(Gpu &g, const std::filesystem::path &shader_dir)
+{
+    const uint32_t width = 800;
+    const uint32_t height = 450;
+
+    Buffer frame = make_buffer(g, static_cast<VkDeviceSize>(width) * height * 3 * sizeof(float));
+
+    VkDescriptorSetLayout layout = make_layout(g, 1);
     VkPushConstantRange push = {};
     push.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     push.size = 8;
@@ -199,124 +381,160 @@ int main(int, char **argv)
     pli.pushConstantRangeCount = 1;
     pli.pPushConstantRanges = &push;
     VkPipelineLayout pipeline_layout = nullptr;
-    VK_CHECK(vkCreatePipelineLayout(device, &pli, nullptr, &pipeline_layout));
+    VK_CHECK(vkCreatePipelineLayout(g.device, &pli, nullptr, &pipeline_layout));
 
-    VkDescriptorPoolSize pool_size = {};
-    pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    pool_size.descriptorCount = 1;
-    VkDescriptorPoolCreateInfo dpi = {};
-    dpi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dpi.maxSets = 1;
-    dpi.pPoolSizes = &pool_size;
-    dpi.poolSizeCount = 1;
-    VkDescriptorPool pool = nullptr;
-    VK_CHECK(vkCreateDescriptorPool(device, &dpi, nullptr, &pool));
-    VkDescriptorSetAllocateInfo dsai = {};
-    dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    dsai.descriptorPool = pool;
-    dsai.descriptorSetCount = 1;
-    dsai.pSetLayouts = &layout;
-    VkDescriptorSet set = nullptr;
-    VK_CHECK(vkAllocateDescriptorSets(device, &dsai, &set));
-    VkDescriptorBufferInfo dbi = {};
-    dbi.buffer = buffer;
-    dbi.range = buf_size;
-    VkWriteDescriptorSet write = {};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = set;
-    write.dstBinding = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    write.pBufferInfo = &dbi;
-    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    VkDescriptorSet set = bind_buffers(g, layout, {frame});
+    VkShaderModule module = load_shader(g, shader_dir / "fill.spv");
+    VkPipeline pipeline = make_pipeline(g, module, pipeline_layout);
 
-    // --- compute pipeline ---
-    std::vector<char> spirv = read_file(exe_dir(argv[0]) / "shaders" / "fill.spv");
-    VkShaderModuleCreateInfo smci = {};
-    smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    smci.codeSize = spirv.size();
-    smci.pCode = reinterpret_cast<const uint32_t *>(spirv.data());
-    VkShaderModule module = nullptr;
-    VK_CHECK(vkCreateShaderModule(device, &smci, nullptr, &module));
-    VkPipelineShaderStageCreateInfo stage = {};
-    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage.module = module;
-    stage.pName = "main";
-    VkComputePipelineCreateInfo pci = {};
-    pci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    pci.stage = stage;
-    pci.layout = pipeline_layout;
-    VkPipeline pipeline = nullptr;
-    VK_CHECK(vkCreateComputePipelines(device, nullptr, 1, &pci, nullptr, &pipeline));
-
-    // --- record, submit, wait ---
-    VkCommandPoolCreateInfo cpci = {};
-    cpci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    cpci.queueFamilyIndex = qfamily;
-    VkCommandPool cmd_pool = nullptr;
-    VK_CHECK(vkCreateCommandPool(device, &cpci, nullptr, &cmd_pool));
-    VkCommandBufferAllocateInfo cbai = {};
-    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    cbai.commandPool = cmd_pool;
-    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cbai.commandBufferCount = 1;
-    VkCommandBuffer cmd = nullptr;
-    VK_CHECK(vkAllocateCommandBuffers(device, &cbai, &cmd));
-    VkCommandBufferBeginInfo begin = {};
-    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    VK_CHECK(vkBeginCommandBuffer(cmd, &begin));
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0, 1, &set, 0, nullptr);
     uint32_t dims[2] = {width, height};
-    vkCmdPushConstants(cmd, pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(dims), dims);
-    vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
-    // Make the shader write visible to the host before the fence signals.
-    VkBufferMemoryBarrier barrier = {};
-    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-    barrier.srcQueueFamilyIndex = qfamily;
-    barrier.dstQueueFamilyIndex = qfamily;
-    barrier.buffer = buffer;
-    barrier.size = buf_size;
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
-                         0, 0, nullptr, 1, &barrier, 0, nullptr);
-    VK_CHECK(vkEndCommandBuffer(cmd));
-    VkFenceCreateInfo fci = {};
-    fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    VkFence fence = nullptr;
-    VK_CHECK(vkCreateFence(device, &fci, nullptr, &fence));
-    VkSubmitInfo si = {};
-    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &cmd;
-    VK_CHECK(vkQueueSubmit(queue, 1, &si, fence));
-    VK_CHECK(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX));
+    dispatch_and_wait(g, pipeline, pipeline_layout, set, dims, sizeof(dims), frame,
+                      (width + 15) / 16, (height + 15) / 16);
 
-    // --- readback -> existing PPM writer (tonemap applies as usual) ---
-    void *mapped = nullptr;
-    VK_CHECK(vkMapMemory(device, memory, 0, buf_size, 0, &mapped));
-    const float *pixels = static_cast<const float *>(mapped);
-    std::vector<vec3> framebuffer(static_cast<size_t>(width) * height);
-    for (size_t i = 0; i < framebuffer.size(); ++i)
-        framebuffer[i] = vec3(pixels[i * 3], pixels[i * 3 + 1], pixels[i * 3 + 2]);
-    vkUnmapMemory(device, memory);
-    std::uint64_t hash = write_ppm("gpu_fill.ppm", framebuffer, width, height, 1.0, true);
+    std::vector<vec3> fb = download_frame(g, frame, width, height);
+    std::uint64_t hash = write_ppm("gpu_fill.ppm", fb, width, height, 1.0, true);
     std::printf("wrote gpu_fill.ppm hash=%llu\n", static_cast<unsigned long long>(hash));
 
-    // --- teardown, reverse order of creation ---
-    vkDestroyFence(device, fence, nullptr);
-    vkDestroyCommandPool(device, cmd_pool, nullptr);
-    vkDestroyPipeline(device, pipeline, nullptr);
-    vkDestroyShaderModule(device, module, nullptr);
-    vkDestroyDescriptorPool(device, pool, nullptr);
-    vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
-    vkDestroyDescriptorSetLayout(device, layout, nullptr);
-    vkFreeMemory(device, memory, nullptr);
-    vkDestroyBuffer(device, buffer, nullptr);
-    vkDestroyDevice(device, nullptr);
-    vkDestroyInstance(instance, nullptr);
+    vkDestroyPipeline(g.device, pipeline, nullptr);
+    vkDestroyShaderModule(g.device, module, nullptr);
+    vkDestroyPipelineLayout(g.device, pipeline_layout, nullptr);
+    vkDestroyDescriptorSetLayout(g.device, layout, nullptr);
+    free_buffer(g, frame);
     return 0;
+}
+
+// Push block mirror of normal.comp's Push (std430: vec4 slots, then words).
+struct NormalPush
+{
+    float origin[4];
+    float llc[4];
+    float horiz[4];
+    float vert[4];
+    uint32_t width, height, n_spheres, n_tris;
+    uint32_t n_quads, pad0, pad1, pad2;
+};
+
+int run_normal(Gpu &g, const std::filesystem::path &shader_dir)
+{
+    const uint32_t width = 800;
+    const uint32_t height = 450;
+
+    // Same scene, same seed as the CPU parity run
+    // (--bench --samples 1 --shade normal --nee --aperture 0).
+    render_config cfg;
+    cfg.bench = true;
+    cfg.extra_spheres = 300;
+    cfg.do_nee = true;
+    set_deterministic_rng(true, cfg.bench_seed);
+    scene_data scene = build_scene(cfg);
+    camera cam = default_camera(0.0);
+
+    // Flatten to SoA: spheres as center+radius, tris/quads as corner+edges.
+    std::vector<float> sph, tri, qd;
+    auto push_vec3 = [](std::vector<float> &v, const vec3 &p, float w) {
+        v.push_back(static_cast<float>(p.x()));
+        v.push_back(static_cast<float>(p.y()));
+        v.push_back(static_cast<float>(p.z()));
+        v.push_back(w);
+    };
+    for (const auto &o : scene.objects.objects_ref())
+    {
+        if (const auto *s = dynamic_cast<const sphere *>(o.get()))
+            push_vec3(sph, s->position(), static_cast<float>(s->size()));
+        else if (const auto *t = dynamic_cast<const triangle *>(o.get()))
+        {
+            push_vec3(tri, t->a(), 0.0f);
+            push_vec3(tri, t->b(), 0.0f);
+            push_vec3(tri, t->c(), 0.0f);
+        }
+        else if (const auto *q = dynamic_cast<const quad *>(o.get()))
+        {
+            push_vec3(qd, q->corner(), 0.0f);
+            push_vec3(qd, q->edge_u(), 0.0f);
+            push_vec3(qd, q->edge_v(), 0.0f);
+        }
+    }
+    uint32_t n_spheres = static_cast<uint32_t>(sph.size() / 4);
+    uint32_t n_tris = static_cast<uint32_t>(tri.size() / 12);
+    uint32_t n_quads = static_cast<uint32_t>(qd.size() / 12);
+    std::printf("upload: %u spheres %u tris %u quads\n", n_spheres, n_tris, n_quads);
+    // Zero-size Vulkan buffers are invalid; scene always has all three kinds,
+    // the guard is against future empty scenes, not today's.
+    if (sph.empty())
+        sph.resize(4, 0.0f);
+    if (tri.empty())
+        tri.resize(12, 0.0f);
+    if (qd.empty())
+        qd.resize(12, 0.0f);
+
+    Buffer b_sph = make_buffer(g, sph.size() * sizeof(float));
+    Buffer b_tri = make_buffer(g, tri.size() * sizeof(float));
+    Buffer b_qd = make_buffer(g, qd.size() * sizeof(float));
+    Buffer frame = make_buffer(g, static_cast<VkDeviceSize>(width) * height * 3 * sizeof(float));
+    upload_floats(g, b_sph, sph);
+    upload_floats(g, b_tri, tri);
+    upload_floats(g, b_qd, qd);
+
+    VkDescriptorSetLayout layout = make_layout(g, 4);
+    VkPushConstantRange push = {};
+    push.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    push.size = sizeof(NormalPush);
+    VkPipelineLayoutCreateInfo pli = {};
+    pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &layout;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &push;
+    VkPipelineLayout pipeline_layout = nullptr;
+    VK_CHECK(vkCreatePipelineLayout(g.device, &pli, nullptr, &pipeline_layout));
+
+    VkDescriptorSet set = bind_buffers(g, layout, {b_sph, b_tri, b_qd, frame});
+    VkShaderModule module = load_shader(g, shader_dir / "normal.spv");
+    VkPipeline pipeline = make_pipeline(g, module, pipeline_layout);
+
+    NormalPush pc = {};
+    auto fill_v4 = [](float *d, const vec3 &v) {
+        d[0] = static_cast<float>(v.x());
+        d[1] = static_cast<float>(v.y());
+        d[2] = static_cast<float>(v.z());
+        d[3] = 0.0f;
+    };
+    fill_v4(pc.origin, cam.eye());
+    fill_v4(pc.llc, cam.corner());
+    fill_v4(pc.horiz, cam.span_h());
+    fill_v4(pc.vert, cam.span_v());
+    pc.width = width;
+    pc.height = height;
+    pc.n_spheres = n_spheres;
+    pc.n_tris = n_tris;
+    pc.n_quads = n_quads;
+
+    dispatch_and_wait(g, pipeline, pipeline_layout, set, &pc, sizeof(pc), frame,
+                      (width + 15) / 16, (height + 15) / 16);
+
+    std::vector<vec3> fb = download_frame(g, frame, width, height);
+    std::uint64_t hash = write_ppm("gpu_normal.ppm", fb, width, height, 1.0, true);
+    std::printf("wrote gpu_normal.ppm hash=%llu\n", static_cast<unsigned long long>(hash));
+
+    vkDestroyPipeline(g.device, pipeline, nullptr);
+    vkDestroyShaderModule(g.device, module, nullptr);
+    vkDestroyPipelineLayout(g.device, pipeline_layout, nullptr);
+    vkDestroyDescriptorSetLayout(g.device, layout, nullptr);
+    free_buffer(g, frame);
+    free_buffer(g, b_qd);
+    free_buffer(g, b_tri);
+    free_buffer(g, b_sph);
+    return 0;
+}
+
+} // namespace
+
+int main(int argc, char **argv)
+{
+    Gpu g = init_gpu();
+    std::filesystem::path shader_dir = exe_dir(argv[0]) / "shaders";
+    std::string mode = (argc > 1) ? argv[1] : "fill";
+    int rc = (mode == "normal") ? run_normal(g, shader_dir) : run_fill(g, shader_dir);
+    shutdown_gpu(g);
+    return rc;
 }

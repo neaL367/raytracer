@@ -75,6 +75,10 @@ public:
 
     const vec3 &normal() const { return normal_vec; }
     const std::shared_ptr<material> &mat_ptr() const { return mat; }
+    // Read access for scene upload to GPU buffers.
+    const vec3 &corner() const { return Q; }
+    const vec3 &edge_u() const { return u; }
+    const vec3 &edge_v() const { return v; }
     double area() const { return area_val; }
 
 private:

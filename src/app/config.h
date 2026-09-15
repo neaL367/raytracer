@@ -13,6 +13,7 @@ struct render_config
     int samples_per_pixel = 196;
     int max_depth = 50;
     int tile_rows = 8;
+    double aperture = 0.05;
     unsigned bench_seed = 42u;
     size_t max_leaf_size = 2;
     bool ground_in_bvh = true;
@@ -20,6 +21,9 @@ struct render_config
     bool do_rr = true;
     bool do_strat = true;
     bool do_bilinear = true;
+    // "full" path tracing or "normal" reference shading (closest-hit
+    // normals, no materials/lights/RNG) for backend parity checks.
+    std::string shade_mode = "full";
     double exposure = 1.0;
     // Stratified pixel sampling needs a perfect square count; anything else
     // falls back to plain jitter.
@@ -34,8 +38,11 @@ inline void print_usage(const char *prog)
               << "  --spheres N        added random spheres (default 300)\n"
               << "  --samples N        samples per pixel (default 196 = 14x14 strata;\n"
               << "                     must be a perfect square for stratification)\n"
+              << "  --shade MODE       full path tracing (default) or normal reference\n"
+              << "                     shading for backend parity checks\n"
               << "  --depth N          max path depth (default 50)\n"
               << "  --tile N           scheduling strip height in rows (default 8)\n"
+              << "  --aperture A       lens aperture (default 0.05; 0 = pinhole)\n"
               << "  --leaf N           BVH leaf capacity (default 2)\n"
               << "  --ground outside   test the ground sphere separately from the tree\n"
               << "  --nee              next-event estimation against an area light\n"
@@ -85,6 +92,8 @@ inline cli_result parse_cli(int argc, char **argv, render_config &cfg)
                 cfg.max_depth = std::stoi(take_value(i, "--depth", ok));
             else if (arg == "--tile")
                 cfg.tile_rows = std::stoi(take_value(i, "--tile", ok));
+            else if (arg == "--aperture")
+                cfg.aperture = std::stod(take_value(i, "--aperture", ok));
             else if (arg == "--leaf")
                 cfg.max_leaf_size = static_cast<size_t>(std::stoul(take_value(i, "--leaf", ok)));
             else if (arg == "--ground")
@@ -97,6 +106,8 @@ inline cli_result parse_cli(int argc, char **argv, render_config &cfg)
                 cfg.do_strat = false;
             else if (arg == "--noblinear")
                 cfg.do_bilinear = false;
+            else if (arg == "--shade")
+                cfg.shade_mode = take_value(i, "--shade", ok);
             else if (arg == "--exposure")
                 cfg.exposure = std::stod(take_value(i, "--exposure", ok));
             else if (arg == "--seed")
@@ -124,6 +135,11 @@ inline cli_result parse_cli(int argc, char **argv, render_config &cfg)
 
     cfg.strat_n = static_cast<int>(std::sqrt(cfg.samples_per_pixel + 0.5));
     cfg.stratified = cfg.do_strat && cfg.strat_n * cfg.strat_n == cfg.samples_per_pixel && cfg.strat_n > 0;
+    if (cfg.shade_mode != "full" && cfg.shade_mode != "normal")
+    {
+        std::cerr << "--shade must be full or normal\n";
+        return cli_result::error;
+    }
     if (cfg.bench && cfg.do_strat && !cfg.stratified)
         std::cout << "[bench] samples=" << cfg.samples_per_pixel << " not square: jitter fallback\n";
     return cli_result::run;

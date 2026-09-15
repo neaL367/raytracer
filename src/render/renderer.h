@@ -82,15 +82,24 @@ inline render_stats render_framebuffer(const camera &cam, const hittable &world,
 
                     for (int sample = 0; sample < cfg.samples_per_pixel; ++sample)
                     {
-                        // Stratum (sx, sy) from the sample index; the jitter stays
-                        // inside it. Same two random draws per sample as jitter,
-                        // only the mapping from draw to pixel position changes.
-                        double ox = random_double();
-                        double oy = random_double();
-                        if (cfg.stratified)
+                        // Single sample means pixel center: the deterministic
+                        // reference. Anything else draws two numbers and maps
+                        // them through the stratum (or the whole pixel).
+                        double ox, oy;
+                        if (cfg.samples_per_pixel == 1)
                         {
-                            ox = ((sample % cfg.strat_n) + ox) / cfg.strat_n;
-                            oy = ((sample / cfg.strat_n) + oy) / cfg.strat_n;
+                            ox = 0.5;
+                            oy = 0.5;
+                        }
+                        else
+                        {
+                            ox = random_double();
+                            oy = random_double();
+                            if (cfg.stratified)
+                            {
+                                ox = ((sample % cfg.strat_n) + ox) / cfg.strat_n;
+                                oy = ((sample / cfg.strat_n) + oy) / cfg.strat_n;
+                            }
                         }
                         double s = (i + ox) / (image_width - 1);
                         double t = (j + oy) / (image_height - 1);
