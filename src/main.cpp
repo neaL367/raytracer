@@ -5,6 +5,7 @@
 #include "core/camera.h"
 #include "core/random.h"
 #include "core/triangle.h"
+#include "core/quad.h"
 #include "core/obj_loader.h"
 #include "core/bvh.h"
 #include "core/bench_stats.h"
@@ -19,26 +20,66 @@
 #include <cstdint>
 #include <algorithm>
 
-vec3 ray_color(const ray &r, const hittable &world, int depth)
+vec3 sky_color(const ray &r)
+{
+    vec3 unit_direction = unit_vector(r.direction());
+    double a = 0.5 * (unit_direction.y() + 1.0);
+    return (1.0 - a) * vec3(1.0, 1.0, 1.0) + a * vec3(0.5, 0.7, 1.0);
+}
+
+// Next-event estimation: pick one light uniformly, sample a point on it,
+// and test the shadow ray. The uniform area sample (pdf 1/area, times 1/n
+// for the light choice) is converted to solid angle at the shading point:
+// pdf_dir = dist^2 / (cos_light * area * n). Only diffuse surfaces take this
+// branch; delta materials (mirror, glass) integrate the bounce alone.
+vec3 direct_light(const hit_record &rec, const vec3 &albedo,
+                  const hittable &world,
+                  const std::vector<std::shared_ptr<quad>> &lights)
+{
+    size_t n = lights.size();
+    size_t idx = (n == 1) ? 0 : std::min(n - 1, static_cast<size_t>(random_double(0, n)));
+    const auto &light = lights[idx];
+
+    vec3 to_light = light->sample() - rec.point;
+    double dist2 = to_light.length_squared();
+    double dist = std::sqrt(dist2);
+    vec3 dir = to_light / dist;
+
+    double cos_surface = dot(rec.normal, dir);
+    double cos_light = dot(-dir, light->normal());
+    if (cos_surface <= 0.0 || cos_light <= 0.0)
+        return vec3(0, 0, 0);
+
+    hit_record tmp;
+    if (world.hit(ray(rec.point, dir), 0.001, dist - 0.001, tmp))
+        return vec3(0, 0, 0); // occluded
+
+    double pdf_dir = dist2 / (cos_light * light->area() * static_cast<double>(n));
+    vec3 emission = light->mat_ptr()->emitted();
+    return albedo * emission * cos_surface / pdf_dir;
+}
+
+vec3 ray_color(const ray &r, const hittable &world,
+               const std::vector<std::shared_ptr<quad>> &lights, bool do_nee, int depth)
 {
     if (depth <= 0)
         return vec3(0, 0, 0);
 
     hit_record rec;
-    if (world.hit(r, 0.001, 1000.0, rec))
-    {
-        ray scattered;
-        vec3 attenuation;
-        if (rec.mat->scatter(r, rec, attenuation, scattered))
-        {
-            return attenuation * ray_color(scattered, world, depth - 1);
-        }
-        return vec3(0, 0, 0);
-    }
+    if (!world.hit(r, 0.001, 1000.0, rec))
+        return sky_color(r);
 
-    vec3 unit_direction = unit_vector(r.direction());
-    double a = 0.5 * (unit_direction.y() + 1.0);
-    return (1.0 - a) * vec3(1.0, 1.0, 1.0) + a * vec3(0.5, 0.7, 1.0);
+    vec3 color = rec.mat->emitted();
+
+    ray scattered;
+    vec3 attenuation;
+    if (!rec.mat->scatter(r, rec, attenuation, scattered))
+        return color; // emissive surface: no bounce
+
+    if (do_nee && !rec.mat->specular() && !lights.empty())
+        color += direct_light(rec, attenuation, world, lights);
+
+    return color + attenuation * ray_color(scattered, world, lights, do_nee, depth - 1);
 }
 
 int main(int argc, char **argv)
@@ -48,6 +89,7 @@ int main(int argc, char **argv)
     // samples per pixel (default 200), --tile N sets scheduling strip height
     // in rows (default 8), --leaf N sets BVH leaf capacity (default 2),
     // --ground outside tests the ground sphere separately from the tree,
+    // --nee enables next-event estimation against an overhead area light,
     // --seed N sets the fixed RNG seed (default 42).
     bool bench = false;
     int extra_spheres = 300;
@@ -56,6 +98,7 @@ int main(int argc, char **argv)
     unsigned bench_seed = 42u;
     size_t max_leaf_size = 2;
     bool ground_in_bvh = true;
+    bool do_nee = false;
     for (int i = 1; i < argc; ++i)
     {
         std::string arg = argv[i];
@@ -71,6 +114,8 @@ int main(int argc, char **argv)
             max_leaf_size = static_cast<size_t>(std::stoul(argv[++i]));
         else if (arg == "--ground" && i + 1 < argc)
             ground_in_bvh = (std::string(argv[++i]) != "outside");
+        else if (arg == "--nee")
+            do_nee = true;
         else if (arg == "--seed" && i + 1 < argc)
             bench_seed = static_cast<unsigned>(std::stoul(argv[++i]));
     }
@@ -106,6 +151,18 @@ int main(int argc, char **argv)
     flat_objects.add(std::make_shared<triangle>(
         vec3(-1, -1, -2), vec3(1, -1, -2), vec3(0, 1, -2),
         material_triangle));
+
+    // Overhead area light. Lives outside the BVH input unless NEE is on, so
+    // the default path renders the exact historical scene (anchor hash holds).
+    std::vector<std::shared_ptr<quad>> lights;
+    if (do_nee)
+    {
+        auto light_mat = std::make_shared<diffuse_light>(vec3(3, 3, 3));
+        auto area_light = std::make_shared<quad>(
+            vec3(-2, 5, -2), vec3(4, 0, 0), vec3(0, 0, 4), light_mat);
+        lights.push_back(area_light);
+        flat_objects.add(area_light);
+    }
 
     // --- scale the scene up to a size where a BVH actually pays off ---
     for (int i = 0; i < extra_spheres; ++i)
@@ -198,7 +255,7 @@ int main(int argc, char **argv)
                     double t = (j + random_double()) / (image_height - 1);
 
                     ray r = cam.get_ray(s, t);
-                    pixel_color += ray_color(r, bvh_world, max_depth);
+                    pixel_color += ray_color(r, bvh_world, lights, do_nee, max_depth);
                     // pixel_color += ray_color(r, flat_objects, max_depth);
                 }
 
@@ -246,9 +303,11 @@ int main(int argc, char **argv)
         for (int i = 0; i < image_width; ++i)
         {
             const vec3 &c = framebuffer[j * image_width + i];
-            int ir = static_cast<int>(255.999 * c.x());
-            int ig = static_cast<int>(255.999 * c.y());
-            int ib = static_cast<int>(255.999 * c.z());
+            // Clamp: lit values can exceed 1 (no tonemapper yet); raw >255
+            // bytes are malformed P3, so clip at the displayable range.
+            int ir = std::min(255, static_cast<int>(255.999 * c.x()));
+            int ig = std::min(255, static_cast<int>(255.999 * c.y()));
+            int ib = std::min(255, static_cast<int>(255.999 * c.z()));
             out << ir << ' ' << ig << ' ' << ib << '\n';
             if (bench)
             {
@@ -281,6 +340,7 @@ int main(int argc, char **argv)
                   << " tile_rows=" << tile_rows
                   << " leaf=" << max_leaf_size
                   << " ground=" << (ground_in_bvh ? "in" : "out")
+                  << " nee=" << (do_nee ? "on" : "off")
                   << " threads=" << num_threads << "\n";
         std::cout << "[bench] bvh_build=" << bvh_elapsed.count() << "s"
                   << " nodes=" << bvh_nodes

@@ -12,6 +12,13 @@ class material
 public:
     virtual ~material() = default;
     virtual bool scatter(const ray &r_in, const hit_record &rec, vec3 &attenuation, ray &scattered) const = 0;
+    // Emitted radiance; black for everything except lights.
+    virtual vec3 emitted() const { return vec3(0, 0, 0); }
+    // True for delta distributions (mirror, glass): no finite sampling
+    // density exists, so the direct-light estimator skips them and only the
+    // bounce is integrated. Temporary seam — the BRDF/pdf refactor replaces
+    // this flag with real pdfs.
+    virtual bool specular() const { return false; }
 };
 
 class lambertian : public material
@@ -47,6 +54,8 @@ public:
         attenuation = albedo;
         return dot(scattered.direction(), rec.normal) > 0;
     }
+
+    bool specular() const override { return true; }
 
 private:
     vec3 albedo;
@@ -85,6 +94,24 @@ public:
         return true;
     }
 
+    bool specular() const override { return true; }
+
 private:
     double ir;
+};
+
+class diffuse_light : public material
+{
+public:
+    diffuse_light(const vec3 &emit_color) : emit_color(emit_color) {}
+
+    bool scatter(const ray &r_in, const hit_record &rec, vec3 &attenuation, ray &scattered) const override
+    {
+        return false; // lights emit; they never bounce
+    }
+
+    vec3 emitted() const override { return emit_color; }
+
+private:
+    vec3 emit_color;
 };
