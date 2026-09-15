@@ -41,9 +41,16 @@ from the same run.
 ```text
 src/core/     math + scene primitives (vec3, ray, shapes, BVH, materials)
 src/app/      CLI configuration
+src/scene/    scene assembly shared by CPU and GPU backends
 src/render/   tile-scheduled multithreaded renderer
 src/io/       tonemapping + PPM output
-src/main.cpp  scene assembly + bench report
-tests/        unit tests (no external framework)
+src/gpu/      headless Vulkan compute (rt_gpu) + GLSL kernels
+src/main.cpp  scene/BVH setup + bench report
+tests/        unit tests (no external framework) + PPM compare script
 assets/       mesh + calibration textures (copied next to the binary)
 ```
+
+GPU backends (`rt_gpu fill|normal|path [samples]`): `normal` must match
+the CPU `--shade normal` reference within `tests/compare_ppm.py`
+tolerances (fp32 vs fp64); `path` holds statistical parity (means within
+a few percent) against `--bench --nee`.

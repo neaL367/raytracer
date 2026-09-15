@@ -31,7 +31,7 @@ find_program(GLSLC_EXECUTABLE glslc HINTS "$ENV{VULKAN_SDK}/Bin" REQUIRED)
 
 set(GPU_SHADER_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${GPU_SHADER_DIR})
-foreach(shader fill normal)
+foreach(shader fill normal path)
     add_custom_command(
         OUTPUT ${GPU_SHADER_DIR}/${shader}.spv
         COMMAND ${GLSLC_EXECUTABLE} -O ${CMAKE_SOURCE_DIR}/src/gpu/shaders/${shader}.comp

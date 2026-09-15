@@ -61,6 +61,9 @@ public:
 
     bool needs_uv() const override { return albedo->needs_uv(); }
 
+    // Read access for GPU upload (SoA material flattening).
+    const std::shared_ptr<texture> &tex() const { return albedo; }
+
 private:
     std::shared_ptr<texture> albedo;
 };
@@ -79,6 +82,9 @@ public:
     }
 
     bool specular() const override { return true; }
+
+    // Read access for GPU upload.
+    const vec3 &tint() const { return albedo; }
 
 private:
     vec3 albedo;
@@ -119,6 +125,9 @@ public:
 
     bool specular() const override { return true; }
 
+    // Read access for GPU upload.
+    double index() const { return ir; }
+
 private:
     double ir;
 };
@@ -134,6 +143,9 @@ public:
     }
 
     vec3 emitted() const override { return emit_color; }
+
+    // Read access for GPU upload.
+    const vec3 &emission() const { return emit_color; }
 
 private:
     vec3 emit_color;

@@ -4,6 +4,7 @@
 // GPU -> compute queue -> dispatch -> host readback -> existing PPM writer.
 #include "../app/config.h"
 #include "../core/camera.h"
+#include "../core/material.h"
 #include "../core/quad.h"
 #include "../core/sphere.h"
 #include "../core/triangle.h"
@@ -414,6 +415,91 @@ struct NormalPush
     uint32_t n_quads, pad0, pad1, pad2;
 };
 
+// Flattened material: rgb carries solid albedo or emission, w carries the
+// dielectric IOR; kind selects the branch, texkind/texidx select the texture
+// (0 none, 1 checker, 2 image).
+struct FlatMat
+{
+    vec3 rgb = vec3(0.5, 0.5, 0.5);
+    double w = 0.0;
+    int kind = 0;
+    int texkind = 0;
+    int texidx = -1;
+};
+
+struct TexCollectors
+{
+    std::vector<const checker_texture *> checkers;
+    std::vector<const image_texture *> images;
+};
+
+inline int find_or_add_checker(TexCollectors &tc, const checker_texture *c)
+{
+    for (size_t i = 0; i < tc.checkers.size(); ++i)
+        if (tc.checkers[i] == c)
+            return static_cast<int>(i);
+    tc.checkers.push_back(c);
+    return static_cast<int>(tc.checkers.size() - 1);
+}
+
+inline int find_or_add_image(TexCollectors &tc, const image_texture *im)
+{
+    for (size_t i = 0; i < tc.images.size(); ++i)
+        if (tc.images[i] == im)
+            return static_cast<int>(i);
+    tc.images.push_back(im);
+    return static_cast<int>(tc.images.size() - 1);
+}
+
+inline FlatMat flatten_material(const std::shared_ptr<material> &m, TexCollectors &tc)
+{
+    FlatMat f;
+    if (const auto *l = dynamic_cast<const lambertian *>(m.get()))
+    {
+        const auto &t = l->tex();
+        if (const auto *s = dynamic_cast<const solid_color *>(t.get()))
+        {
+            f.rgb = s->color();
+            return f; // kind 0, no texture
+        }
+        if (const auto *c = dynamic_cast<const checker_texture *>(t.get()))
+        {
+            f.texkind = 1;
+            f.texidx = find_or_add_checker(tc, c);
+            return f;
+        }
+        if (const auto *im = dynamic_cast<const image_texture *>(t.get()))
+        {
+            f.texkind = 2;
+            f.texidx = find_or_add_image(tc, im);
+            return f;
+        }
+        std::fprintf(stderr, "upload: unknown texture type, gray fallback\n");
+        return f;
+    }
+    if (const auto *me = dynamic_cast<const metal *>(m.get()))
+    {
+        f.rgb = me->tint();
+        f.kind = 1;
+        return f;
+    }
+    if (const auto *d = dynamic_cast<const dielectric *>(m.get()))
+    {
+        f.rgb = vec3(1, 1, 1);
+        f.w = d->index();
+        f.kind = 2;
+        return f;
+    }
+    if (const auto *li = dynamic_cast<const diffuse_light *>(m.get()))
+    {
+        f.rgb = li->emission();
+        f.kind = 3;
+        return f;
+    }
+    std::fprintf(stderr, "upload: unknown material type, gray fallback\n");
+    return f;
+}
+
 int run_normal(Gpu &g, const std::filesystem::path &shader_dir)
 {
     const uint32_t width = 800;
@@ -527,6 +613,227 @@ int run_normal(Gpu &g, const std::filesystem::path &shader_dir)
     return 0;
 }
 
+// Push block mirror of path.comp's Push.
+struct PathPush
+{
+    float origin[4];
+    float llc[4];
+    float horiz[4];
+    float vert[4];
+    uint32_t width, height, n_spheres, n_tris;
+    uint32_t n_quads, samples, strat_n, max_depth;
+    uint32_t img_w, img_h, pad0, pad1;
+};
+
+int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples)
+{
+    int strat_n = static_cast<int>(std::sqrt(samples + 0.5));
+    if (strat_n * strat_n != samples || strat_n <= 0)
+    {
+        std::fprintf(stderr, "path samples must be a perfect square (stratified mapping)\n");
+        return 1;
+    }
+    const uint32_t width = 800;
+    const uint32_t height = 450;
+    const int max_depth = 50;
+
+    // Same scene, same seed as the CPU parity run (--bench --nee).
+    render_config cfg;
+    cfg.bench = true;
+    cfg.extra_spheres = 300;
+    cfg.do_nee = true;
+    set_deterministic_rng(true, cfg.bench_seed);
+    scene_data scene = build_scene(cfg);
+    camera cam = default_camera(0.05);
+
+    // Flatten prims + materials together so indices line up across buffers.
+    std::vector<float> sph, tri, qd;
+    std::vector<float> sph_alb, tri_alb, qd_alb;
+    std::vector<int32_t> sph_meta, tri_meta, qd_meta;
+    TexCollectors tc;
+    auto push_vec3 = [](std::vector<float> &v, const vec3 &p, float w) {
+        v.push_back(static_cast<float>(p.x()));
+        v.push_back(static_cast<float>(p.y()));
+        v.push_back(static_cast<float>(p.z()));
+        v.push_back(w);
+    };
+    auto push_mat = [&](std::vector<float> &va, std::vector<int32_t> &vm,
+                        const std::shared_ptr<material> &m) {
+        FlatMat f = flatten_material(m, tc);
+        push_vec3(va, f.rgb, static_cast<float>(f.w));
+        vm.push_back(f.kind);
+        vm.push_back(f.texkind);
+        vm.push_back(f.texidx);
+        vm.push_back(0);
+    };
+    for (const auto &o : scene.objects.objects_ref())
+    {
+        if (const auto *s = dynamic_cast<const sphere *>(o.get()))
+        {
+            push_vec3(sph, s->position(), static_cast<float>(s->size()));
+            push_mat(sph_alb, sph_meta, s->mat_ptr());
+        }
+        else if (const auto *t = dynamic_cast<const triangle *>(o.get()))
+        {
+            push_vec3(tri, t->a(), 0.0f);
+            push_vec3(tri, t->b(), 0.0f);
+            push_vec3(tri, t->c(), 0.0f);
+            push_mat(tri_alb, tri_meta, t->mat_ptr());
+        }
+        else if (const auto *q = dynamic_cast<const quad *>(o.get()))
+        {
+            push_vec3(qd, q->corner(), 0.0f);
+            push_vec3(qd, q->edge_u(), 0.0f);
+            push_vec3(qd, q->edge_v(), 0.0f);
+            push_mat(qd_alb, qd_meta, q->mat_ptr());
+        }
+    }
+    uint32_t n_spheres = static_cast<uint32_t>(sph.size() / 4);
+    uint32_t n_tris = static_cast<uint32_t>(tri.size() / 12);
+    uint32_t n_quads = static_cast<uint32_t>(qd.size() / 12);
+    std::printf("upload: %u spheres %u tris %u quads, %zu checkers, %zu images\n",
+                n_spheres, n_tris, n_quads, tc.checkers.size(), tc.images.size());
+
+    // Checker table: (scale,0,0,0),(c1,0),(c2,0) per entry.
+    std::vector<float> chk;
+    for (const auto *c : tc.checkers)
+    {
+        auto solid_rgb = [](const std::shared_ptr<texture> &t) {
+            if (const auto *s = dynamic_cast<const solid_color *>(t.get()))
+                return s->color();
+            return vec3(0.5, 0.5, 0.5);
+        };
+        push_vec3(chk, vec3(c->scale(), 0, 0), 0.0f);
+        push_vec3(chk, solid_rgb(c->color_a()), 0.0f);
+        push_vec3(chk, solid_rgb(c->color_b()), 0.0f);
+    }
+    if (chk.empty())
+        chk.resize(12, 0.0f);
+
+    // Image textures: raw bytes as floats (shader divides by 255 like CPU).
+    // One image slot for now; the scene holds exactly one.
+    std::vector<float> img;
+    uint32_t img_w = 1, img_h = 1;
+    if (!tc.images.empty())
+    {
+        if (tc.images.size() > 1)
+            std::fprintf(stderr, "upload: %zu images, using the first\n", tc.images.size());
+        const auto *im = tc.images[0];
+        img_w = static_cast<uint32_t>(im->pixel_width());
+        img_h = static_cast<uint32_t>(im->pixel_height());
+        img.reserve(static_cast<size_t>(img_w) * img_h * 3);
+        for (unsigned char b : im->bytes())
+            img.push_back(static_cast<float>(b));
+    }
+    else
+    {
+        img.resize(3, 128.0f);
+    }
+
+    if (sph.empty())
+        sph.resize(4, 0.0f);
+    if (tri.empty())
+        tri.resize(12, 0.0f);
+    if (qd.empty())
+        qd.resize(12, 0.0f);
+
+    Buffer b_sph = make_buffer(g, sph.size() * sizeof(float));
+    Buffer b_tri = make_buffer(g, tri.size() * sizeof(float));
+    Buffer b_qd = make_buffer(g, qd.size() * sizeof(float));
+    Buffer b_sph_alb = make_buffer(g, sph_alb.size() * sizeof(float));
+    Buffer b_sph_meta = make_buffer(g, sph_meta.size() * sizeof(int32_t));
+    Buffer b_tri_alb = make_buffer(g, tri_alb.size() * sizeof(float));
+    Buffer b_tri_meta = make_buffer(g, tri_meta.size() * sizeof(int32_t));
+    Buffer b_qd_alb = make_buffer(g, qd_alb.size() * sizeof(float));
+    Buffer b_qd_meta = make_buffer(g, qd_meta.size() * sizeof(int32_t));
+    Buffer b_chk = make_buffer(g, chk.size() * sizeof(float));
+    Buffer b_img = make_buffer(g, img.size() * sizeof(float));
+    Buffer frame = make_buffer(g, static_cast<VkDeviceSize>(width) * height * 3 * sizeof(float));
+    upload_floats(g, b_sph, sph);
+    upload_floats(g, b_tri, tri);
+    upload_floats(g, b_qd, qd);
+    upload_floats(g, b_sph_alb, sph_alb);
+    upload_floats(g, b_tri_alb, tri_alb);
+    upload_floats(g, b_qd_alb, qd_alb);
+    upload_floats(g, b_chk, chk);
+    upload_floats(g, b_img, img);
+    auto upload_ints = [&](const Buffer &b, const std::vector<int32_t> &v) {
+        void *mapped = nullptr;
+        VK_CHECK(vkMapMemory(g.device, b.memory, 0, b.size, 0, &mapped));
+        std::memcpy(mapped, v.data(), v.size() * sizeof(int32_t));
+        vkUnmapMemory(g.device, b.memory);
+    };
+    upload_ints(b_sph_meta, sph_meta);
+    upload_ints(b_tri_meta, tri_meta);
+    upload_ints(b_qd_meta, qd_meta);
+
+    VkDescriptorSetLayout layout = make_layout(g, 12);
+    VkPushConstantRange push = {};
+    push.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    push.size = sizeof(PathPush);
+    VkPipelineLayoutCreateInfo pli = {};
+    pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &layout;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &push;
+    VkPipelineLayout pipeline_layout = nullptr;
+    VK_CHECK(vkCreatePipelineLayout(g.device, &pli, nullptr, &pipeline_layout));
+
+    VkDescriptorSet set = bind_buffers(g, layout, {b_sph, b_tri, b_qd, b_sph_alb, b_sph_meta,
+                                                   b_tri_alb, b_tri_meta, b_qd_alb, b_qd_meta,
+                                                   b_chk, b_img, frame});
+    VkShaderModule module = load_shader(g, shader_dir / "path.spv");
+    VkPipeline pipeline = make_pipeline(g, module, pipeline_layout);
+
+    PathPush pc = {};
+    auto fill_v4 = [](float *d, const vec3 &v) {
+        d[0] = static_cast<float>(v.x());
+        d[1] = static_cast<float>(v.y());
+        d[2] = static_cast<float>(v.z());
+        d[3] = 0.0f;
+    };
+    fill_v4(pc.origin, cam.eye());
+    fill_v4(pc.llc, cam.corner());
+    fill_v4(pc.horiz, cam.span_h());
+    fill_v4(pc.vert, cam.span_v());
+    pc.width = width;
+    pc.height = height;
+    pc.n_spheres = n_spheres;
+    pc.n_tris = n_tris;
+    pc.n_quads = n_quads;
+    pc.samples = static_cast<uint32_t>(samples);
+    pc.strat_n = static_cast<uint32_t>(strat_n);
+    pc.max_depth = static_cast<uint32_t>(max_depth);
+    pc.img_w = img_w;
+    pc.img_h = img_h;
+
+    dispatch_and_wait(g, pipeline, pipeline_layout, set, &pc, sizeof(pc), frame,
+                      (width + 7) / 8, (height + 7) / 8);
+
+    std::vector<vec3> fb = download_frame(g, frame, width, height);
+    std::uint64_t hash = write_ppm("gpu_path.ppm", fb, width, height, 1.0, true);
+    std::printf("wrote gpu_path.ppm hash=%llu\n", static_cast<unsigned long long>(hash));
+
+    vkDestroyPipeline(g.device, pipeline, nullptr);
+    vkDestroyShaderModule(g.device, module, nullptr);
+    vkDestroyPipelineLayout(g.device, pipeline_layout, nullptr);
+    vkDestroyDescriptorSetLayout(g.device, layout, nullptr);
+    free_buffer(g, frame);
+    free_buffer(g, b_img);
+    free_buffer(g, b_chk);
+    free_buffer(g, b_qd_meta);
+    free_buffer(g, b_qd_alb);
+    free_buffer(g, b_tri_meta);
+    free_buffer(g, b_tri_alb);
+    free_buffer(g, b_sph_meta);
+    free_buffer(g, b_sph_alb);
+    free_buffer(g, b_qd);
+    free_buffer(g, b_tri);
+    free_buffer(g, b_sph);
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -534,7 +841,13 @@ int main(int argc, char **argv)
     Gpu g = init_gpu();
     std::filesystem::path shader_dir = exe_dir(argv[0]) / "shaders";
     std::string mode = (argc > 1) ? argv[1] : "fill";
-    int rc = (mode == "normal") ? run_normal(g, shader_dir) : run_fill(g, shader_dir);
+    int rc = 0;
+    if (mode == "normal")
+        rc = run_normal(g, shader_dir);
+    else if (mode == "path")
+        rc = run_path(g, shader_dir, (argc > 2) ? std::atoi(argv[2]) : 196);
+    else
+        rc = run_fill(g, shader_dir);
     shutdown_gpu(g);
     return rc;
 }

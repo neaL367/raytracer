@@ -31,6 +31,9 @@ public:
         return albedo;
     }
 
+    // Read access for GPU upload.
+    const vec3 &color() const { return albedo; }
+
 private:
     vec3 albedo;
 };
@@ -51,6 +54,11 @@ public:
         double sines = std::sin(inv_scale * p.x()) * std::sin(inv_scale * p.y()) * std::sin(inv_scale * p.z());
         return (sines < 0.0) ? odd->value(u, v, p) : even->value(u, v, p);
     }
+
+    // Read access for GPU upload (even/odd are solid colors in practice).
+    double scale() const { return 1.0 / inv_scale; }
+    const std::shared_ptr<texture> &color_a() const { return even; }
+    const std::shared_ptr<texture> &color_b() const { return odd; }
 
 private:
     double inv_scale;
@@ -91,6 +99,11 @@ public:
     }
 
     bool needs_uv() const override { return true; }
+
+    // Read access for GPU upload.
+    int pixel_width() const { return width; }
+    int pixel_height() const { return height; }
+    const std::vector<unsigned char> &bytes() const { return data; }
 
 private:
     static double clamp01(double t)

@@ -16,6 +16,7 @@ public:
     const vec3 &a() const { return v0; }
     const vec3 &b() const { return v1; }
     const vec3 &c() const { return v2; }
+    const std::shared_ptr<material> &mat_ptr() const { return mat; }
 
     bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const override
     {

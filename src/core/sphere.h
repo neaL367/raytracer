@@ -17,6 +17,7 @@ public:
     // Read access for scene upload to GPU buffers (SoA flattening).
     const vec3 &position() const { return center; }
     double size() const { return radius; }
+    const std::shared_ptr<material> &mat_ptr() const { return mat; }
 
     bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const override
     {
