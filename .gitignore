@@ -48,6 +48,7 @@ build-*/
 
 # Render output
 output.ppm
+gpu_fill.ppm
 
 # CMake generated files
 CMakeFiles/

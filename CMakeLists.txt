@@ -24,3 +24,28 @@ enable_testing()
 add_executable(raytracer_tests tests/test_all.cpp)
 target_include_directories(raytracer_tests PRIVATE src)
 add_test(NAME unit_tests COMMAND raytracer_tests WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# GPU scaffold: headless Vulkan compute (see src/gpu/main.cpp). CPU binary untouched.
+find_package(Vulkan REQUIRED)
+find_program(GLSLC_EXECUTABLE glslc HINTS "$ENV{VULKAN_SDK}/Bin" REQUIRED)
+
+set(GPU_SHADER_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
+file(MAKE_DIRECTORY ${GPU_SHADER_DIR})
+add_custom_command(
+    OUTPUT ${GPU_SHADER_DIR}/fill.spv
+    COMMAND ${GLSLC_EXECUTABLE} -O ${CMAKE_SOURCE_DIR}/src/gpu/shaders/fill.comp
+            -o ${GPU_SHADER_DIR}/fill.spv
+    DEPENDS ${CMAKE_SOURCE_DIR}/src/gpu/shaders/fill.comp
+    COMMENT "compiling fill.comp")
+add_custom_target(gpu_shaders DEPENDS ${GPU_SHADER_DIR}/fill.spv)
+
+add_executable(rt_gpu src/gpu/main.cpp)
+target_include_directories(rt_gpu PRIVATE src)
+target_link_libraries(rt_gpu PRIVATE Vulkan::Vulkan)
+add_dependencies(rt_gpu gpu_shaders)
+add_custom_command(TARGET rt_gpu POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${GPU_SHADER_DIR} $<TARGET_FILE_DIR:rt_gpu>/shaders)
+if(MSVC)
+    target_compile_options(rt_gpu PRIVATE /W4)
+endif()
