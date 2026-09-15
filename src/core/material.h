@@ -4,8 +4,10 @@
 #include "vec3.h"
 #include "hit_record.h"
 #include "random.h"
+#include "onb.h"
 
 #include <cmath>
+#include <numbers>
 
 class material
 {
@@ -14,6 +16,12 @@ public:
     virtual bool scatter(const ray &r_in, const hit_record &rec, vec3 &attenuation, ray &scattered) const = 0;
     // Emitted radiance; black for everything except lights.
     virtual vec3 emitted() const { return vec3(0, 0, 0); }
+    // Solid-angle pdf of having sampled direction scattered from rec. Zero
+    // default: delta materials have no density to report (see specular()).
+    virtual double scattering_pdf(const ray &r_in, const hit_record &rec, const ray &scattered) const
+    {
+        return 0.0;
+    }
     // True for delta distributions (mirror, glass): no finite sampling
     // density exists, so the direct-light estimator skips them and only the
     // bounce is integrated. Temporary seam — the BRDF/pdf refactor replaces
@@ -28,14 +36,21 @@ public:
 
     bool scatter(const ray &r_in, const hit_record &rec, vec3 &attenuation, ray &scattered) const override
     {
-        vec3 scatter_direction = rec.normal + random_unit_vector();
-
-        if (scatter_direction.length_squared() < 1e-8)
-            scatter_direction = rec.normal;
-
-        scattered = ray(rec.point, scatter_direction);
+        // Cosine-weighted hemisphere sample around the normal. Replaces the
+        // old normal-plus-random-sphere hack: that distribution has no clean
+        // closed-form pdf, and MIS needs sampler and pdf to agree exactly.
+        onb basis(rec.normal);
+        vec3 d = random_cosine_direction();
+        vec3 direction = basis.local(d.x(), d.y(), d.z());
+        scattered = ray(rec.point, direction);
         attenuation = albedo;
         return true;
+    }
+
+    double scattering_pdf(const ray &r_in, const hit_record &rec, const ray &scattered) const override
+    {
+        double cos_theta = dot(rec.normal, unit_vector(scattered.direction()));
+        return (cos_theta < 0.0) ? 0.0 : cos_theta / std::numbers::pi;
     }
 
 private:

@@ -30,14 +30,29 @@ public:
     vec3 Li(const ray &r, const hittable &world,
             const std::vector<std::shared_ptr<quad>> &lights, int depth) const override
     {
+        return Li_weighted(r, world, lights, depth, 1.0);
+    }
+
+private:
+    // Balance heuristic: every emission event is weighted by the probability
+    // that the strategy which found it would find it, over all strategies
+    // that could have. Light-sampled emission gets pl/(pl+ps), BSDF-sampled
+    // emission ps/(pl+ps) — the weights sum to 1, so direct light is counted
+    // exactly once instead of twice (explicit ray plus lucky bounce).
+    // Throughput itself stays unweighted: with cosine sampling the
+    // albedo*cos/pdf quotient collapses back to albedo.
+    vec3 Li_weighted(const ray &r, const hittable &world,
+                     const std::vector<std::shared_ptr<quad>> &lights,
+                     int depth, double emission_weight) const
+    {
         if (depth <= 0)
             return vec3(0, 0, 0);
 
         hit_record rec;
         if (!world.hit(r, 0.001, 1000.0, rec))
-            return sky_color(r);
+            return sky_color(r); // background is not an emitter: never weighted
 
-        vec3 color = rec.mat->emitted();
+        vec3 color = rec.mat->emitted() * emission_weight;
 
         ray scattered;
         vec3 attenuation;
@@ -45,9 +60,17 @@ public:
             return color; // emissive surface: no bounce
 
         if (nee && !rec.mat->specular() && !lights.empty())
-            color += direct_light(rec, attenuation, world, lights);
+            color += direct_light(r, rec, attenuation, world, lights);
 
-        return color + attenuation * Li(scattered, world, lights, depth - 1);
+        double bounce_weight = 1.0;
+        if (nee && !rec.mat->specular() && !lights.empty())
+        {
+            double ps = rec.mat->scattering_pdf(r, rec, scattered);
+            double pl = light_pdf(rec.point, unit_vector(scattered.direction()), lights);
+            bounce_weight = (ps + pl > 0.0) ? ps / (ps + pl) : 1.0;
+        }
+
+        return color + attenuation * Li_weighted(scattered, world, lights, depth - 1, bounce_weight);
     }
 
 private:
@@ -61,8 +84,9 @@ private:
     // Next-event estimation: pick one light uniformly, sample a point on it,
     // and test the shadow ray. The uniform area sample (pdf 1/area, times 1/n
     // for the light choice) is converted to solid angle at the shading point:
-    // pdf_dir = dist^2 / (cos_light * area * n).
-    static vec3 direct_light(const hit_record &rec, const vec3 &albedo,
+    // pdf_dir = dist^2 / (cos_light * area * n). Weighted by the balance
+    // heuristic against the BSDF sampling the bounce would have used.
+    static vec3 direct_light(const ray &r_in, const hit_record &rec, const vec3 &albedo,
                              const hittable &world,
                              const std::vector<std::shared_ptr<quad>> &lights)
     {
@@ -84,9 +108,24 @@ private:
         if (world.hit(ray(rec.point, dir), 0.001, dist - 0.001, tmp))
             return vec3(0, 0, 0); // occluded
 
-        double pdf_dir = dist2 / (cos_light * light->area() * static_cast<double>(n));
+        double pdf_light = dist2 / (cos_light * light->area() * static_cast<double>(n));
+        double pdf_bsdf = rec.mat->scattering_pdf(r_in, rec, ray(rec.point, dir));
+        double weight = (pdf_light + pdf_bsdf > 0.0) ? pdf_light / (pdf_light + pdf_bsdf) : 0.0;
         vec3 emission = light->mat_ptr()->emitted();
-        return albedo * emission * cos_surface / pdf_dir;
+        return albedo * emission * cos_surface / pdf_light * weight;
+    }
+
+    // Mixture pdf of the light-sampling strategy: uniform light choice over
+    // per-light solid-angle densities.
+    static double light_pdf(const vec3 &origin, const vec3 &direction,
+                            const std::vector<std::shared_ptr<quad>> &lights)
+    {
+        if (lights.empty())
+            return 0.0;
+        double sum = 0.0;
+        for (const auto &light : lights)
+            sum += light->pdf_value(origin, direction);
+        return sum / static_cast<double>(lights.size());
     }
 
     bool nee;
