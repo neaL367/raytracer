@@ -84,9 +84,10 @@ if(RAYTRACER_OIDN_AVAILABLE)
     target_include_directories(rt_gpu PRIVATE ${OIDN_ROOT}/include)
     target_link_libraries(rt_gpu PRIVATE ${OIDN_ROOT}/lib/OpenImageDenoise.lib)
     target_compile_definitions(rt_gpu PRIVATE RAYTRACER_OIDN=1)
-    add_custom_command(TARGET rt_gpu POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${OIDN_ROOT}/bin $<TARGET_FILE_DIR:rt_gpu>)
+    # No DLL copy here: both binaries share $<TARGET_FILE_DIR:raytracer>,
+    # and parallel POST_BUILD copies to one directory race (MSB3073).
+    # Building rt_gpu alone still gets DLLs via the dependency below.
+    add_dependencies(rt_gpu raytracer)
 endif()
 add_dependencies(rt_gpu gpu_shaders)
 add_custom_command(TARGET rt_gpu POST_BUILD
