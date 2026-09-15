@@ -675,7 +675,8 @@ struct PathPush
     uint32_t img_w, img_h, use_bvh, pad1;
 };
 
-int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool use_bvh, int extra_spheres)
+int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool use_bvh, int extra_spheres,
+             bool use_glass)
 {
     int strat_n = static_cast<int>(std::sqrt(samples + 0.5));
     if (strat_n * strat_n != samples || strat_n <= 0)
@@ -692,6 +693,7 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
     cfg.bench = true;
     cfg.extra_spheres = extra_spheres;
     cfg.do_nee = true;
+    cfg.use_glass = use_glass;
     set_deterministic_rng(true, cfg.bench_seed);
     scene_data scene = build_scene(cfg);
     camera cam = default_camera(0.05);
@@ -944,11 +946,12 @@ int main(int argc, char **argv)
         rc = run_normal(g, shader_dir);
     else if (mode == "path")
     {
-        // path [samples] [flat|bvh] [spheres]: traversal A/B in one binary.
+        // path [samples] [flat|bvh] [spheres] [glass]: traversal A/B in one binary.
         int samples = (argc > 2) ? std::atoi(argv[2]) : 196;
         bool use_bvh = (argc <= 3) || (std::string(argv[3]) != "flat");
         int spheres = (argc > 4) ? std::atoi(argv[4]) : 300;
-        rc = run_path(g, shader_dir, samples, use_bvh, spheres);
+        bool glass = (argc > 5) && (std::string(argv[5]) == "glass");
+        rc = run_path(g, shader_dir, samples, use_bvh, spheres, glass);
     }
     else
         rc = run_fill(g, shader_dir);

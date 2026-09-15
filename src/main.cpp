@@ -112,6 +112,7 @@ int main(int argc, char **argv)
                   << " leaf=" << cfg.max_leaf_size
                   << " ground=" << (cfg.ground_in_bvh ? "in" : "out")
                   << " nee=" << (cfg.do_nee ? "on" : "off")
+                  << " glass=" << (cfg.use_glass ? "on" : "off")
                   << " shade=" << cfg.shade_mode
                   << " rr=" << (cfg.do_rr ? "on" : "off")
                   << " strat=" << (cfg.stratified ? "on" : "off")

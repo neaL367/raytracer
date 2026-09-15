@@ -59,6 +59,13 @@ inline scene_data build_scene(const render_config &cfg)
 
     scene.objects.add(std::make_shared<sphere>(vec3(0, 0, -1), 0.5, material_center));
     scene.objects.add(std::make_shared<sphere>(vec3(1, 0, -1), 0.5, material_right));
+    if (cfg.use_glass)
+    {
+        // Deliberately clear of the center sphere (1.33 apart, radii sum 1.0)
+        // so the parity scene has no interpenetration to argue about.
+        scene.objects.add(std::make_shared<sphere>(vec3(-1.2, 0.3, -0.5), 0.5,
+                                                   std::make_shared<dielectric>(1.5)));
+    }
     scene.objects.add(std::make_shared<triangle>(
         vec3(-1, -1, -2), vec3(1, -1, -2), vec3(0, 1, -2),
         material_triangle));

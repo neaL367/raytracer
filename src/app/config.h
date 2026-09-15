@@ -21,6 +21,9 @@ struct render_config
     bool do_rr = true;
     bool do_strat = true;
     bool do_bilinear = true;
+    // Adds a dielectric sphere for backend parity: the glass branch runs
+    // nowhere in the default scene, and untested shader code is a liability.
+    bool use_glass = false;
     // "full" path tracing or "normal" reference shading (closest-hit
     // normals, no materials/lights/RNG) for backend parity checks.
     std::string shade_mode = "full";
@@ -40,6 +43,7 @@ inline void print_usage(const char *prog)
               << "                     must be a perfect square for stratification)\n"
               << "  --shade MODE       full path tracing (default) or normal reference\n"
               << "                     shading for backend parity checks\n"
+              << "  --glass            add a dielectric sphere (covers the glass branch)\n"
               << "  --depth N          max path depth (default 50)\n"
               << "  --tile N           scheduling strip height in rows (default 8)\n"
               << "  --aperture A       lens aperture (default 0.05; 0 = pinhole)\n"
@@ -106,6 +110,8 @@ inline cli_result parse_cli(int argc, char **argv, render_config &cfg)
                 cfg.do_strat = false;
             else if (arg == "--noblinear")
                 cfg.do_bilinear = false;
+            else if (arg == "--glass")
+                cfg.use_glass = true;
             else if (arg == "--shade")
                 cfg.shade_mode = take_value(i, "--shade", ok);
             else if (arg == "--exposure")

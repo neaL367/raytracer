@@ -50,7 +50,7 @@ tests/        unit tests (no external framework) + PPM compare script
 assets/       mesh + calibration textures (copied next to the binary)
 ```
 
-GPU backends (`rt_gpu fill|normal|path [samples] [flat|bvh] [spheres]`):
+GPU backends (`rt_gpu fill|normal|path [samples] [flat|bvh] [spheres] [glass]`):
 `normal` must match the CPU `--shade normal` reference within
 `tests/compare_ppm.py` tolerances (fp32 vs fp64); `path` holds
 statistical parity (means within a few percent) against `--bench --nee`.
