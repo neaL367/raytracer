@@ -42,11 +42,13 @@ int main()
     // world
     hittable_list world;
 
+    auto material_behind_glass = std::make_shared<lambertian>(vec3(1.0, 1.0, 0.0));
     auto material_ground = std::make_shared<lambertian>(vec3(0.8, 0.8, 0.0));
     auto material_center = std::make_shared<lambertian>(vec3(1.0, 0.0, 0.0));
     auto material_left = std::make_shared<dielectric>(1.5);
     auto material_right = std::make_shared<metal>(vec3(0.8, 0.6, 0.2));
 
+    world.add(std::make_shared<sphere>(vec3(-2.5, 0, -2.5), 0.6, material_behind_glass));
     world.add(std::make_shared<sphere>(vec3(0, -100.5, -1), 100, material_ground));
     world.add(std::make_shared<sphere>(vec3(0, 0, -1), 0.5, material_center));
     world.add(std::make_shared<sphere>(vec3(-1, 0, -1), 0.5, material_left));
