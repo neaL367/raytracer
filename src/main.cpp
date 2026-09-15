@@ -47,6 +47,7 @@ int main(int argc, char **argv)
     // --spheres N sets added random spheres (default 300), --samples N sets
     // samples per pixel (default 200), --tile N sets scheduling strip height
     // in rows (default 8), --leaf N sets BVH leaf capacity (default 2),
+    // --ground outside tests the ground sphere separately from the tree,
     // --seed N sets the fixed RNG seed (default 42).
     bool bench = false;
     int extra_spheres = 300;
@@ -54,6 +55,7 @@ int main(int argc, char **argv)
     int tile_rows = 8;
     unsigned bench_seed = 42u;
     size_t max_leaf_size = 2;
+    bool ground_in_bvh = true;
     for (int i = 1; i < argc; ++i)
     {
         std::string arg = argv[i];
@@ -67,6 +69,8 @@ int main(int argc, char **argv)
             tile_rows = std::stoi(argv[++i]);
         else if (arg == "--leaf" && i + 1 < argc)
             max_leaf_size = static_cast<size_t>(std::stoul(argv[++i]));
+        else if (arg == "--ground" && i + 1 < argc)
+            ground_in_bvh = (std::string(argv[++i]) != "outside");
         else if (arg == "--seed" && i + 1 < argc)
             bench_seed = static_cast<unsigned>(std::stoul(argv[++i]));
     }
@@ -97,7 +101,6 @@ int main(int argc, char **argv)
     for (const auto &tri : mesh->objects_ref())
         flat_objects.add(tri);
 
-    flat_objects.add(std::make_shared<sphere>(vec3(0, -100.5, -1), 100, material_ground));
     flat_objects.add(std::make_shared<sphere>(vec3(0, 0, -1), 0.5, material_center));
     flat_objects.add(std::make_shared<sphere>(vec3(1, 0, -1), 0.5, material_right));
     flat_objects.add(std::make_shared<triangle>(
@@ -111,6 +114,14 @@ int main(int argc, char **argv)
         flat_objects.add(std::make_shared<sphere>(center, 0.2, material_mesh));
     }
 
+    // The ground is a radius-100 sphere whose box overlaps nearly everything.
+    // Inside the tree it poisons every ancestor box it touches; tested
+    // separately the tree only holds finite objects. Closest-hit logic makes
+    // both placements render identically — this flag measures the cost gap.
+    auto ground = std::make_shared<sphere>(vec3(0, -100.5, -1), 100, material_ground);
+    if (ground_in_bvh)
+        flat_objects.add(ground);
+
     std::cout << "Total flat primitives: " << flat_objects.size() << "\n";
 
     // --- build the BVH once, from the fully flattened list ---
@@ -118,6 +129,8 @@ int main(int argc, char **argv)
     hittable_list bvh_world;
     auto bvh_root = std::make_shared<bvh_node>(flat_objects, max_leaf_size);
     bvh_world.add(bvh_root);
+    if (!ground_in_bvh)
+        bvh_world.add(ground);
     auto bvh_end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> bvh_elapsed = bvh_end - bvh_start;
 
@@ -267,6 +280,7 @@ int main(int argc, char **argv)
                   << " samples=" << samples_per_pixel
                   << " tile_rows=" << tile_rows
                   << " leaf=" << max_leaf_size
+                  << " ground=" << (ground_in_bvh ? "in" : "out")
                   << " threads=" << num_threads << "\n";
         std::cout << "[bench] bvh_build=" << bvh_elapsed.count() << "s"
                   << " nodes=" << bvh_nodes

@@ -13,6 +13,14 @@ public:
     const vec3 &min() const { return minimum; }
     const vec3 &max() const { return maximum; }
 
+    // Surface area: 2(xy + yz + zx) of the box sides. Used to weigh split
+    // candidates — a ray hits a box with probability proportional to this.
+    double surface_area() const
+    {
+        vec3 d = maximum - minimum;
+        return 2.0 * (d.x() * d.y() + d.y() * d.z() + d.z() * d.x());
+    }
+
     bool hit(const ray &r, double t_min, double t_max) const
     {
         count_box_test();
