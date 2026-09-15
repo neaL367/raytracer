@@ -7,6 +7,8 @@
 #include "../core/camera.h"
 #include "../core/material.h"
 #include "../core/quad.h"
+#include "../core/texture.h"
+#include "../io/oidn_denoise.h"
 #include "../core/sphere.h"
 #include "../core/triangle.h"
 #include "../io/ppm.h"
@@ -1219,11 +1221,70 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
 
 } // namespace
 
+// File mode: denoise tonemapped PPMs (color + guides) with OIDN in LDR.
+// Denoises any of this project's outputs — CPU or GPU renders alike —
+// without re-rendering. LDR in, LDR out: no tonemap on either side.
+int run_oidn_files(const char *color_path, const char *albedo_path, const char *normal_path,
+                   const char *out_path)
+{
+    image_texture color(color_path), albedo(albedo_path), normal(normal_path);
+    if (color.bytes().empty() || albedo.bytes().empty() || normal.bytes().empty())
+        return 1;
+    if (color.pixel_width() != albedo.pixel_width() || color.pixel_height() != albedo.pixel_height() ||
+        color.pixel_width() != normal.pixel_width() || color.pixel_height() != normal.pixel_height())
+    {
+        std::fprintf(stderr, "oidn: guide dimensions must match color\n");
+        return 1;
+    }
+    int w = color.pixel_width();
+    int h = color.pixel_height();
+    size_t px = static_cast<size_t>(w) * h;
+    auto to_float = [&](const image_texture &t) {
+        std::vector<float> f(px * 3);
+        const auto &b = t.bytes();
+        for (size_t i = 0; i < px * 3; ++i)
+            f[i] = b[i] / 255.0f;
+        return f;
+    };
+    std::vector<float> c = to_float(color);
+    std::vector<float> a = to_float(albedo);
+    std::vector<float> n = to_float(normal);
+    if (!oidn_denoise_rt(c.data(), a.data(), n.data(), w, h, false))
+        return 1;
+    std::ofstream out(out_path);
+    if (!out)
+    {
+        std::fprintf(stderr, "oidn: cannot write %s\n", out_path);
+        return 1;
+    }
+    out << "P3\n" << w << ' ' << h << "\n255\n";
+    for (size_t i = 0; i < px; ++i)
+    {
+        auto q = [](float v) {
+            int b = static_cast<int>(255.999f * v);
+            return std::min(255, std::max(0, b));
+        };
+        out << q(c[i * 3]) << ' ' << q(c[i * 3 + 1]) << ' ' << q(c[i * 3 + 2]) << '\n';
+    }
+    std::printf("wrote %s\n", out_path);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
+    std::string mode = (argc > 1) ? argv[1] : "fill";
+    // File mode needs no device: handle before Vulkan init.
+    if (mode == "oidn")
+    {
+        if (argc != 6)
+        {
+            std::fprintf(stderr, "usage: rt_gpu oidn color.ppm albedo.ppm normal.ppm out.ppm\n");
+            return 1;
+        }
+        return run_oidn_files(argv[2], argv[3], argv[4], argv[5]);
+    }
     Gpu g = init_gpu();
     std::filesystem::path shader_dir = exe_dir(argv[0]) / "shaders";
-    std::string mode = (argc > 1) ? argv[1] : "fill";
     int rc = 0;
     if (mode == "normal")
         rc = run_normal(g, shader_dir);

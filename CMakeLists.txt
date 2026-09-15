@@ -77,9 +77,17 @@ foreach(shader fill normal path)
 endforeach()
 add_custom_target(gpu_shaders DEPENDS ${GPU_SHADERS_COMPILED})
 
-add_executable(rt_gpu src/gpu/main.cpp src/io/stb_image.cpp)
+add_executable(rt_gpu src/gpu/main.cpp src/io/stb_image.cpp src/io/oidn_denoise.cpp)
 target_include_directories(rt_gpu PRIVATE src external/stb)
 target_link_libraries(rt_gpu PRIVATE Vulkan::Vulkan)
+if(RAYTRACER_OIDN_AVAILABLE)
+    target_include_directories(rt_gpu PRIVATE ${OIDN_ROOT}/include)
+    target_link_libraries(rt_gpu PRIVATE ${OIDN_ROOT}/lib/OpenImageDenoise.lib)
+    target_compile_definitions(rt_gpu PRIVATE RAYTRACER_OIDN=1)
+    add_custom_command(TARGET rt_gpu POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${OIDN_ROOT}/bin $<TARGET_FILE_DIR:rt_gpu>)
+endif()
 add_dependencies(rt_gpu gpu_shaders)
 add_custom_command(TARGET rt_gpu POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory

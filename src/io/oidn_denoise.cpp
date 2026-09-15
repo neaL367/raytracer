@@ -8,7 +8,8 @@
 #ifdef RAYTRACER_OIDN
 #include <OpenImageDenoise/oidn.h>
 
-bool oidn_denoise_rt(float *color, const float *albedo, const float *normal, int width, int height)
+bool oidn_denoise_rt(float *color, const float *albedo, const float *normal, int width, int height,
+                     bool hdr)
 {
     // Explicit CPU: DEFAULT probes GPU runtimes first, which is both slower
     // to initialize and fragile on mixed systems. This renderer is CPU-fed;
@@ -24,7 +25,7 @@ bool oidn_denoise_rt(float *color, const float *albedo, const float *normal, int
     oidnSetSharedFilterImage(filter, "normal", const_cast<float *>(normal), OIDN_FORMAT_FLOAT3,
                              width, height, 0, 0, 0);
     oidnSetSharedFilterImage(filter, "output", color, OIDN_FORMAT_FLOAT3, width, height, 0, 0, 0);
-    oidnSetFilterBool(filter, "hdr", true);
+    oidnSetFilterBool(filter, "hdr", hdr);
     oidnSetFilterBool(filter, "cleanAux", true); // guides use full sampling: treat as noise-free
     oidnSetFilterInt(filter, "maxMemoryMB", 2048);
     oidnCommitFilter(filter);
@@ -40,7 +41,7 @@ bool oidn_denoise_rt(float *color, const float *albedo, const float *normal, int
 
 #else
 
-bool oidn_denoise_rt(float *, const float *, const float *, int, int)
+bool oidn_denoise_rt(float *, const float *, const float *, int, int, bool)
 {
     std::fprintf(stderr, "oidn: not compiled in (configure with -DRAYTRACER_OIDN=ON)\n");
     return false;

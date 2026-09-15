@@ -55,8 +55,8 @@ assets/       mesh + calibration textures (copied next to the binary)
 ```
 
 GPU backends (`rt_gpu fill|normal|path [samples] [flat|bvh] [spheres] [glass] [WxH] [fog] [aperture]`,
-`rt_gpu probe [samples] [spheres]`): `normal` must match
-the CPU `--shade normal` reference within `tests/compare_ppm.py`
+`rt_gpu probe [samples] [spheres]`, `rt_gpu oidn color.ppm albedo.ppm normal.ppm out.ppm`):
+`normal` must match the CPU `--shade normal` reference within `tests/compare_ppm.py`
 tolerances (fp32 vs fp64); `path` holds statistical parity (means within
 a few percent) against `--bench --nee`.
 The device traverses the same SAH tree (flattened upload); `flat` keeps
