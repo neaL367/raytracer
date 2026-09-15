@@ -1,4 +1,5 @@
 #pragma once      // include guard: prevents this header's contents being seen twice in one translation unit
+
 #include "vec3.h" // include the vec3 class definition, as rays are defined by a point and a direction in 3D space
 
 class ray // represents a ray in 3D space, defined by an origin point and a direction vector

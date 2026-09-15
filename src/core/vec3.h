@@ -54,6 +54,11 @@ vec3 operator*(double t, const vec3 &v) // scalar * vector: reorders arguments a
     return v * t;
 }
 
+vec3 operator*(const vec3 &u, const vec3 &v) // vector * vector: component-wise multiplication, not a dot or cross product
+{
+    return vec3(u.x() * v.x(), u.y() * v.y(), u.z() * v.z());
+}
+
 vec3 operator/(const vec3 &v, double t) // vector / scalar: implemented as multiply-by-reciprocal, not direct division
 {
     return v * (1.0 / t);
@@ -79,4 +84,9 @@ vec3 cross(const vec3 &u, const vec3 &v) // cross product: returns a vector perp
 vec3 unit_vector(const vec3 &v) // returns a new vector in the same direction as v but with length 1, useful for normalization
 {
     return v / v.length();
+}
+
+vec3 reflect(const vec3 &v, const vec3 &n)
+{
+    return v - 2 * dot(v, n) * n;
 }

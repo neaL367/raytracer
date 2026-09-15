@@ -1,6 +1,8 @@
 #pragma once
-#include <cstdlib>
+
 #include "vec3.h"
+
+#include <cstdlib>
 
 inline double random_double()
 {
