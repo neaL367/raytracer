@@ -6,6 +6,8 @@
 *.lo
 *.o
 *.obj
+# ...except the raytracer's mesh asset, which genuinely is a .obj file
+!assets/model.obj
 
 # Precompiled Headers
 *.gch
@@ -43,6 +45,9 @@
 build/
 Build/
 build-*/
+
+# Render output
+output.ppm
 
 # CMake generated files
 CMakeFiles/

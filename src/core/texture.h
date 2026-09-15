@@ -26,7 +26,7 @@ class solid_color : public texture
 public:
     solid_color(const vec3 &albedo) : albedo(albedo) {}
 
-    vec3 value(double u, double v, const vec3 &p) const override
+    vec3 value(double, double, const vec3 &) const override
     {
         return albedo;
     }
@@ -67,7 +67,7 @@ class image_texture : public texture
 public:
     image_texture(const char *filename, bool bilinear = true) : bilinear(bilinear) { load_ppm(filename); }
 
-    vec3 value(double u, double v, const vec3 &p) const override
+    vec3 value(double u, double v, const vec3 &) const override
     {
         if (data.empty())
             return vec3(1, 0, 1); // magenta = missing texture, never silent

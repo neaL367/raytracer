@@ -1,0 +1,14 @@
+# Style target for this repo (LLVM base, adjusted to match existing code).
+# clang-format is not installed in this environment, so this file documents
+# intent and applies to new code; run clang-format --dry-run -Werror in CI
+# once the tool is available.
+BasedOnStyle: LLVM
+Language: Cpp
+IndentWidth: 4
+ColumnLimit: 120
+BreakBeforeBraces: Allman
+PointerAlignment: Right
+ReferenceAlignment: Right
+AllowShortFunctionsOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: false
+SortIncludes: false

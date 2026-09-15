@@ -20,7 +20,7 @@ public:
     virtual vec3 emitted() const { return vec3(0, 0, 0); }
     // Solid-angle pdf of having sampled direction scattered from rec. Zero
     // default: delta materials have no density to report (see specular()).
-    virtual double scattering_pdf(const ray &r_in, const hit_record &rec, const ray &scattered) const
+    virtual double scattering_pdf(const ray &, const hit_record &, const ray &) const
     {
         return 0.0;
     }
@@ -40,7 +40,7 @@ public:
     lambertian(const vec3 &albedo) : lambertian(std::make_shared<solid_color>(albedo)) {}
     lambertian(std::shared_ptr<texture> albedo) : albedo(albedo) {}
 
-    bool scatter(const ray &r_in, const hit_record &rec, vec3 &attenuation, ray &scattered) const override
+    bool scatter(const ray &, const hit_record &rec, vec3 &attenuation, ray &scattered) const override
     {
         // Cosine-weighted hemisphere sample around the normal. Replaces the
         // old normal-plus-random-sphere hack: that distribution has no clean
@@ -53,7 +53,7 @@ public:
         return true;
     }
 
-    double scattering_pdf(const ray &r_in, const hit_record &rec, const ray &scattered) const override
+    double scattering_pdf(const ray &, const hit_record &rec, const ray &scattered) const override
     {
         double cos_theta = dot(rec.normal, unit_vector(scattered.direction()));
         return (cos_theta < 0.0) ? 0.0 : cos_theta / std::numbers::pi;
@@ -128,7 +128,7 @@ class diffuse_light : public material
 public:
     diffuse_light(const vec3 &emit_color) : emit_color(emit_color) {}
 
-    bool scatter(const ray &r_in, const hit_record &rec, vec3 &attenuation, ray &scattered) const override
+    bool scatter(const ray &, const hit_record &, vec3 &, ray &) const override
     {
         return false; // lights emit; they never bounce
     }

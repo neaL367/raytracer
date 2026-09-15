@@ -112,7 +112,7 @@ private:
                              const std::vector<std::shared_ptr<quad>> &lights)
     {
         size_t n = lights.size();
-        size_t idx = (n == 1) ? 0 : std::min(n - 1, static_cast<size_t>(random_double(0, n)));
+        size_t idx = (n == 1) ? 0 : std::min(n - 1, static_cast<size_t>(random_double(0.0, static_cast<double>(n))));
         const auto &light = lights[idx];
 
         vec3 to_light = light->sample() - rec.point;
