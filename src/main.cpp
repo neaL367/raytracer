@@ -46,12 +46,14 @@ int main(int argc, char **argv)
     // Optional flags: --bench prints timing/counter report with fixed RNG seed,
     // --spheres N sets added random spheres (default 300), --samples N sets
     // samples per pixel (default 200), --tile N sets scheduling strip height
-    // in rows (default 8), --seed N sets the fixed RNG seed (default 42).
+    // in rows (default 8), --leaf N sets BVH leaf capacity (default 2),
+    // --seed N sets the fixed RNG seed (default 42).
     bool bench = false;
     int extra_spheres = 300;
     int samples_per_pixel = 200;
     int tile_rows = 8;
     unsigned bench_seed = 42u;
+    size_t max_leaf_size = 2;
     for (int i = 1; i < argc; ++i)
     {
         std::string arg = argv[i];
@@ -63,6 +65,8 @@ int main(int argc, char **argv)
             samples_per_pixel = std::stoi(argv[++i]);
         else if (arg == "--tile" && i + 1 < argc)
             tile_rows = std::stoi(argv[++i]);
+        else if (arg == "--leaf" && i + 1 < argc)
+            max_leaf_size = static_cast<size_t>(std::stoul(argv[++i]));
         else if (arg == "--seed" && i + 1 < argc)
             bench_seed = static_cast<unsigned>(std::stoul(argv[++i]));
     }
@@ -112,7 +116,7 @@ int main(int argc, char **argv)
     // --- build the BVH once, from the fully flattened list ---
     auto bvh_start = std::chrono::high_resolution_clock::now();
     hittable_list bvh_world;
-    auto bvh_root = std::make_shared<bvh_node>(flat_objects);
+    auto bvh_root = std::make_shared<bvh_node>(flat_objects, max_leaf_size);
     bvh_world.add(bvh_root);
     auto bvh_end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> bvh_elapsed = bvh_end - bvh_start;
@@ -262,6 +266,7 @@ int main(int argc, char **argv)
                   << " spheres=" << extra_spheres
                   << " samples=" << samples_per_pixel
                   << " tile_rows=" << tile_rows
+                  << " leaf=" << max_leaf_size
                   << " threads=" << num_threads << "\n";
         std::cout << "[bench] bvh_build=" << bvh_elapsed.count() << "s"
                   << " nodes=" << bvh_nodes
