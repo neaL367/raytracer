@@ -46,9 +46,9 @@ build/
 Build/
 build-*/
 
-# Render output
-output.ppm
-gpu_fill.ppm
+# Render output (all PPMs except committed assets)
+*.ppm
+!assets/*.ppm
 
 # CMake generated files
 CMakeFiles/
