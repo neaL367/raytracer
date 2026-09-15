@@ -36,7 +36,7 @@ int main()
     // image
     const int image_width = 400;
     const int image_height = static_cast<int>(image_width / (16.0 / 9.0));
-    const int samples_per_pixel = 4;
+    const int samples_per_pixel = 100;
     const int max_depth = 50;
 
     // world
@@ -55,7 +55,12 @@ int main()
     world.add(std::make_shared<sphere>(vec3(1, 0, -1), 0.5, material_right));
 
     // camera
-    camera cam;
+    vec3 lookfrom(3, 3, 2);
+    vec3 lookat(0, 0, -1);
+    vec3 vup(0, 1, 0);
+    double dist_to_focus = (lookfrom - lookat).length();
+    double aperture = 1.0;
+    camera cam(lookfrom, lookat, vup, 20, 16.0 / 9.0, aperture, dist_to_focus);
 
     // render
     std::ofstream out("output.ppm");
@@ -68,12 +73,12 @@ int main()
         {
             vec3 pixel_color(0, 0, 0);
 
-            for (int s = 0; s < samples_per_pixel; ++s)
+            for (int sample = 0; sample < samples_per_pixel; ++sample)
             {
-                double u = (i + random_double()) / (image_width - 1);
-                double v = (j + random_double()) / (image_height - 1);
+                double s = (i + random_double()) / (image_width - 1);
+                double t = (j + random_double()) / (image_height - 1);
 
-                ray r = cam.get_ray(u, v);
+                ray r = cam.get_ray(s, t);
                 pixel_color += ray_color(r, world, max_depth);
             }
 
