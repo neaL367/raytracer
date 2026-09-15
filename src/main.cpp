@@ -20,26 +20,31 @@
 #include <string>
 #include <cstdint>
 #include <algorithm>
+#include <cmath>
 
 int main(int argc, char **argv)
 {
     // Optional flags: --bench prints timing/counter report with fixed RNG seed,
     // --spheres N sets added random spheres (default 300), --samples N sets
-    // samples per pixel (default 200), --tile N sets scheduling strip height
-    // in rows (default 8), --leaf N sets BVH leaf capacity (default 2),
-    // --ground outside tests the ground sphere separately from the tree,
-    // --nee enables next-event estimation against an overhead area light,
-    // --norr disables russian roulette (paths always run to full depth),
-    // --seed N sets the fixed RNG seed (default 42).
+    // samples per pixel (default 196 = 14x14 strata; must be a perfect square
+    // for stratification, otherwise plain jitter is used), --tile N sets
+    // scheduling strip height in rows (default 8), --leaf N sets BVH leaf
+    // capacity (default 2), --ground outside tests the ground sphere
+    // separately from the tree, --nee enables next-event estimation
+    // against an overhead area light, --norr disables russian roulette
+    // (paths always run to full depth), --nostrat disables stratified
+    // pixel sampling (pure jitter instead), --seed N sets the fixed
+    // RNG seed (default 42).
     bool bench = false;
     int extra_spheres = 300;
-    int samples_per_pixel = 200;
+    int samples_per_pixel = 196;
     int tile_rows = 8;
     unsigned bench_seed = 42u;
     size_t max_leaf_size = 2;
     bool ground_in_bvh = true;
     bool do_nee = false;
     bool do_rr = true;
+    bool do_strat = true;
     for (int i = 1; i < argc; ++i)
     {
         std::string arg = argv[i];
@@ -59,6 +64,8 @@ int main(int argc, char **argv)
             do_nee = true;
         else if (arg == "--norr")
             do_rr = false;
+        else if (arg == "--nostrat")
+            do_strat = false;
         else if (arg == "--seed" && i + 1 < argc)
             bench_seed = static_cast<unsigned>(std::stoul(argv[++i]));
     }
@@ -68,6 +75,15 @@ int main(int argc, char **argv)
         set_deterministic_rng(true, bench_seed);
 
     auto total_start = std::chrono::high_resolution_clock::now();
+
+    // Stratified pixel sampling: the pixel is an n x n grid of strata with
+    // one jittered sample each, so samples spread evenly instead of clumping.
+    // Needs a perfect square count; anything else (or --nostrat) falls back
+    // to plain jitter, which draws every sample over the whole pixel.
+    int strat_n = static_cast<int>(std::sqrt(samples_per_pixel + 0.5));
+    bool stratified = do_strat && strat_n * strat_n == samples_per_pixel && strat_n > 0;
+    if (bench && do_strat && !stratified)
+        std::cout << "[bench] samples=" << samples_per_pixel << " not square: jitter fallback\n";
 
     const int image_width = 800;
     const int image_height = static_cast<int>(image_width / (16.0 / 9.0));
@@ -200,8 +216,18 @@ int main(int argc, char **argv)
 
                 for (int sample = 0; sample < samples_per_pixel; ++sample)
                 {
-                    double s = (i + random_double()) / (image_width - 1);
-                    double t = (j + random_double()) / (image_height - 1);
+                    // Stratum (sx, sy) from the sample index; the jitter stays
+                    // inside it. Same two random draws per sample as jitter,
+                    // only the mapping from draw to pixel position changes.
+                    double ox = random_double();
+                    double oy = random_double();
+                    if (stratified)
+                    {
+                        ox = ((sample % strat_n) + ox) / strat_n;
+                        oy = ((sample / strat_n) + oy) / strat_n;
+                    }
+                    double s = (i + ox) / (image_width - 1);
+                    double t = (j + oy) / (image_height - 1);
 
                     ray r = cam.get_ray(s, t);
                     pixel_color += tracer->Li(r, bvh_world, lights, max_depth);
@@ -291,6 +317,7 @@ int main(int argc, char **argv)
                   << " ground=" << (ground_in_bvh ? "in" : "out")
                   << " nee=" << (do_nee ? "on" : "off")
                   << " rr=" << (do_rr ? "on" : "off")
+                  << " strat=" << (stratified ? "on" : "off")
                   << " threads=" << num_threads << "\n";
         std::cout << "[bench] bvh_build=" << bvh_elapsed.count() << "s"
                   << " nodes=" << bvh_nodes
