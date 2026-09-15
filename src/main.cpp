@@ -113,6 +113,7 @@ int main()
 
                     ray r = cam.get_ray(s, t);
                     pixel_color += ray_color(r, bvh_world, max_depth);
+                    // pixel_color += ray_color(r, flat_objects, max_depth);
                 }
 
                 double scale = 1.0 / samples_per_pixel;

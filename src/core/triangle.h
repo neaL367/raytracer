@@ -59,7 +59,10 @@ public:
             std::fmax(std::fmax(v0.x(), v1.x()), v2.x()),
             std::fmax(std::fmax(v0.y(), v1.y()), v2.y()),
             std::fmax(std::fmax(v0.z(), v1.z()), v2.z()));
-        output_box = aabb(small, big);
+
+        const double padding = 0.0001;
+        vec3 pad(padding, padding, padding);
+        output_box = aabb(small - pad, big + pad);
         return true;
     }
 
