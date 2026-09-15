@@ -50,10 +50,11 @@ tests/        unit tests (no external framework) + PPM compare script
 assets/       mesh + calibration textures (copied next to the binary)
 ```
 
-GPU backends (`rt_gpu fill|normal|path [samples] [flat|bvh] [spheres] [glass]`):
-`normal` must match the CPU `--shade normal` reference within
-`tests/compare_ppm.py` tolerances (fp32 vs fp64); `path` holds
-statistical parity (means within a few percent) against `--bench --nee`.
+GPU backends (`rt_gpu fill|normal|path [samples] [flat|bvh] [spheres] [glass] [WxH]`,
+`rt_gpu probe [samples] [spheres]`): `normal` must match
+the CPU `--shade normal` reference within `tests/compare_ppm.py`
+tolerances (fp32 vs fp64); `path` holds statistical parity (means within
+a few percent) against `--bench --nee`.
 The device traverses the same SAH tree (flattened upload); `flat` keeps
 the brute-force loop for A/B. Measured: tree and loop agree bit-exactly
 at 316 prims (brute force wins SIMT there), 4.5x tree win at 3000.
@@ -61,3 +62,6 @@ Every dispatch reports device-side milliseconds (`[gpu] dispatch=`) via
 timestamp queries — wall clock includes scene build, upload, and PPM
 write, so the dispatch line is the honest number (e.g. 412ms device vs
 26s CPU render on the 196spp bench scene).
+`probe` prints a per-pixel path-length histogram: mean 1.64 segments at
+64spp with 93% of pixels at ~1 — too tight a distribution for wavefront
+compaction to pay off (see commit message for the full verdict).

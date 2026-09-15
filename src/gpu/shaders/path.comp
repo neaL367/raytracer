@@ -19,7 +19,7 @@ layout(push_constant) uniform Push
     vec4 vert;
     uvec4 meta;  // width, height, n_spheres, n_tris
     uvec4 meta2; // n_quads, samples, strat_n, max_depth
-    uvec4 meta3; // img0 width, img0 height, use_bvh, 0
+    uvec4 meta3; // img0 width, img0 height, use_bvh, probe
 } pc;
 
 layout(binding = 0) readonly buffer Spheres
@@ -99,6 +99,17 @@ layout(binding = 13) readonly buffer BvhLink
 {
     ivec4 bl[];
 };
+
+// Divergence probe: per-pixel segment counter for host histograms. Written
+// only when meta3.w is set; always bound (statically used bindings need
+// valid descriptors whether or not the branch takes them).
+layout(binding = 14) buffer Probe
+{
+    uint probe_counts[];
+};
+
+// Segments traced by the current sample; main() accumulates per pixel.
+uint g_segments;
 
 // --- hash RNG: unique stream per (pixel, sample), no shared state ---------
 uint rng_state;
@@ -453,6 +464,7 @@ vec3 trace(vec3 o, vec3 d, int max_depth)
 
     for (int depth = max_depth; depth > 0; --depth)
     {
+        g_segments += 1u;
         // Closest hit, gathering material on the way. Tree walk and flat
         // scan share the intersectors; only the traversal differs, so the
         // flag below isolates traversal cost with identical shading.
@@ -660,6 +672,7 @@ void main()
     int max_depth = int(pc.meta2.w);
 
     vec3 pixel = vec3(0.0);
+    uint segs = 0u;
     for (uint s_idx = 0u; s_idx < samples; ++s_idx)
     {
         // Unique decorrelated stream per (pixel, sample).
@@ -674,7 +687,9 @@ void main()
         float t = (float(y) + oy) / float(h - 1u);
         vec3 o = pc.origin.xyz;
         vec3 d = pc.llc.xyz + s * pc.horiz.xyz + t * pc.vert.xyz - o;
+        g_segments = 0u;
         pixel += trace(o, d, max_depth);
+        segs += g_segments;
     }
     pixel /= float(samples);
 
@@ -682,4 +697,6 @@ void main()
     pixels[i + 0u] = pixel.x;
     pixels[i + 1u] = pixel.y;
     pixels[i + 2u] = pixel.z;
+    if (pc.meta3.w != 0u)
+        probe_counts[y * w + x] = segs;
 }

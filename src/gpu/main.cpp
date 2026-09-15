@@ -778,11 +778,11 @@ struct PathPush
     float vert[4];
     uint32_t width, height, n_spheres, n_tris;
     uint32_t n_quads, samples, strat_n, max_depth;
-    uint32_t img_w, img_h, use_bvh, pad1;
+    uint32_t img_w, img_h, use_bvh, probe;
 };
 
 int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool use_bvh, int extra_spheres,
-             bool use_glass, uint32_t wg_x, uint32_t wg_y)
+             bool use_glass, uint32_t wg_x, uint32_t wg_y, bool probe)
 {
     int strat_n = static_cast<int>(std::sqrt(samples + 0.5));
     if (strat_n * strat_n != samples || strat_n <= 0)
@@ -972,8 +972,19 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
                                dev_props);
     Buffer staging = make_buffer(g, frame_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    // Probe buffer: per-pixel segment totals for the divergence histogram.
+    // Always bound (statically used), written only in probe mode.
+    const VkDeviceSize probe_bytes = static_cast<VkDeviceSize>(width) * height * sizeof(uint32_t);
+    Buffer probe_buf = make_buffer(g, probe_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    {
+        void *zero = nullptr;
+        VK_CHECK(vkMapMemory(g.device, probe_buf.memory, 0, probe_bytes, 0, &zero));
+        std::memset(zero, 0, static_cast<size_t>(probe_bytes));
+        vkUnmapMemory(g.device, probe_buf.memory);
+    }
 
-    VkDescriptorSetLayout layout = make_layout(g, 14);
+    VkDescriptorSetLayout layout = make_layout(g, 15);
     VkPushConstantRange push = {};
     push.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     push.size = sizeof(PathPush);
@@ -988,7 +999,8 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
 
     VkDescriptorSet set = bind_buffers(g, layout, {b_sph, b_tri, b_qd, b_sph_alb, b_sph_meta,
                                                    b_tri_alb, b_tri_meta, b_qd_alb, b_qd_meta,
-                                                   b_chk, b_img, frame, b_bvh_box, b_bvh_link});
+                                                   b_chk, b_img, frame, b_bvh_box, b_bvh_link,
+                                                   probe_buf});
     VkShaderModule module = load_shader(g, shader_dir / "path.spv");
     // Workgroup size resolves the shader's specialization constants: same
     // SPIR-V for every occupancy experiment below.
@@ -1028,20 +1040,62 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
     pc.img_w = img_w;
     pc.img_h = img_h;
     pc.use_bvh = use_bvh ? 1u : 0u;
+    pc.probe = probe ? 1u : 0u;
 
     dispatch_and_wait(g, pipeline, pipeline_layout, set, &pc, sizeof(pc), frame,
                       (width + wg_x - 1) / wg_x, (height + wg_y - 1) / wg_y, &staging);
 
     std::vector<vec3> fb = download_frame(g, staging, width, height);
     std::string out_name = use_bvh ? "gpu_path.ppm" : "gpu_path_flat.ppm";
+    if (probe)
+        out_name = "gpu_probe.ppm";
     std::uint64_t hash = write_ppm(out_name, fb, width, height, 1.0, true);
     std::printf("wrote %s hash=%llu\n", out_name.c_str(), static_cast<unsigned long long>(hash));
+
+    if (probe)
+    {
+        // Path-length histogram: segments per pixel across all samples.
+        // Wide spread = threads in a warp retire at wildly different times =
+        // what wavefront compaction would fix. Tight = megakernel is fine.
+        void *mapped = nullptr;
+        VK_CHECK(vkMapMemory(g.device, probe_buf.memory, 0, probe_bytes, 0, &mapped));
+        const uint32_t *counts = static_cast<const uint32_t *>(mapped);
+        size_t total_px = static_cast<size_t>(width) * height;
+        std::vector<size_t> hist(64, 0);
+        size_t over = 0;
+        uint64_t sum = 0;
+        uint32_t mx = 0;
+        for (size_t i = 0; i < total_px; ++i)
+        {
+            uint32_t c = counts[i];
+            sum += c;
+            if (c > mx)
+                mx = c;
+            // Bucket by mean segments per sample (0..63, overflow last).
+            size_t b = (c / static_cast<uint32_t>(samples >= 1 ? samples : 1));
+            if (b > 63)
+            {
+                b = 63;
+                ++over;
+            }
+            hist[b]++;
+        }
+        vkUnmapMemory(g.device, probe_buf.memory);
+        double mean = static_cast<double>(sum) / total_px / samples;
+        std::printf("[probe] mean_segs_per_sample=%.2f max_total=%u\n", mean, mx);
+        std::printf("[probe] buckets(mean segs : pixels):");
+        for (size_t b = 0; b < 64; ++b)
+            if (hist[b] > 0)
+                std::printf(" %zu:%zu", b, hist[b]);
+        std::printf(" over63:%zu\n", over);
+    }
 
     vkDestroyPipeline(g.device, pipeline, nullptr);
     vkDestroyShaderModule(g.device, module, nullptr);
     vkDestroyPipelineLayout(g.device, pipeline_layout, nullptr);
     vkDestroyDescriptorSetLayout(g.device, layout, nullptr);
     free_buffer(g, staging);
+    free_buffer(g, probe_buf);
     free_buffer(g, frame);
     free_buffer(g, b_bvh_link);
     free_buffer(g, b_bvh_box);
@@ -1069,10 +1123,12 @@ int main(int argc, char **argv)
     int rc = 0;
     if (mode == "normal")
         rc = run_normal(g, shader_dir);
-    else if (mode == "path")
+    else if (mode == "path" || mode == "probe")
     {
         // path [samples] [flat|bvh] [spheres] [glass] [WxH]: traversal A/B
-        // plus workgroup occupancy in one binary.
+        // plus workgroup occupancy in one binary. probe [samples] [spheres]:
+        // same render plus a per-pixel path-length histogram for the
+        // divergence verdict (stdout, no image comparison needed).
         int samples = (argc > 2) ? std::atoi(argv[2]) : 196;
         bool use_bvh = (argc <= 3) || (std::string(argv[3]) != "flat");
         int spheres = (argc > 4) ? std::atoi(argv[4]) : 300;
@@ -1095,7 +1151,16 @@ int main(int argc, char **argv)
                 return 1;
             }
         }
-        rc = run_path(g, shader_dir, samples, use_bvh, spheres, glass, wg_x, wg_y);
+        if (mode == "probe")
+        {
+            // Probe defaults mirror the parity scene; explicit flags win.
+            if (argc <= 2)
+                samples = 64;
+            if (argc <= 4)
+                spheres = 300;
+            use_bvh = true;
+        }
+        rc = run_path(g, shader_dir, samples, use_bvh, spheres, glass, wg_x, wg_y, mode == "probe");
     }
     else
         rc = run_fill(g, shader_dir);
