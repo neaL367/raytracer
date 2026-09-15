@@ -92,7 +92,8 @@ int main(int argc, char **argv)
     // --- build a FLAT list of every individual primitive, no nested hittable_lists ---
     hittable_list flat_objects;
 
-    auto material_ground = std::make_shared<lambertian>(vec3(0.8, 0.8, 0.0));
+    auto material_ground = std::make_shared<lambertian>(
+        std::make_shared<checker_texture>(0.32, vec3(0.8, 0.8, 0.8), vec3(0.2, 0.2, 0.2)));
     auto material_center = std::make_shared<lambertian>(vec3(1.0, 0.0, 0.0));
     auto material_right = std::make_shared<metal>(vec3(0.8, 0.6, 0.2));
     auto material_triangle = std::make_shared<lambertian>(vec3(0.2, 0.8, 0.2));

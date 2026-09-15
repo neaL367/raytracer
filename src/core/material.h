@@ -5,8 +5,10 @@
 #include "hit_record.h"
 #include "random.h"
 #include "onb.h"
+#include "texture.h"
 
 #include <cmath>
+#include <memory>
 #include <numbers>
 
 class material
@@ -22,6 +24,9 @@ public:
     {
         return 0.0;
     }
+    // True when shading needs surface parametrization (image maps). Lets
+    // primitives skip UV math — acos/atan2 per hit — nobody will read.
+    virtual bool needs_uv() const { return false; }
     // True for delta distributions (mirror, glass): no finite sampling
     // density exists, so the direct-light estimator skips them and only the
     // bounce is integrated. Temporary seam — the BRDF/pdf refactor replaces
@@ -32,7 +37,8 @@ public:
 class lambertian : public material
 {
 public:
-    lambertian(const vec3 &albedo) : albedo(albedo) {}
+    lambertian(const vec3 &albedo) : lambertian(std::make_shared<solid_color>(albedo)) {}
+    lambertian(std::shared_ptr<texture> albedo) : albedo(albedo) {}
 
     bool scatter(const ray &r_in, const hit_record &rec, vec3 &attenuation, ray &scattered) const override
     {
@@ -43,7 +49,7 @@ public:
         vec3 d = random_cosine_direction();
         vec3 direction = basis.local(d.x(), d.y(), d.z());
         scattered = ray(rec.point, direction);
-        attenuation = albedo;
+        attenuation = albedo->value(rec.u, rec.v, rec.point);
         return true;
     }
 
@@ -53,8 +59,10 @@ public:
         return (cos_theta < 0.0) ? 0.0 : cos_theta / std::numbers::pi;
     }
 
+    bool needs_uv() const override { return albedo->needs_uv(); }
+
 private:
-    vec3 albedo;
+    std::shared_ptr<texture> albedo;
 };
 
 class metal : public material

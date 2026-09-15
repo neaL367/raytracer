@@ -6,6 +6,7 @@
 
 #include <cmath>
 #include <memory>
+#include <numbers>
 
 class sphere : public hittable
 {
@@ -39,6 +40,8 @@ public:
         rec.point = r.at(rec.t);
         vec3 outward_normal = (rec.point - center) / radius;
         rec.set_face_normal(r, outward_normal);
+        if (mat->needs_uv())
+            get_sphere_uv(outward_normal, rec.u, rec.v);
         rec.mat = mat;
 
         return true;
@@ -53,6 +56,16 @@ public:
     }
 
 private:
+    // Unit-sphere parametrization: latitude from the pole, longitude around
+    // the equator. Stable everywhere except exactly at the poles.
+    static void get_sphere_uv(const vec3 &p, double &u, double &v)
+    {
+        double theta = std::acos(-p.y());
+        double phi = std::atan2(-p.z(), p.x()) + std::numbers::pi;
+        u = phi / (2.0 * std::numbers::pi);
+        v = theta / std::numbers::pi;
+    }
+
     vec3 center;
     double radius;
     std::shared_ptr<material> mat;
