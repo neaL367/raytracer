@@ -47,6 +47,7 @@ namespace
 struct Gpu
 {
     VkInstance instance = nullptr;
+    VkDebugUtilsMessengerEXT messenger = nullptr;
     VkPhysicalDevice physical = nullptr;
     VkDevice device = nullptr;
     VkQueue queue = nullptr;
@@ -118,16 +119,84 @@ uint32_t find_memory_type(VkPhysicalDevice device, uint32_t bits, VkMemoryProper
     std::exit(1);
 }
 
+VKAPI_ATTR VkBool32 VKAPI_CALL validation_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+                                                   VkDebugUtilsMessageTypeFlagsEXT,
+                                                   const VkDebugUtilsMessengerCallbackDataEXT *data, void *)
+{
+    // Errors and warnings only: info chatter drowns real findings.
+    const char *level = (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) ? "VALIDATION-ERROR"
+                                                                                     : "validation-warning";
+    std::fprintf(stderr, "[%s] %s\n", level, data->pMessage);
+    return VK_FALSE;
+}
+
+bool validation_available()
+{
+    uint32_t count = 0;
+    vkEnumerateInstanceLayerProperties(&count, nullptr);
+    std::vector<VkLayerProperties> layers(count);
+    vkEnumerateInstanceLayerProperties(&count, layers.data());
+    for (const auto &l : layers)
+        if (std::string(l.layerName) == "VK_LAYER_KHRONOS_validation")
+            return true;
+    return false;
+}
+
+VkDebugUtilsMessengerEXT make_messenger(VkInstance instance)
+{
+    auto create = reinterpret_cast<PFN_vkCreateDebugUtilsMessengerEXT>(
+        vkGetInstanceProcAddr(instance, "vkCreateDebugUtilsMessengerEXT"));
+    if (!create)
+        return nullptr;
+    VkDebugUtilsMessengerCreateInfoEXT mci = {};
+    mci.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    mci.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                          VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    mci.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                      VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                      VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    mci.pfnUserCallback = validation_callback;
+    VkDebugUtilsMessengerEXT messenger = nullptr;
+    VK_CHECK(create(instance, &mci, nullptr, &messenger));
+    return messenger;
+}
+
+void drop_messenger(VkInstance instance, VkDebugUtilsMessengerEXT messenger)
+{
+    if (!messenger)
+        return;
+    auto destroy = reinterpret_cast<PFN_vkDestroyDebugUtilsMessengerEXT>(
+        vkGetInstanceProcAddr(instance, "vkDestroyDebugUtilsMessengerEXT"));
+    if (destroy)
+        destroy(instance, messenger, nullptr);
+}
+
 Gpu init_gpu()
 {
     Gpu g;
+    // Validation layers when present (SDK installs them; graceful without).
+    // They would have caught the descriptor/binding mistakes of earlier
+    // slices at record time instead of at mysterious-output time.
+    bool validate = validation_available();
+    std::printf("validation layers: %s\n", validate ? "on" : "off (SDK layers missing)");
+    const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
+    const char *extensions[] = {VK_EXT_DEBUG_UTILS_EXTENSION_NAME};
     VkApplicationInfo app = {};
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app.apiVersion = VK_API_VERSION_1_3;
     VkInstanceCreateInfo ici = {};
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &app;
+    if (validate)
+    {
+        ici.enabledLayerCount = 1;
+        ici.ppEnabledLayerNames = layers;
+        ici.enabledExtensionCount = 1;
+        ici.ppEnabledExtensionNames = extensions;
+    }
     VK_CHECK(vkCreateInstance(&ici, nullptr, &g.instance));
+    VkDebugUtilsMessengerEXT messenger = validate ? make_messenger(g.instance) : nullptr;
+    g.messenger = messenger;
 
     uint32_t gpu_count = 0;
     VK_CHECK(vkEnumeratePhysicalDevices(g.instance, &gpu_count, nullptr));
@@ -187,6 +256,7 @@ Gpu init_gpu()
 void shutdown_gpu(Gpu &g)
 {
     vkDestroyDevice(g.device, nullptr);
+    drop_messenger(g.instance, g.messenger);
     vkDestroyInstance(g.instance, nullptr);
 }
 
@@ -468,8 +538,16 @@ VkPipeline make_pipeline(const Gpu &g, VkShaderModule module, VkPipelineLayout l
 }
 
 // Binds an array of storage buffers to consecutive bindings of one set.
-VkDescriptorSet bind_buffers(const Gpu &g, VkDescriptorSetLayout layout,
-                             const std::vector<Buffer> &buffers)
+// Hands back the pool too: pools own their sets, so the caller destroys it
+// after the device is done with the set (leaking it tripped validation).
+struct BoundDescriptors
+{
+    VkDescriptorSet set = nullptr;
+    VkDescriptorPool pool = nullptr;
+};
+
+BoundDescriptors bind_buffers(const Gpu &g, VkDescriptorSetLayout layout,
+                              const std::vector<Buffer> &buffers)
 {
     VkDescriptorPoolSize pool_size = {};
     pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -502,10 +580,10 @@ VkDescriptorSet bind_buffers(const Gpu &g, VkDescriptorSetLayout layout,
         writes[i].pBufferInfo = &infos[i];
     }
     vkUpdateDescriptorSets(g.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
-    // Pool intentionally leaked until device teardown: one set per run, and
-    // the pool dies with the device. A long-lived app would retain and reset it.
-    (void)pool;
-    return set;
+    BoundDescriptors out;
+    out.set = set;
+    out.pool = pool;
+    return out;
 }
 
 std::vector<vec3> download_frame(const Gpu &g, const Buffer &frame, uint32_t width, uint32_t height)
@@ -540,12 +618,12 @@ int run_fill(Gpu &g, const std::filesystem::path &shader_dir)
     VkPipelineLayout pipeline_layout = nullptr;
     VK_CHECK(vkCreatePipelineLayout(g.device, &pli, nullptr, &pipeline_layout));
 
-    VkDescriptorSet set = bind_buffers(g, layout, {frame});
+    BoundDescriptors bound = bind_buffers(g, layout, {frame});
     VkShaderModule module = load_shader(g, shader_dir / "fill.spv");
     VkPipeline pipeline = make_pipeline(g, module, pipeline_layout);
 
     uint32_t dims[2] = {width, height};
-    dispatch_and_wait(g, pipeline, pipeline_layout, set, dims, sizeof(dims), frame,
+    dispatch_and_wait(g, pipeline, pipeline_layout, bound.set, dims, sizeof(dims), frame,
                       (width + 15) / 16, (height + 15) / 16);
 
     std::vector<vec3> fb = download_frame(g, frame, width, height);
@@ -555,6 +633,7 @@ int run_fill(Gpu &g, const std::filesystem::path &shader_dir)
     vkDestroyPipeline(g.device, pipeline, nullptr);
     vkDestroyShaderModule(g.device, module, nullptr);
     vkDestroyPipelineLayout(g.device, pipeline_layout, nullptr);
+    vkDestroyDescriptorPool(g.device, bound.pool, nullptr);
     vkDestroyDescriptorSetLayout(g.device, layout, nullptr);
     free_buffer(g, frame);
     return 0;
@@ -730,7 +809,7 @@ int run_normal(Gpu &g, const std::filesystem::path &shader_dir)
     VkPipelineLayout pipeline_layout = nullptr;
     VK_CHECK(vkCreatePipelineLayout(g.device, &pli, nullptr, &pipeline_layout));
 
-    VkDescriptorSet set = bind_buffers(g, layout, {b_sph, b_tri, b_qd, frame});
+    BoundDescriptors bound = bind_buffers(g, layout, {b_sph, b_tri, b_qd, frame});
     VkShaderModule module = load_shader(g, shader_dir / "normal.spv");
     VkPipeline pipeline = make_pipeline(g, module, pipeline_layout);
 
@@ -751,7 +830,7 @@ int run_normal(Gpu &g, const std::filesystem::path &shader_dir)
     pc.n_tris = n_tris;
     pc.n_quads = n_quads;
 
-    dispatch_and_wait(g, pipeline, pipeline_layout, set, &pc, sizeof(pc), frame,
+    dispatch_and_wait(g, pipeline, pipeline_layout, bound.set, &pc, sizeof(pc), frame,
                       (width + 15) / 16, (height + 15) / 16);
 
     std::vector<vec3> fb = download_frame(g, frame, width, height);
@@ -761,6 +840,7 @@ int run_normal(Gpu &g, const std::filesystem::path &shader_dir)
     vkDestroyPipeline(g.device, pipeline, nullptr);
     vkDestroyShaderModule(g.device, module, nullptr);
     vkDestroyPipelineLayout(g.device, pipeline_layout, nullptr);
+    vkDestroyDescriptorPool(g.device, bound.pool, nullptr);
     vkDestroyDescriptorSetLayout(g.device, layout, nullptr);
     free_buffer(g, frame);
     free_buffer(g, b_qd);
@@ -1003,7 +1083,7 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
     VkPipelineLayout pipeline_layout = nullptr;
     VK_CHECK(vkCreatePipelineLayout(g.device, &pli, nullptr, &pipeline_layout));
 
-    VkDescriptorSet set = bind_buffers(g, layout, {b_sph, b_tri, b_qd, b_sph_alb, b_sph_meta,
+    BoundDescriptors bound = bind_buffers(g, layout, {b_sph, b_tri, b_qd, b_sph_alb, b_sph_meta,
                                                    b_tri_alb, b_tri_meta, b_qd_alb, b_qd_meta,
                                                    b_chk, b_img, frame, b_bvh_box, b_bvh_link,
                                                    probe_buf});
@@ -1056,7 +1136,7 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
     }
     pc.light_qd = light_qd < 0 ? 0xFFFFFFFFu : static_cast<uint32_t>(light_qd);
 
-    dispatch_and_wait(g, pipeline, pipeline_layout, set, &pc, sizeof(pc), frame,
+    dispatch_and_wait(g, pipeline, pipeline_layout, bound.set, &pc, sizeof(pc), frame,
                       (width + wg_x - 1) / wg_x, (height + wg_y - 1) / wg_y, &staging);
 
     std::vector<vec3> fb = download_frame(g, staging, width, height);
@@ -1107,6 +1187,7 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
     vkDestroyPipeline(g.device, pipeline, nullptr);
     vkDestroyShaderModule(g.device, module, nullptr);
     vkDestroyPipelineLayout(g.device, pipeline_layout, nullptr);
+    vkDestroyDescriptorPool(g.device, bound.pool, nullptr);
     vkDestroyDescriptorSetLayout(g.device, layout, nullptr);
     free_buffer(g, staging);
     free_buffer(g, probe_buf);
