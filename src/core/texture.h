@@ -65,32 +65,58 @@ private:
 class image_texture : public texture
 {
 public:
-    image_texture(const char *filename) { load_ppm(filename); }
+    image_texture(const char *filename, bool bilinear = true) : bilinear(bilinear) { load_ppm(filename); }
 
     vec3 value(double u, double v, const vec3 &p) const override
     {
         if (data.empty())
             return vec3(1, 0, 1); // magenta = missing texture, never silent
-        if (u < 0.0)
-            u = 0.0;
-        if (u > 1.0)
-            u = 1.0;
         // Image row 0 is the top; sphere v = 1 is the north pole.
-        double flipped = 1.0 - v;
-        if (flipped < 0.0)
-            flipped = 0.0;
-        if (flipped > 1.0)
-            flipped = 1.0;
-        int x = std::min(width - 1, static_cast<int>(u * width));
-        int y = std::min(height - 1, static_cast<int>(flipped * height));
-        size_t i = static_cast<size_t>(y * width + x) * 3;
-        const double s = 1.0 / 255.0;
-        return vec3(data[i] * s, data[i + 1] * s, data[i + 2] * s);
+        double x = clamp01(u) * width - 0.5;
+        double y = clamp01(1.0 - v) * height - 0.5;
+        if (!bilinear)
+            return texel(static_cast<int>(x + 0.5), static_cast<int>(y + 0.5));
+        // Bilinear: four surrounding texels weighted by fractional position.
+        // The -0.5 centers the kernel so texel centers sit on integers.
+        int x0 = static_cast<int>(std::floor(x));
+        int y0 = static_cast<int>(std::floor(y));
+        double fx = x - x0;
+        double fy = y - y0;
+        vec3 c00 = texel(x0, y0);
+        vec3 c10 = texel(x0 + 1, y0);
+        vec3 c01 = texel(x0, y0 + 1);
+        vec3 c11 = texel(x0 + 1, y0 + 1);
+        return c00 * ((1 - fx) * (1 - fy)) + c10 * (fx * (1 - fy)) +
+               c01 * ((1 - fx) * fy) + c11 * (fx * fy);
     }
 
     bool needs_uv() const override { return true; }
 
 private:
+    static double clamp01(double t)
+    {
+        if (t < 0.0)
+            return 0.0;
+        if (t > 1.0)
+            return 1.0;
+        return t;
+    }
+
+    vec3 texel(int x, int y) const
+    {
+        if (x < 0)
+            x = 0;
+        if (x > width - 1)
+            x = width - 1;
+        if (y < 0)
+            y = 0;
+        if (y > height - 1)
+            y = height - 1;
+        size_t i = static_cast<size_t>(y * width + x) * 3;
+        const double s = 1.0 / 255.0;
+        return vec3(data[i] * s, data[i + 1] * s, data[i + 2] * s);
+    }
+
     // Next whitespace-separated integer, skipping '#' comment lines.
     static bool next_int(std::istream &in, int &out)
     {
@@ -160,5 +186,6 @@ private:
 
     int width = 0;
     int height = 0;
+    bool bilinear = true;
     std::vector<unsigned char> data;
 };

@@ -52,7 +52,8 @@ int main(int argc, char **argv)
     // separately from the tree, --nee enables next-event estimation
     // against an overhead area light, --norr disables russian roulette
     // (paths always run to full depth), --nostrat disables stratified
-    // pixel sampling (pure jitter instead), --exposure E scales linear HDR
+    // pixel sampling (pure jitter instead), --noblinear uses nearest-texel
+    // sampling for image textures, --exposure E scales linear HDR
     // before tonemapping (default 1.0), --seed N sets the fixed
     // RNG seed (default 42).
     bool bench = false;
@@ -65,6 +66,7 @@ int main(int argc, char **argv)
     bool do_nee = false;
     bool do_rr = true;
     bool do_strat = true;
+    bool do_bilinear = true;
     double exposure = 1.0;
     for (int i = 1; i < argc; ++i)
     {
@@ -87,6 +89,8 @@ int main(int argc, char **argv)
             do_rr = false;
         else if (arg == "--nostrat")
             do_strat = false;
+        else if (arg == "--noblinear")
+            do_bilinear = false;
         else if (arg == "--exposure" && i + 1 < argc)
             exposure = std::stod(argv[++i]);
         else if (arg == "--seed" && i + 1 < argc)
@@ -118,7 +122,7 @@ int main(int argc, char **argv)
     auto material_ground = std::make_shared<lambertian>(
         std::make_shared<checker_texture>(0.32, vec3(0.8, 0.8, 0.8), vec3(0.2, 0.2, 0.2)));
     auto material_center = std::make_shared<lambertian>(
-        std::make_shared<image_texture>("assets/uv_check.ppm"));
+        std::make_shared<image_texture>("assets/uv_check.ppm", do_bilinear));
     auto material_right = std::make_shared<metal>(vec3(0.8, 0.6, 0.2));
     auto material_triangle = std::make_shared<lambertian>(vec3(0.2, 0.8, 0.2));
     auto material_mesh = std::make_shared<lambertian>(vec3(0.6, 0.6, 0.6));
@@ -341,6 +345,7 @@ int main(int argc, char **argv)
                   << " nee=" << (do_nee ? "on" : "off")
                   << " rr=" << (do_rr ? "on" : "off")
                   << " strat=" << (stratified ? "on" : "off")
+                  << " bilinear=" << (do_bilinear ? "on" : "off")
                   << " exposure=" << exposure
                   << " threads=" << num_threads << "\n";
         std::cout << "[bench] bvh_build=" << bvh_elapsed.count() << "s"
