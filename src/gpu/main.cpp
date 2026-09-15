@@ -197,17 +197,21 @@ struct Buffer
     VkDeviceSize size = 0;
 };
 
-// Host-visible coherent allocation: one allocation, direct readback. A real
-// renderer stages through device-local memory; scaffolding skips that copy
-// on purpose (nothing to get wrong yet).
-Buffer make_buffer(const Gpu &g, VkDeviceSize size)
+VkBufferUsageFlags storage_usage()
+{
+    return VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+}
+
+// Explicit memory placement: host-visible for direct mapping, device-local
+// for shader traffic (with TRANSFER bits when staging passes through).
+Buffer make_buffer(const Gpu &g, VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags mem_props)
 {
     Buffer b;
     b.size = size;
     VkBufferCreateInfo bci = {};
     bci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bci.size = size;
-    bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    bci.usage = usage;
     bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     VK_CHECK(vkCreateBuffer(g.device, &bci, nullptr, &b.handle));
     VkMemoryRequirements reqs = {};
@@ -215,12 +219,66 @@ Buffer make_buffer(const Gpu &g, VkDeviceSize size)
     VkMemoryAllocateInfo mai = {};
     mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     mai.allocationSize = reqs.size;
-    mai.memoryTypeIndex = find_memory_type(g.physical, reqs.memoryTypeBits,
-                                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                                               VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    mai.memoryTypeIndex = find_memory_type(g.physical, reqs.memoryTypeBits, mem_props);
     VK_CHECK(vkAllocateMemory(g.device, &mai, nullptr, &b.memory));
     VK_CHECK(vkBindBufferMemory(g.device, b.handle, b.memory, 0));
     return b;
+}
+
+// Host-visible shortcut for debug/simple paths (fill, normal): mapped
+// directly, no staging. Device reads/writes cross PCIe per access — fine
+// for tests, wrong for the timed path.
+Buffer make_mapped_buffer(const Gpu &g, VkDeviceSize size)
+{
+    return make_buffer(g, size, storage_usage(),
+                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+}
+
+// Device-local buffer fed by a host-visible staging copy. One fence
+// round-trip per call; upload happens once per run so batching buys nothing.
+void upload_to_device(const Gpu &g, const Buffer &dst, const void *data, size_t bytes)
+{
+    Buffer staging = make_buffer(g, bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    void *mapped = nullptr;
+    VK_CHECK(vkMapMemory(g.device, staging.memory, 0, bytes, 0, &mapped));
+    std::memcpy(mapped, data, bytes);
+    vkUnmapMemory(g.device, staging.memory);
+
+    VkCommandPoolCreateInfo cpci = {};
+    cpci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    cpci.queueFamilyIndex = g.qfamily;
+    VkCommandPool pool = nullptr;
+    VK_CHECK(vkCreateCommandPool(g.device, &cpci, nullptr, &pool));
+    VkCommandBufferAllocateInfo cbai = {};
+    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cbai.commandPool = pool;
+    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cbai.commandBufferCount = 1;
+    VkCommandBuffer cmd = nullptr;
+    VK_CHECK(vkAllocateCommandBuffers(g.device, &cbai, &cmd));
+    VkCommandBufferBeginInfo begin = {};
+    begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    VK_CHECK(vkBeginCommandBuffer(cmd, &begin));
+    VkBufferCopy region = {};
+    region.size = bytes;
+    vkCmdCopyBuffer(cmd, staging.handle, dst.handle, 1, &region);
+    VK_CHECK(vkEndCommandBuffer(cmd));
+    VkFenceCreateInfo fci = {};
+    fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    VkFence fence = nullptr;
+    VK_CHECK(vkCreateFence(g.device, &fci, nullptr, &fence));
+    VkSubmitInfo si = {};
+    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    si.commandBufferCount = 1;
+    si.pCommandBuffers = &cmd;
+    VK_CHECK(vkQueueSubmit(g.queue, 1, &si, fence));
+    VK_CHECK(vkWaitForFences(g.device, 1, &fence, VK_TRUE, UINT64_MAX));
+    vkDestroyFence(g.device, fence, nullptr);
+    vkDestroyCommandPool(g.device, pool, nullptr);
+    vkFreeMemory(g.device, staging.memory, nullptr);
+    vkDestroyBuffer(g.device, staging.handle, nullptr);
 }
 
 void free_buffer(const Gpu &g, Buffer &b)
@@ -251,9 +309,15 @@ VkShaderModule load_shader(const Gpu &g, const std::filesystem::path &path)
 
 // Records, submits, and waits for a single dispatch of an already-bound
 // pipeline, then barriers the frame buffer for host read.
+// Records, submits, and waits for a single dispatch. When readback is set,
+// the frame is copied to that host-visible staging buffer in the same
+// submit (shader-write -> transfer-read, copy, transfer-write -> host-read),
+// so one fence covers everything. Timestamps bracket the dispatch alone:
+// copy traffic is a separate concern from shader work.
 void dispatch_and_wait(const Gpu &g, VkPipeline pipeline, VkPipelineLayout layout,
                        VkDescriptorSet set, const void *push_data, size_t push_size,
-                       const Buffer &frame, uint32_t gx, uint32_t gy)
+                       const Buffer &frame, uint32_t gx, uint32_t gy,
+                       const Buffer *readback = nullptr)
 {
     VkCommandPoolCreateInfo cpci = {};
     cpci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -271,6 +335,19 @@ void dispatch_and_wait(const Gpu &g, VkPipeline pipeline, VkPipelineLayout layou
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VK_CHECK(vkBeginCommandBuffer(cmd, &begin));
+    if (readback)
+    {
+        // Prior uploads rode separate submits on this queue. Submission order
+        // executes in order; this barrier adds the memory-visibility half:
+        // transfer writes available before any shader read below. Fill/normal
+        // skip it — their buffers were never transferred.
+        VkMemoryBarrier up = {};
+        up.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        up.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        up.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             0, 1, &up, 0, nullptr, 0, nullptr);
+    }
     // Two timestamp queries bracket the dispatch when the queue supports
     // them; the pool is per-dispatch on purpose (bench tool, not a hot loop).
     VkQueryPool query_pool = nullptr;
@@ -292,6 +369,32 @@ void dispatch_and_wait(const Gpu &g, VkPipeline pipeline, VkPipelineLayout layou
     vkCmdDispatch(cmd, gx, gy, 1);
     if (timed)
         vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, query_pool, 1);
+    if (readback)
+    {
+        VkBufferMemoryBarrier barrier = {};
+        barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrier.srcQueueFamilyIndex = g.qfamily;
+        barrier.dstQueueFamilyIndex = g.qfamily;
+        barrier.buffer = frame.handle;
+        barrier.size = frame.size;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             0, 0, nullptr, 1, &barrier, 0, nullptr);
+        VkBufferCopy region = {};
+        region.size = frame.size;
+        vkCmdCopyBuffer(cmd, frame.handle, readback->handle, 1, &region);
+        VkBufferMemoryBarrier host_barrier = barrier;
+        host_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        host_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        host_barrier.buffer = readback->handle;
+        host_barrier.size = readback->size;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+                             0, 0, nullptr, 1, &host_barrier, 0, nullptr);
+        VK_CHECK(vkEndCommandBuffer(cmd));
+    }
+    else
+    {
     VkBufferMemoryBarrier barrier = {};
     barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
     barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -303,6 +406,7 @@ void dispatch_and_wait(const Gpu &g, VkPipeline pipeline, VkPipelineLayout layou
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
                          0, 0, nullptr, 1, &barrier, 0, nullptr);
     VK_CHECK(vkEndCommandBuffer(cmd));
+    }
     VkFenceCreateInfo fci = {};
     fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     VkFence fence = nullptr;
@@ -419,7 +523,7 @@ int run_fill(Gpu &g, const std::filesystem::path &shader_dir)
     const uint32_t width = 800;
     const uint32_t height = 450;
 
-    Buffer frame = make_buffer(g, static_cast<VkDeviceSize>(width) * height * 3 * sizeof(float));
+    Buffer frame = make_mapped_buffer(g, static_cast<VkDeviceSize>(width) * height * 3 * sizeof(float));
 
     VkDescriptorSetLayout layout = make_layout(g, 1);
     VkPushConstantRange push = {};
@@ -603,10 +707,10 @@ int run_normal(Gpu &g, const std::filesystem::path &shader_dir)
     if (qd.empty())
         qd.resize(12, 0.0f);
 
-    Buffer b_sph = make_buffer(g, sph.size() * sizeof(float));
-    Buffer b_tri = make_buffer(g, tri.size() * sizeof(float));
-    Buffer b_qd = make_buffer(g, qd.size() * sizeof(float));
-    Buffer frame = make_buffer(g, static_cast<VkDeviceSize>(width) * height * 3 * sizeof(float));
+    Buffer b_sph = make_mapped_buffer(g, sph.size() * sizeof(float));
+    Buffer b_tri = make_mapped_buffer(g, tri.size() * sizeof(float));
+    Buffer b_qd = make_mapped_buffer(g, qd.size() * sizeof(float));
+    Buffer frame = make_mapped_buffer(g, static_cast<VkDeviceSize>(width) * height * 3 * sizeof(float));
     upload_floats(g, b_sph, sph);
     upload_floats(g, b_tri, tri);
     upload_floats(g, b_qd, qd);
@@ -829,39 +933,43 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
     if (qd.empty())
         qd.resize(12, 0.0f);
 
-    Buffer b_sph = make_buffer(g, sph.size() * sizeof(float));
-    Buffer b_tri = make_buffer(g, tri.size() * sizeof(float));
-    Buffer b_qd = make_buffer(g, qd.size() * sizeof(float));
-    Buffer b_sph_alb = make_buffer(g, sph_alb.size() * sizeof(float));
-    Buffer b_sph_meta = make_buffer(g, sph_meta.size() * sizeof(int32_t));
-    Buffer b_tri_alb = make_buffer(g, tri_alb.size() * sizeof(float));
-    Buffer b_tri_meta = make_buffer(g, tri_meta.size() * sizeof(int32_t));
-    Buffer b_qd_alb = make_buffer(g, qd_alb.size() * sizeof(float));
-    Buffer b_qd_meta = make_buffer(g, qd_meta.size() * sizeof(int32_t));
-    Buffer b_chk = make_buffer(g, chk.size() * sizeof(float));
-    Buffer b_img = make_buffer(g, img.size() * sizeof(float));
-    Buffer b_bvh_box = make_buffer(g, bvh_box.size() * sizeof(float));
-    Buffer b_bvh_link = make_buffer(g, bvh_link.size() * sizeof(int32_t));
-    Buffer frame = make_buffer(g, static_cast<VkDeviceSize>(width) * height * 3 * sizeof(float));
-    upload_floats(g, b_sph, sph);
-    upload_floats(g, b_tri, tri);
-    upload_floats(g, b_qd, qd);
-    upload_floats(g, b_sph_alb, sph_alb);
-    upload_floats(g, b_tri_alb, tri_alb);
-    upload_floats(g, b_qd_alb, qd_alb);
-    upload_floats(g, b_chk, chk);
-    upload_floats(g, b_img, img);
-    upload_floats(g, b_bvh_box, bvh_box);
-    auto upload_ints = [&](const Buffer &b, const std::vector<int32_t> &v) {
-        void *mapped = nullptr;
-        VK_CHECK(vkMapMemory(g.device, b.memory, 0, b.size, 0, &mapped));
-        std::memcpy(mapped, v.data(), v.size() * sizeof(int32_t));
-        vkUnmapMemory(g.device, b.memory);
+    // Device-local scene buffers fed by staging uploads; the framebuffer is
+    // device-local too, read back through a staging copy in the dispatch.
+    const VkMemoryPropertyFlags dev_props =
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    auto device_floats = [&](const std::vector<float> &v) {
+        Buffer b = make_buffer(g, v.size() * sizeof(float),
+                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                               dev_props);
+        upload_to_device(g, b, v.data(), v.size() * sizeof(float));
+        return b;
     };
-    upload_ints(b_sph_meta, sph_meta);
-    upload_ints(b_tri_meta, tri_meta);
-    upload_ints(b_qd_meta, qd_meta);
-    upload_ints(b_bvh_link, bvh_link);
+    auto device_ints = [&](const std::vector<int32_t> &v) {
+        Buffer b = make_buffer(g, v.size() * sizeof(int32_t),
+                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                               dev_props);
+        upload_to_device(g, b, v.data(), v.size() * sizeof(int32_t));
+        return b;
+    };
+    Buffer b_sph = device_floats(sph);
+    Buffer b_tri = device_floats(tri);
+    Buffer b_qd = device_floats(qd);
+    Buffer b_sph_alb = device_floats(sph_alb);
+    Buffer b_sph_meta = device_ints(sph_meta);
+    Buffer b_tri_alb = device_floats(tri_alb);
+    Buffer b_tri_meta = device_ints(tri_meta);
+    Buffer b_qd_alb = device_floats(qd_alb);
+    Buffer b_qd_meta = device_ints(qd_meta);
+    Buffer b_chk = device_floats(chk);
+    Buffer b_img = device_floats(img);
+    Buffer b_bvh_box = device_floats(bvh_box);
+    Buffer b_bvh_link = device_ints(bvh_link);
+    const VkDeviceSize frame_bytes = static_cast<VkDeviceSize>(width) * height * 3 * sizeof(float);
+    Buffer frame = make_buffer(g, frame_bytes,
+                               VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                               dev_props);
+    Buffer staging = make_buffer(g, frame_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     VkDescriptorSetLayout layout = make_layout(g, 14);
     VkPushConstantRange push = {};
@@ -906,9 +1014,9 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
     pc.use_bvh = use_bvh ? 1u : 0u;
 
     dispatch_and_wait(g, pipeline, pipeline_layout, set, &pc, sizeof(pc), frame,
-                      (width + 7) / 8, (height + 7) / 8);
+                      (width + 7) / 8, (height + 7) / 8, &staging);
 
-    std::vector<vec3> fb = download_frame(g, frame, width, height);
+    std::vector<vec3> fb = download_frame(g, staging, width, height);
     std::string out_name = use_bvh ? "gpu_path.ppm" : "gpu_path_flat.ppm";
     std::uint64_t hash = write_ppm(out_name, fb, width, height, 1.0, true);
     std::printf("wrote %s hash=%llu\n", out_name.c_str(), static_cast<unsigned long long>(hash));
@@ -917,6 +1025,7 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
     vkDestroyShaderModule(g.device, module, nullptr);
     vkDestroyPipelineLayout(g.device, pipeline_layout, nullptr);
     vkDestroyDescriptorSetLayout(g.device, layout, nullptr);
+    free_buffer(g, staging);
     free_buffer(g, frame);
     free_buffer(g, b_bvh_link);
     free_buffer(g, b_bvh_box);
