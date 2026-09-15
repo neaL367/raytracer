@@ -24,6 +24,8 @@ struct render_config
     // Adds a dielectric sphere for backend parity: the glass branch runs
     // nowhere in the default scene, and untested shader code is a liability.
     bool use_glass = false;
+    // Homogeneous fog extinction per unit distance (0 = disabled).
+    double fog_density = 0.0;
     // "full" path tracing or "normal" reference shading (closest-hit
     // normals, no materials/lights/RNG) for backend parity checks.
     std::string shade_mode = "full";
@@ -44,6 +46,7 @@ inline void print_usage(const char *prog)
               << "  --shade MODE       full path tracing (default) or normal reference\n"
               << "                     shading for backend parity checks\n"
               << "  --glass            add a dielectric sphere (covers the glass branch)\n"
+              << "  --fog D            homogeneous fog extinction (default 0 = off)\n"
               << "  --depth N          max path depth (default 50)\n"
               << "  --tile N           scheduling strip height in rows (default 8)\n"
               << "  --aperture A       lens aperture (default 0.05; 0 = pinhole)\n"
@@ -112,6 +115,25 @@ inline cli_result parse_cli(int argc, char **argv, render_config &cfg)
                 cfg.do_bilinear = false;
             else if (arg == "--glass")
                 cfg.use_glass = true;
+            else if (arg == "--fog")
+                cfg.fog_density = std::stod(take_value(i, "--fog", ok));
+            else if (arg == "--fog" && (ok = true, true))
+            {
+                if (i + 1 >= argc)
+                {
+                    std::cerr << "--fog needs a value\n";
+                    return cli_result::error;
+                }
+                try
+                {
+                    cfg.fog_density = std::stod(argv[++i]);
+                }
+                catch (const std::exception &e)
+                {
+                    std::cerr << "bad --fog value: " << e.what() << "\n";
+                    return cli_result::error;
+                }
+            }
             else if (arg == "--shade")
                 cfg.shade_mode = take_value(i, "--shade", ok);
             else if (arg == "--exposure")

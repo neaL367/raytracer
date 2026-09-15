@@ -414,6 +414,23 @@ TEST(cli_shade_mode)
     EXPECT_TRUE(parse_cli(2, unknown_argv, cfg3) == cli_result::error);
 }
 
+TEST(shadow_transmittance)
+{
+    // Empty world: pure Beer-Lambert, exact.
+    hittable_list empty;
+    EXPECT_NEAR(shadow_transmittance(empty, 0.1, vec3(0, 0, 0), vec3(1, 0, 0), 10.0),
+                std::exp(-1.0));
+    EXPECT_NEAR(shadow_transmittance(empty, 0.0, vec3(0, 0, 0), vec3(1, 0, 0), 10.0), 1.0);
+    // Blocked shadow ray reads 0 at any density.
+    auto mat = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));
+    hittable_list world;
+    world.add(std::make_shared<sphere>(vec3(5, 0, 0), 1.0, mat));
+    EXPECT_NEAR(shadow_transmittance(world, 0.1, vec3(0, 0, 0), vec3(1, 0, 0), 10.0), 0.0);
+    // Clear of the sphere: extinction only.
+    EXPECT_NEAR(shadow_transmittance(world, 0.1, vec3(0, 0, 0), vec3(0, 1, 0), 10.0),
+                std::exp(-1.0));
+}
+
 int main()
 {
     int test_failures = 0;

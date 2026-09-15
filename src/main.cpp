@@ -73,7 +73,7 @@ int main(int argc, char **argv)
     if (cfg.shade_mode == "normal")
         tracer = std::make_unique<normal_integrator>();
     else
-        tracer = std::make_unique<path_tracer>(cfg.do_nee, cfg.do_rr);
+        tracer = std::make_unique<path_tracer>(cfg.do_nee, cfg.do_rr, cfg.fog_density);
 
     std::vector<vec3> framebuffer(image_width * image_height);
     render_stats stats = render_framebuffer(cam, bvh_world, scene.lights, *tracer, cfg,
@@ -113,6 +113,7 @@ int main(int argc, char **argv)
                   << " ground=" << (cfg.ground_in_bvh ? "in" : "out")
                   << " nee=" << (cfg.do_nee ? "on" : "off")
                   << " glass=" << (cfg.use_glass ? "on" : "off")
+                  << " fog=" << cfg.fog_density
                   << " shade=" << cfg.shade_mode
                   << " rr=" << (cfg.do_rr ? "on" : "off")
                   << " strat=" << (cfg.stratified ? "on" : "off")

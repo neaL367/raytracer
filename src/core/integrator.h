@@ -22,10 +22,28 @@ public:
                     const std::vector<std::shared_ptr<quad>> &lights, int depth) const = 0;
 };
 
+// Transmittance along a shadow ray through homogeneous fog: blocked reads 0,
+// clear reads exp(-sigma * dist). Free function so unit tests can check it
+// without an integrator instance.
+inline double shadow_transmittance(const hittable &world, double sigma,
+                                   const vec3 &origin, const vec3 &direction, double dist)
+{
+    hit_record tmp;
+    if (world.hit(ray(origin, direction), 0.001, dist - 0.001, tmp))
+        return 0.0;
+    return std::exp(-sigma * dist);
+}
+
 class path_tracer : public integrator
 {
 public:
-    path_tracer(bool do_nee, bool do_rr = true) : nee(do_nee), roulette(do_rr) {}
+    // Homogeneous fog: extinction sigma_t per unit distance, single-scatter
+    // albedo fog_albedo, isotropic phase. Zero density disables everything.
+    static constexpr double fog_albedo = 0.85;
+    static constexpr double inv_4pi = 0.07957747154594767; // 1/(4*pi)
+
+    path_tracer(bool do_nee, bool do_rr = true, double fog_density = 0.0)
+        : nee(do_nee), roulette(do_rr), sigma_t(fog_density) {}
 
     vec3 Li(const ray &r, const hittable &world,
             const std::vector<std::shared_ptr<quad>> &lights, int depth) const override
@@ -49,7 +67,51 @@ private:
             return vec3(0, 0, 0);
 
         hit_record rec;
-        if (!world.hit(r, 0.001, 1000.0, rec))
+        bool has_hit = world.hit(r, 0.001, 1000.0, rec);
+
+        // Homogeneous fog: free-flight distance tm ~ sigma_t * exp(-sigma_t).
+        // Reaching the surface (tm beyond it) conditions away its own
+        // transmittance, so the surface branch below is unchanged; scattering
+        // first weighs albedo. Gated on density so the default path draws no
+        // extra numbers and its streams never shift.
+        if (sigma_t > 0.0)
+        {
+            double xi = random_double();
+            if (xi < 1e-12)
+                xi = 1e-12; // log(0) is not a scattering distance
+            double tm = -std::log(xi) / sigma_t;
+            if (!has_hit || tm < rec.t)
+            {
+                vec3 mp = r.at(tm);
+                vec3 color = vec3(0, 0, 0); // the medium itself emits nothing
+                if (nee && !lights.empty())
+                    color += direct_medium(mp, world, lights);
+
+                vec3 ndir = random_unit_vector(); // isotropic phase
+                double bounce_weight = 1.0;
+                if (nee && !lights.empty())
+                {
+                    double ps = inv_4pi;
+                    double pl = light_pdf(mp, unit_vector(ndir), lights);
+                    bounce_weight = (ps + pl > 0.0) ? ps / (ps + pl) : 1.0;
+                }
+
+                double rr_scale = 1.0;
+                double path_throughput = throughput * fog_albedo;
+                if (roulette && path_throughput < 0.9)
+                {
+                    double q = std::max(0.05, path_throughput);
+                    if (random_double() >= q)
+                        return color;
+                    rr_scale = 1.0 / q;
+                }
+                ray next(mp, ndir);
+                return color + vec3(fog_albedo, fog_albedo, fog_albedo) * rr_scale *
+                                   Li_weighted(next, world, lights, depth - 1, bounce_weight, path_throughput);
+            }
+        }
+
+        if (!has_hit)
             return sky_color(r); // background is not an emitter: never weighted
 
         vec3 color = rec.mat->emitted() * emission_weight;
@@ -107,9 +169,12 @@ private:
     // for the light choice) is converted to solid angle at the shading point:
     // pdf_dir = dist^2 / (cos_light * area * n). Weighted by the balance
     // heuristic against the BSDF sampling the bounce would have used.
-    static vec3 direct_light(const ray &r_in, const hit_record &rec, const vec3 &albedo,
-                             const hittable &world,
-                             const std::vector<std::shared_ptr<quad>> &lights)
+    // Shadow transmittance (not just occlusion) folds fog in: blocked reads
+    // 0, clear reads exp(-sigma * dist). With sigma = 0 that is exactly the
+    // old occluded-or-1 behavior, bit for bit.
+    vec3 direct_light(const ray &r_in, const hit_record &rec, const vec3 &albedo,
+                      const hittable &world,
+                      const std::vector<std::shared_ptr<quad>> &lights) const
     {
         size_t n = lights.size();
         size_t idx = (n == 1) ? 0 : std::min(n - 1, static_cast<size_t>(random_double(0.0, static_cast<double>(n))));
@@ -125,15 +190,43 @@ private:
         if (cos_surface <= 0.0 || cos_light <= 0.0)
             return vec3(0, 0, 0);
 
-        hit_record tmp;
-        if (world.hit(ray(rec.point, dir), 0.001, dist - 0.001, tmp))
+        double trans = shadow_transmittance(world, sigma_t, rec.point, dir, dist);
+        if (trans <= 0.0)
             return vec3(0, 0, 0); // occluded
 
         double pdf_light = dist2 / (cos_light * light->area() * static_cast<double>(n));
         double pdf_bsdf = rec.mat->scattering_pdf(r_in, rec, ray(rec.point, dir));
         double weight = (pdf_light + pdf_bsdf > 0.0) ? pdf_light / (pdf_light + pdf_bsdf) : 0.0;
         vec3 emission = light->mat_ptr()->emitted();
-        return albedo * emission * cos_surface / pdf_light * weight;
+        return albedo * emission * cos_surface * trans / pdf_light * weight;
+    }
+
+    // In-scatter NEE at a medium event: isotropic phase (1/4pi) replaces the
+    // cosine lobe, and there is no surface orientation to project.
+    vec3 direct_medium(const vec3 &p, const hittable &world,
+                       const std::vector<std::shared_ptr<quad>> &lights) const
+    {
+        size_t n = lights.size();
+        size_t idx = (n == 1) ? 0 : std::min(n - 1, static_cast<size_t>(random_double(0.0, static_cast<double>(n))));
+        const auto &light = lights[idx];
+
+        vec3 to_light = light->sample() - p;
+        double dist2 = to_light.length_squared();
+        double dist = std::sqrt(dist2);
+        vec3 dir = to_light / dist;
+
+        double cos_light = dot(-dir, light->normal());
+        if (cos_light <= 0.0)
+            return vec3(0, 0, 0);
+
+        double trans = shadow_transmittance(world, sigma_t, p, dir, dist);
+        if (trans <= 0.0)
+            return vec3(0, 0, 0);
+
+        double pdf_light = dist2 / (cos_light * light->area() * static_cast<double>(n));
+        double weight = (pdf_light + inv_4pi > 0.0) ? pdf_light / (pdf_light + inv_4pi) : 0.0;
+        vec3 emission = light->mat_ptr()->emitted();
+        return vec3(fog_albedo, fog_albedo, fog_albedo) * emission * inv_4pi * trans / pdf_light * weight;
     }
 
     // Mixture pdf of the light-sampling strategy: uniform light choice over
@@ -151,6 +244,7 @@ private:
 
     bool nee;
     bool roulette;
+    double sigma_t;
 };
 
 // Reference integrator for GPU parity: closest hit mapped to color, no
