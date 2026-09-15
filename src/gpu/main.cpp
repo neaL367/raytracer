@@ -51,6 +51,8 @@ struct Gpu
     VkDevice device = nullptr;
     VkQueue queue = nullptr;
     uint32_t qfamily = 0;
+    // Nanoseconds per timestamp tick; 0 when the queue cannot timestamp.
+    float timestamp_period = 0.0f;
 };
 
 // Directory holding this executable: shaders ship next to the binary (see
@@ -80,19 +82,26 @@ std::vector<char> read_file(const std::filesystem::path &path)
     return bytes;
 }
 
-// First queue family serving compute; dedicated compute preferred over a
-// shared graphics+compute one (async-friendly later).
+// Queue family serving compute. Dedicated compute preferred over a shared
+// graphics+compute one (async-friendly later) — but only if it can
+// timestamp; otherwise the shared family wins so dispatches stay measurable.
 uint32_t find_compute_family(VkPhysicalDevice device)
 {
     uint32_t count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties(device, &count, nullptr);
     std::vector<VkQueueFamilyProperties> props(count);
     vkGetPhysicalDeviceQueueFamilyProperties(device, &count, props.data());
+    auto serves_compute = [&](uint32_t i) { return (props[i].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0; };
+    auto shares_graphics = [&](uint32_t i) { return (props[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) != 0; };
+    auto can_stamp = [&](uint32_t i) { return props[i].timestampValidBits > 0; };
     for (uint32_t i = 0; i < count; ++i)
-        if ((props[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && !(props[i].queueFlags & VK_QUEUE_GRAPHICS_BIT))
+        if (serves_compute(i) && !shares_graphics(i) && can_stamp(i))
             return i;
     for (uint32_t i = 0; i < count; ++i)
-        if (props[i].queueFlags & VK_QUEUE_COMPUTE_BIT)
+        if (serves_compute(i) && can_stamp(i))
+            return i;
+    for (uint32_t i = 0; i < count; ++i)
+        if (serves_compute(i))
             return i;
     std::fprintf(stderr, "no compute queue family\n");
     std::exit(1);
@@ -146,6 +155,20 @@ Gpu init_gpu()
     std::printf("using: %s\n", chosen.deviceName);
 
     g.qfamily = find_compute_family(g.physical);
+    {
+        uint32_t count = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(g.physical, &count, nullptr);
+        std::vector<VkQueueFamilyProperties> props(count);
+        vkGetPhysicalDeviceQueueFamilyProperties(g.physical, &count, props.data());
+        if (props[g.qfamily].timestampValidBits > 0)
+        {
+            VkPhysicalDeviceProperties dev_props = {};
+            vkGetPhysicalDeviceProperties(g.physical, &dev_props);
+            g.timestamp_period = dev_props.limits.timestampPeriod;
+        }
+        std::printf("queue family %u (timestamps %s)\n", g.qfamily,
+                    g.timestamp_period > 0.0f ? "on" : "off");
+    }
     float priority = 1.0f;
     VkDeviceQueueCreateInfo qci = {};
     qci.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
@@ -248,11 +271,27 @@ void dispatch_and_wait(const Gpu &g, VkPipeline pipeline, VkPipelineLayout layou
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VK_CHECK(vkBeginCommandBuffer(cmd, &begin));
+    // Two timestamp queries bracket the dispatch when the queue supports
+    // them; the pool is per-dispatch on purpose (bench tool, not a hot loop).
+    VkQueryPool query_pool = nullptr;
+    bool timed = g.timestamp_period > 0.0f;
+    if (timed)
+    {
+        VkQueryPoolCreateInfo qpci = {};
+        qpci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+        qpci.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        qpci.queryCount = 2;
+        VK_CHECK(vkCreateQueryPool(g.device, &qpci, nullptr, &query_pool));
+        vkCmdResetQueryPool(cmd, query_pool, 0, 2);
+        vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, query_pool, 0);
+    }
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, 0, nullptr);
     vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                        static_cast<uint32_t>(push_size), push_data);
     vkCmdDispatch(cmd, gx, gy, 1);
+    if (timed)
+        vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, query_pool, 1);
     VkBufferMemoryBarrier barrier = {};
     barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
     barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -274,6 +313,15 @@ void dispatch_and_wait(const Gpu &g, VkPipeline pipeline, VkPipelineLayout layou
     si.pCommandBuffers = &cmd;
     VK_CHECK(vkQueueSubmit(g.queue, 1, &si, fence));
     VK_CHECK(vkWaitForFences(g.device, 1, &fence, VK_TRUE, UINT64_MAX));
+    if (timed)
+    {
+        uint64_t ticks[2] = {};
+        VK_CHECK(vkGetQueryPoolResults(g.device, query_pool, 0, 2, sizeof(ticks), ticks,
+                                       sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT));
+        double ms = (ticks[1] - ticks[0]) * g.timestamp_period / 1e6;
+        std::printf("[gpu] dispatch=%.3fms\n", ms);
+        vkDestroyQueryPool(g.device, query_pool, nullptr);
+    }
     vkDestroyFence(g.device, fence, nullptr);
     vkDestroyCommandPool(g.device, cmd_pool, nullptr);
 }

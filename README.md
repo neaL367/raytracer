@@ -57,3 +57,7 @@ statistical parity (means within a few percent) against `--bench --nee`.
 The device traverses the same SAH tree (flattened upload); `flat` keeps
 the brute-force loop for A/B. Measured: tree and loop agree bit-exactly
 at 316 prims (brute force wins SIMT there), 4.5x tree win at 3000.
+Every dispatch reports device-side milliseconds (`[gpu] dispatch=`) via
+timestamp queries — wall clock includes scene build, upload, and PPM
+write, so the dispatch line is the honest number (e.g. 412ms device vs
+26s CPU render on the 196spp bench scene).
