@@ -227,6 +227,30 @@ TEST(png_matches_ppm_decode)
     EXPECT_TRUE(diff == 0);
 }
 
+TEST(jpg_photo_decode)
+{
+    // Real photo content through stb's JPEG path (PNG-only coverage would
+    // leave the most common format unexecuted). Seeded picsum asset, so the
+    // bytes are fixed: dims, non-degenerate content, deterministic decode.
+    image_texture jpg("assets/photo_test.jpg");
+    EXPECT_TRUE(jpg.pixel_width() == 256);
+    EXPECT_TRUE(jpg.pixel_height() == 128);
+    const auto &b = jpg.bytes();
+    EXPECT_TRUE(b.size() == static_cast<size_t>(256) * 128 * 3);
+    double mean = 0.0;
+    for (auto v : b)
+        mean += v;
+    mean /= b.size();
+    EXPECT_TRUE(mean > 10.0 && mean < 245.0); // neither black nor white void
+    double var = 0.0;
+    for (auto v : b)
+        var += (v - mean) * (v - mean);
+    var /= b.size();
+    EXPECT_TRUE(var > 50.0); // a photo, not a flat fill
+    image_texture again("assets/photo_test.jpg");
+    EXPECT_TRUE(again.bytes() == b); // deterministic decode
+}
+
 TEST(onb_orthonormal)
 {
     onb basis(vec3(0, 0, 1));
