@@ -15,6 +15,7 @@ public:
 
     bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const override
     {
+        count_prim_test();
         vec3 oc = r.origin() - center;
         double a = r.direction().length_squared();
         double half_b = dot(oc, r.direction());

@@ -77,6 +77,30 @@ public:
         return true;
     }
 
+    // One-time tree census for --bench runs. dynamic_cast here is fine: this
+    // runs once after the build, never in the per-ray hot path. Note the
+    // object_span == 1 case aliases left == right to the same primitive, so
+    // it must be counted exactly once.
+    void census(size_t &nodes, size_t &leaves, size_t &max_depth, size_t depth = 0) const
+    {
+        ++nodes;
+        if (depth > max_depth)
+            max_depth = depth;
+        if (left == right)
+        {
+            ++leaves;
+            return;
+        }
+        if (const auto *ln = dynamic_cast<const bvh_node *>(left.get()))
+            ln->census(nodes, leaves, max_depth, depth + 1);
+        else
+            ++leaves;
+        if (const auto *rn = dynamic_cast<const bvh_node *>(right.get()))
+            rn->census(nodes, leaves, max_depth, depth + 1);
+        else
+            ++leaves;
+    }
+
 private:
     std::shared_ptr<hittable> left;
     std::shared_ptr<hittable> right;

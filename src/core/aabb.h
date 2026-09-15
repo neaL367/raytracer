@@ -1,6 +1,7 @@
 #pragma once
 #include "vec3.h"
 #include "ray.h"
+#include "bench_stats.h"
 #include <algorithm>
 
 class aabb // axis-aligned bounding box: represents a rectangular prism in 3D space, defined by its minimum and maximum corner points
@@ -14,6 +15,7 @@ public:
 
     bool hit(const ray &r, double t_min, double t_max) const
     {
+        count_box_test();
         for (int a = 0; a < 3; a++)
         {
             double origin_a = (a == 0) ? r.origin().x() : (a == 1) ? r.origin().y()

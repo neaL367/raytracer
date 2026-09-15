@@ -7,6 +7,7 @@
 #include "core/triangle.h"
 #include "core/obj_loader.h"
 #include "core/bvh.h"
+#include "core/bench_stats.h"
 
 #include <fstream>
 #include <iostream>
@@ -14,6 +15,9 @@
 #include <chrono>
 #include <thread>
 #include <vector>
+#include <string>
+#include <cstdint>
+#include <algorithm>
 
 vec3 ray_color(const ray &r, const hittable &world, int depth)
 {
@@ -37,13 +41,35 @@ vec3 ray_color(const ray &r, const hittable &world, int depth)
     return (1.0 - a) * vec3(1.0, 1.0, 1.0) + a * vec3(0.5, 0.7, 1.0);
 }
 
-int main()
+int main(int argc, char **argv)
 {
-    auto start = std::chrono::high_resolution_clock::now();
+    // --- CLI: --bench enables deterministic RNG + stats + report ------------
+    // --spheres N scales the scene (default 300), --samples N overrides
+    // samples/pixel (default 200), --seed N sets the bench seed (default 42).
+    bool bench = false;
+    int extra_spheres = 300;
+    int samples_per_pixel = 200;
+    unsigned bench_seed = 42u;
+    for (int i = 1; i < argc; ++i)
+    {
+        std::string arg = argv[i];
+        if (arg == "--bench")
+            bench = true;
+        else if (arg == "--spheres" && i + 1 < argc)
+            extra_spheres = std::stoi(argv[++i]);
+        else if (arg == "--samples" && i + 1 < argc)
+            samples_per_pixel = std::stoi(argv[++i]);
+        else if (arg == "--seed" && i + 1 < argc)
+            bench_seed = static_cast<unsigned>(std::stoul(argv[++i]));
+    }
+    // Must precede ANY random_double use (scene scatter + BVH axis picks).
+    if (bench)
+        set_deterministic_rng(true, bench_seed);
+
+    auto total_start = std::chrono::high_resolution_clock::now();
 
     const int image_width = 800;
     const int image_height = static_cast<int>(image_width / (16.0 / 9.0));
-    const int samples_per_pixel = 200;
     const int max_depth = 50;
 
     // --- build a FLAT list of every individual primitive, no nested hittable_lists ---
@@ -70,7 +96,7 @@ int main()
         material_triangle));
 
     // --- scale the scene up to a size where a BVH actually pays off ---
-    for (int i = 0; i < 300; ++i)
+    for (int i = 0; i < extra_spheres; ++i)
     {
         vec3 center(random_double(-10, 10), random_double(-10, 10), random_double(-15, -5));
         flat_objects.add(std::make_shared<sphere>(center, 0.2, material_mesh));
@@ -79,8 +105,16 @@ int main()
     std::cout << "Total flat primitives: " << flat_objects.size() << "\n";
 
     // --- build the BVH once, from the fully flattened list ---
+    auto bvh_start = std::chrono::high_resolution_clock::now();
     hittable_list bvh_world;
-    bvh_world.add(std::make_shared<bvh_node>(flat_objects));
+    auto bvh_root = std::make_shared<bvh_node>(flat_objects);
+    bvh_world.add(bvh_root);
+    auto bvh_end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> bvh_elapsed = bvh_end - bvh_start;
+
+    size_t bvh_nodes = 0, bvh_leaves = 0, bvh_depth = 0;
+    if (bench)
+        bvh_root->census(bvh_nodes, bvh_leaves, bvh_depth);
 
     vec3 lookfrom(4, 3, 5);
     vec3 lookat(0, 0, 0);
@@ -97,9 +131,23 @@ int main()
         num_threads = 4; // fallback if the system can't report a count
 
     std::vector<std::thread> threads;
+    std::vector<double> thread_seconds(num_threads, 0.0);
+    std::vector<std::uint64_t> thread_box(num_threads, 0);
+    std::vector<std::uint64_t> thread_prim(num_threads, 0);
 
-    auto render_rows = [&](int row_start, int row_end)
+    bench_enabled_flag().store(bench, std::memory_order_relaxed);
+
+    auto render_start = std::chrono::high_resolution_clock::now();
+
+    // NOTE: static strip assignment (kept for D0 baseline; D1 replaces this
+    // with a tile queue). The lambda takes its thread index by value so it
+    // can record its own busy time without any shared-state writes.
+    auto render_rows = [&](unsigned thread_idx, int row_start, int row_end)
     {
+        auto t0 = std::chrono::high_resolution_clock::now();
+        // Snapshot this worker's own thread_local counters; the deltas are
+        // this strip's true cost, readable without any synchronization.
+        std::uint64_t b0 = thread_box_tests(), p0 = thread_prim_tests();
         for (int j = row_start; j < row_end; ++j)
         {
             for (int i = 0; i < image_width; ++i)
@@ -123,6 +171,11 @@ int main()
                     std::sqrt(pixel_color.z() * scale));
             }
         }
+        auto t1 = std::chrono::high_resolution_clock::now();
+        // Disjoint indices: no lock needed, each thread writes only its slots.
+        thread_seconds[thread_idx] = std::chrono::duration<double>(t1 - t0).count();
+        thread_box[thread_idx] = thread_box_tests() - b0;
+        thread_prim[thread_idx] = thread_prim_tests() - p0;
     };
 
     int rows_per_thread = image_height / num_threads;
@@ -131,11 +184,24 @@ int main()
     {
         int row_start = t * rows_per_thread;
         int row_end = (t == num_threads - 1) ? image_height : row_start + rows_per_thread;
-        threads.emplace_back(render_rows, row_start, row_end);
+        threads.emplace_back(render_rows, t, row_start, row_end);
     }
 
     for (auto &th : threads)
         th.join();
+
+    auto render_end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> render_elapsed = render_end - render_start;
+    bench_enabled_flag().store(false, std::memory_order_relaxed);
+
+    // FNV-1a 64 over the exact quantized bytes written to the PPM, computed
+    // inline with the write loop so hashing costs one pass, not two.
+    std::uint64_t image_hash = 1469598103934665603ULL;
+    auto hash_byte = [&](unsigned char b)
+    {
+        image_hash ^= b;
+        image_hash *= 1099511628211ULL;
+    };
 
     // single-threaded: write the completed framebuffer out to the PPM file
     std::ofstream out("output.ppm");
@@ -151,14 +217,59 @@ int main()
             int ig = static_cast<int>(255.999 * c.y());
             int ib = static_cast<int>(255.999 * c.z());
             out << ir << ' ' << ig << ' ' << ib << '\n';
+            if (bench)
+            {
+                hash_byte(static_cast<unsigned char>(ir));
+                hash_byte(static_cast<unsigned char>(ig));
+                hash_byte(static_cast<unsigned char>(ib));
+            }
         }
     }
 
     std::cout << "Wrote output.ppm\n";
 
-    auto end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> elapsed = end - start;
-    std::cout << "Render time: " << elapsed.count() << " seconds\n";
+    auto total_end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> total_elapsed = total_end - total_start;
+    std::cout << "Render time: " << render_elapsed.count() << " seconds\n";
+
+    if (bench)
+    {
+        double t_min = thread_seconds[0], t_max = thread_seconds[0], t_sum = 0.0;
+        for (double t : thread_seconds)
+        {
+            t_min = std::min(t_min, t);
+            t_max = std::max(t_max, t);
+            t_sum += t;
+        }
+        double t_mean = t_sum / thread_seconds.size();
+        std::cout << "[bench] seed=" << bench_seed
+                  << " spheres=" << extra_spheres
+                  << " samples=" << samples_per_pixel
+                  << " threads=" << num_threads << "\n";
+        std::cout << "[bench] bvh_build=" << bvh_elapsed.count() << "s"
+                  << " nodes=" << bvh_nodes
+                  << " leaves=" << bvh_leaves
+                  << " max_depth=" << bvh_depth << "\n";
+        std::cout << "[bench] render=" << render_elapsed.count() << "s"
+                  << " total=" << total_elapsed.count() << "s\n";
+        std::cout << "[bench] per_thread=[";
+        for (size_t k = 0; k < thread_seconds.size(); ++k)
+            std::cout << (k ? "," : "") << thread_seconds[k];
+        std::cout << "] mean=" << t_mean
+                  << " straggler_gap=" << (t_max - t_mean) << "\n";
+        std::cout << "[bench] box_tests=" << [&] {
+            std::uint64_t s = 0;
+            for (auto n : thread_box)
+                s += n;
+            return s;
+        }() << " prim_tests=" << [&] {
+            std::uint64_t s = 0;
+            for (auto n : thread_prim)
+                s += n;
+            return s;
+        }() << "\n";
+        std::cout << "[bench] image_hash=" << image_hash << "\n";
+    }
 
     return 0;
 }

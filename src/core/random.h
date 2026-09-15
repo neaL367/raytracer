@@ -5,11 +5,41 @@
 #include <cstdlib>
 #include <numbers>
 #include <random>
+#include <atomic>
 
+// --- deterministic bench mode ------------------------------------------------
+// Set BEFORE any RNG use (and before spawning render threads). Each thread's
+// generator is seeded lazily on first use, so every worker gets the same
+// fixed seed on every run -> identical image for a given seed.
+// Why per-thread fixed seeds instead of one shared generator? A shared
+// generator needs a mutex per random number (millions of calls) and makes
+// output depend on thread scheduling order. Per-thread seeds cost nothing
+// and stay deterministic because each thread always renders the same rows.
+inline std::atomic<bool> &rng_deterministic_flag()
+{
+    static std::atomic<bool> flag{false};
+    return flag;
+}
+
+inline std::atomic<unsigned> &rng_bench_seed()
+{
+    static std::atomic<unsigned> seed{42u};
+    return seed;
+}
+
+inline void set_deterministic_rng(bool on, unsigned seed = 42u)
+{
+    rng_bench_seed().store(seed, std::memory_order_relaxed);
+    rng_deterministic_flag().store(on, std::memory_order_relaxed);
+}
 
 inline double random_double()
 {
-    thread_local std::mt19937 generator(std::random_device{}());
+    thread_local std::mt19937 generator = [] {
+        if (rng_deterministic_flag().load(std::memory_order_relaxed))
+            return std::mt19937(rng_bench_seed().load(std::memory_order_relaxed));
+        return std::mt19937(std::random_device{}());
+    }();
     thread_local std::uniform_real_distribution<double> distribution(0.0, 1.0);
     return distribution(generator);
 }

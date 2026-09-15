@@ -12,6 +12,7 @@ public:
 
     bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const override
     {
+        count_prim_test();
         const double epsilon = 1e-8;
 
         vec3 edge1 = v1 - v0;
