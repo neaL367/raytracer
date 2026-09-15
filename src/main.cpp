@@ -29,6 +29,7 @@ int main(int argc, char **argv)
     // in rows (default 8), --leaf N sets BVH leaf capacity (default 2),
     // --ground outside tests the ground sphere separately from the tree,
     // --nee enables next-event estimation against an overhead area light,
+    // --norr disables russian roulette (paths always run to full depth),
     // --seed N sets the fixed RNG seed (default 42).
     bool bench = false;
     int extra_spheres = 300;
@@ -38,6 +39,7 @@ int main(int argc, char **argv)
     size_t max_leaf_size = 2;
     bool ground_in_bvh = true;
     bool do_nee = false;
+    bool do_rr = true;
     for (int i = 1; i < argc; ++i)
     {
         std::string arg = argv[i];
@@ -55,6 +57,8 @@ int main(int argc, char **argv)
             ground_in_bvh = (std::string(argv[++i]) != "outside");
         else if (arg == "--nee")
             do_nee = true;
+        else if (arg == "--norr")
+            do_rr = false;
         else if (arg == "--seed" && i + 1 < argc)
             bench_seed = static_cast<unsigned>(std::stoul(argv[++i]));
     }
@@ -146,7 +150,7 @@ int main(int argc, char **argv)
     // never names path_tracer, so swapping strategies touches one line.
     // One virtual call per primary ray — inaudible next to the millions of
     // virtual hit() calls inside each path.
-    std::unique_ptr<integrator> tracer = std::make_unique<path_tracer>(do_nee);
+    std::unique_ptr<integrator> tracer = std::make_unique<path_tracer>(do_nee, do_rr);
 
     std::vector<vec3> framebuffer(image_width * image_height);
 
@@ -286,6 +290,7 @@ int main(int argc, char **argv)
                   << " leaf=" << max_leaf_size
                   << " ground=" << (ground_in_bvh ? "in" : "out")
                   << " nee=" << (do_nee ? "on" : "off")
+                  << " rr=" << (do_rr ? "on" : "off")
                   << " threads=" << num_threads << "\n";
         std::cout << "[bench] bvh_build=" << bvh_elapsed.count() << "s"
                   << " nodes=" << bvh_nodes

@@ -25,12 +25,12 @@ public:
 class path_tracer : public integrator
 {
 public:
-    path_tracer(bool do_nee) : nee(do_nee) {}
+    path_tracer(bool do_nee, bool do_rr = true) : nee(do_nee), roulette(do_rr) {}
 
     vec3 Li(const ray &r, const hittable &world,
             const std::vector<std::shared_ptr<quad>> &lights, int depth) const override
     {
-        return Li_weighted(r, world, lights, depth, 1.0);
+        return Li_weighted(r, world, lights, depth, 1.0, 1.0);
     }
 
 private:
@@ -43,7 +43,7 @@ private:
     // albedo*cos/pdf quotient collapses back to albedo.
     vec3 Li_weighted(const ray &r, const hittable &world,
                      const std::vector<std::shared_ptr<quad>> &lights,
-                     int depth, double emission_weight) const
+                     int depth, double emission_weight, double throughput) const
     {
         if (depth <= 0)
             return vec3(0, 0, 0);
@@ -70,7 +70,28 @@ private:
             bounce_weight = (ps + pl > 0.0) ? ps / (ps + pl) : 1.0;
         }
 
-        return color + attenuation * Li_weighted(scattered, world, lights, depth - 1, bounce_weight);
+        // Russian roulette: terminate dim paths with probability 1-q, scale
+        // survivors by 1/q — expectation unchanged, deep chains stop burning
+        // full depth-50 walks for thousandths of radiance. Survival tracks the
+        // strongest surviving channel, floored so near-black paths still end
+        // occasionally instead of never.
+        double rr_scale = 1.0;
+        double path_throughput = throughput * max_channel(attenuation);
+        if (roulette && path_throughput < 0.9)
+        {
+            double q = std::max(0.05, path_throughput);
+            if (random_double() >= q)
+                return color; // terminated: emission + direct kept, bounce dropped
+            rr_scale = 1.0 / q;
+        }
+
+        return color + attenuation * rr_scale *
+                          Li_weighted(scattered, world, lights, depth - 1, bounce_weight, path_throughput);
+    }
+
+    static double max_channel(const vec3 &v)
+    {
+        return std::max(v.x(), std::max(v.y(), v.z()));
     }
 
 private:
@@ -129,4 +150,5 @@ private:
     }
 
     bool nee;
+    bool roulette;
 };
