@@ -27,6 +27,9 @@ public:
     // True when shading needs surface parametrization (image maps). Lets
     // primitives skip UV math — acos/atan2 per hit — nobody will read.
     virtual bool needs_uv() const { return false; }
+    // Diffuse reflectance for denoiser guides (AOVs). Lights report black:
+    // emission is not reflectance.
+    virtual vec3 surface_albedo(const hit_record &) const { return vec3(0, 0, 0); }
     // True for delta distributions (mirror, glass): no finite sampling
     // density exists, so the direct-light estimator skips them and only the
     // bounce is integrated. Temporary seam — the BRDF/pdf refactor replaces
@@ -61,6 +64,11 @@ public:
 
     bool needs_uv() const override { return albedo->needs_uv(); }
 
+    vec3 surface_albedo(const hit_record &rec) const override
+    {
+        return albedo->value(rec.u, rec.v, rec.point);
+    }
+
     // Read access for GPU upload (SoA material flattening).
     const std::shared_ptr<texture> &tex() const { return albedo; }
 
@@ -85,6 +93,8 @@ public:
 
     // Read access for GPU upload.
     const vec3 &tint() const { return albedo; }
+
+    vec3 surface_albedo(const hit_record &) const override { return albedo; }
 
 private:
     vec3 albedo;
@@ -127,6 +137,8 @@ public:
 
     // Read access for GPU upload.
     double index() const { return ir; }
+
+    vec3 surface_albedo(const hit_record &) const override { return vec3(1, 1, 1); }
 
 private:
     double ir;

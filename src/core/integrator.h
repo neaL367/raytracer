@@ -247,6 +247,22 @@ private:
     double sigma_t;
 };
 
+// First-hit albedo for denoiser guides: diffuse reflectance at the primary
+// hit, black on miss. Pairs with normal_integrator; together they feed OIDN
+// without touching the path tracer.
+class albedo_integrator : public integrator
+{
+public:
+    vec3 Li(const ray &r, const hittable &world,
+            const std::vector<std::shared_ptr<quad>> &, int) const override
+    {
+        hit_record rec;
+        if (!world.hit(r, 0.001, 1000.0, rec))
+            return vec3(0, 0, 0);
+        return rec.mat->surface_albedo(rec);
+    }
+};
+
 // Reference integrator for GPU parity: closest hit mapped to color, no
 // materials, no lights, no RNG. Any backend tracing the same scene must
 // produce the same normals (within float precision) — that is the whole
