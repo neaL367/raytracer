@@ -20,7 +20,7 @@ layout(push_constant) uniform Push
     uvec4 meta;  // width, height, n_spheres, n_tris
     uvec4 meta2; // n_quads, samples, strat_n, max_depth
     uvec4 meta3; // img_w, img_h, use_bvh, probe
-    uvec4 meta4; // fog density bits, light quad index, aperture bits, 0
+    uvec4 meta4; // fog density bits, light count (qd[0..n) are lights), aperture bits, probe
 } pc;
 
 layout(binding = 0) readonly buffer Spheres
@@ -481,6 +481,18 @@ float light_pdf_dir(vec3 p, vec3 sd, uint li)
     return t * t / (cos_l * area0);
 }
 
+// Mixture pdf over the leading light quads (upload guarantees qd[0..n)
+// are exactly the scene lights, in order). Single light collapses to one
+// term — no special case needed, and n = 1 keeps bit-equality with the old
+// direct call (same ops, same order, divisor multiplied by exactly 1.0).
+float light_mixture_pdf(vec3 p, vec3 sd, uint n)
+{
+    float sum = 0.0;
+    for (uint k = 0u; k < n; ++k)
+        sum += light_pdf_dir(p, sd, k);
+    return sum / float(n);
+}
+
 // Full path: NEE + MIS + RR, iterative (GPUs dislike recursion).
 vec3 trace(vec3 o, vec3 d, int max_depth)
 {
@@ -490,8 +502,8 @@ vec3 trace(vec3 o, vec3 d, int max_depth)
     // Primary rays carry 1.0: the camera sampled neither strategy.
     float emit_w = 1.0;
     float fog_density = uintBitsToFloat(pc.meta4.x);
-    int light_qd = int(pc.meta4.y);
-    bool has_light = light_qd >= 0;
+    uint n_lights = pc.meta4.y;
+    bool has_light = n_lights > 0u;
 
     for (int depth = max_depth; depth > 0; --depth)
     {
@@ -578,7 +590,9 @@ vec3 trace(vec3 o, vec3 d, int max_depth)
                 vec3 mcolor = vec3(0.0); // the medium itself emits nothing
                 if (has_light)
                 {
-                    uint li = uint(light_qd);
+                    // Uniform light choice mirrors the CPU picker (draw only
+                    // past one light); the pdf below carries the 1/n.
+                    uint li = (n_lights == 1u) ? 0u : min(n_lights - 1u, uint(rand01() * float(n_lights)));
                     vec3 ln;
                     float area;
                     vec3 lp = sample_quad(li, ln, area);
@@ -592,7 +606,7 @@ vec3 trace(vec3 o, vec3 d, int max_depth)
                         float trans = occluded(mp, ldir, dist - 0.001) ? 0.0 : exp(-fog_density * dist);
                         if (trans > 0.0)
                         {
-                            float pl = dist2 / (cos_l * area);
+                            float pl = dist2 / (cos_l * area * float(n_lights));
                             float ps = 0.07957747; // 1/(4pi): isotropic phase
                             float w = (pl + ps > 0.0) ? pl / (pl + ps) : 0.0;
                             mcolor += vec3(0.85) * qd_albedo[li].xyz * ps * trans / pl * w;
@@ -611,7 +625,7 @@ vec3 trace(vec3 o, vec3 d, int max_depth)
                 if (has_light)
                 {
                     float ps = 0.07957747;
-                    float pl = light_pdf_dir(mp, ndir, uint(light_qd));
+                    float pl = light_mixture_pdf(mp, ndir, n_lights);
                     bw = (ps + pl > 0.0) ? ps / (ps + pl) : 1.0;
                 }
                 vec3 mthrough = throughput * 0.85;
@@ -687,7 +701,7 @@ vec3 trace(vec3 o, vec3 d, int max_depth)
         // (this OOB read hid behind nee-only scenes until now).
         if (!specular && has_light)
         {
-            uint li = uint(light_qd);
+            uint li = (n_lights == 1u) ? 0u : min(n_lights - 1u, uint(rand01() * float(n_lights)));
             vec3 ln;
             float area;
             vec3 lp = sample_quad(li, ln, area);
@@ -704,7 +718,7 @@ vec3 trace(vec3 o, vec3 d, int max_depth)
                 trans = occluded(hit_p, ldir, dist - 0.001) ? 0.0 : exp(-fog_density * dist);
             if (trans > 0.0)
             {
-                float pl = dist2 / (cos_l * area);
+                float pl = dist2 / (cos_l * area * float(n_lights));
                 float cos_b = max(dot(nrm, ldir), 0.0);
                 float ps = cos_b / 3.14159265358979;
                 float w = (pl + ps > 0.0) ? pl / (pl + ps) : 0.0;
@@ -718,7 +732,7 @@ vec3 trace(vec3 o, vec3 d, int max_depth)
         if (!specular && has_light)
         {
             vec3 sd = scattered / length(scattered);
-            float pl = light_pdf_dir(hit_p, sd, uint(light_qd));
+            float pl = light_mixture_pdf(hit_p, sd, n_lights);
             float cos_b = max(dot(nrm, sd), 0.0);
             float ps = cos_b / 3.14159265358979;
             emit_w = (ps + pl > 0.0) ? ps / (ps + pl) : 1.0;

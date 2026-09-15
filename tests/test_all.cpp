@@ -163,6 +163,21 @@ TEST(quad_hit)
     EXPECT_TRUE(p.x() >= -1.0 && p.x() <= 1.0 && p.y() >= 0.0 && p.y() <= 2.0);
 }
 
+TEST(quad_light_pdf)
+{
+    // Solid-angle pdf is dist^2/(cos*area): 2x2 quad at distance 5 on-axis.
+    auto mat = std::make_shared<diffuse_light>(vec3(3, 3, 3));
+    quad q(vec3(0, 0, 0), vec3(2, 0, 0), vec3(0, 2, 0), mat);
+    EXPECT_NEAR(q.pdf_value(vec3(1, 1, 5), vec3(0, 0, -1)), 25.0 / 4.0);
+    // Missing the quad reads 0 (drives the MIS weight to the BSDF side).
+    EXPECT_NEAR(q.pdf_value(vec3(1, 1, 5), vec3(0, 0, 1)), 0.0);
+    EXPECT_NEAR(q.pdf_value(vec3(10, 10, 5), vec3(0, 0, -1)), 0.0);
+    // Half the area at the same geometry doubles the pdf: the mixture
+    // average over lights is built from exactly these values.
+    quad q2(vec3(0, 0, 0), vec3(1, 0, 0), vec3(0, 2, 0), mat);
+    EXPECT_NEAR(q2.pdf_value(vec3(0.5, 1, 5), vec3(0, 0, -1)), 25.0 / 2.0);
+}
+
 TEST(triangle_hit)
 {
     auto mat = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));

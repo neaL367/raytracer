@@ -863,7 +863,7 @@ struct PathPush
     uint32_t width, height, n_spheres, n_tris;
     uint32_t n_quads, samples, strat_n, max_depth;
     uint32_t img_w, img_h, use_bvh, probe;
-    uint32_t fog_bits, light_qd, aperture_bits, pad3;
+    uint32_t fog_bits, n_lights, aperture_bits, pad3;
 };
 
 int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool use_bvh, int extra_spheres,
@@ -891,14 +891,13 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
 
     // Flatten prims + materials together so indices line up across buffers,
     // recording each prim's (type,index) for the BVH leaf refs below.
-    // Quad upload order also fixes each quad's device index; the scene light
-    // (if any) is located by pointer for the NEE light index.
+    // Light quads upload FIRST: the kernel indexes qd[0..n_lights) as lights,
+    // so the convention is structural here, not accidental build order.
     std::vector<float> sph, tri, qd;
     std::vector<float> sph_alb, tri_alb, qd_alb;
     std::vector<int32_t> sph_meta, tri_meta, qd_meta;
     std::map<const hittable *, FlatLeafRef> prim_ids;
     TexCollectors tc;
-    int light_qd = -1; // device quad index of the scene light, if present
     auto push_vec3 = [](std::vector<float> &v, const vec3 &p, float w) {
         v.push_back(static_cast<float>(p.x()));
         v.push_back(static_cast<float>(p.y()));
@@ -913,6 +912,21 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
         vm.push_back(f.texkind);
         vm.push_back(f.texidx);
         vm.push_back(0);
+    };
+    auto push_quad = [&](const std::shared_ptr<quad> &q) {
+        prim_ids[q.get()] = FlatLeafRef{2, static_cast<int>(qd.size() / 12)};
+        push_vec3(qd, q->corner(), 0.0f);
+        push_vec3(qd, q->edge_u(), 0.0f);
+        push_vec3(qd, q->edge_v(), 0.0f);
+        push_mat(qd_alb, qd_meta, q->mat_ptr());
+    };
+    for (const auto &l : scene.lights)
+        push_quad(l);
+    auto is_light = [&](const hittable *p) {
+        for (const auto &l : scene.lights)
+            if (l.get() == p)
+                return true;
+        return false;
     };
     for (const auto &o : scene.objects.objects_ref())
     {
@@ -932,13 +946,9 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
         }
         else if (const auto *q = dynamic_cast<const quad *>(o.get()))
         {
-            if (!scene.lights.empty() && o.get() == scene.lights[0].get())
-                light_qd = static_cast<int>(qd.size() / 12);
-            prim_ids[o.get()] = FlatLeafRef{2, static_cast<int>(qd.size() / 12)};
-            push_vec3(qd, q->corner(), 0.0f);
-            push_vec3(qd, q->edge_u(), 0.0f);
-            push_vec3(qd, q->edge_v(), 0.0f);
-            push_mat(qd_alb, qd_meta, q->mat_ptr());
+            if (is_light(q))
+                continue; // already uploaded first
+            push_quad(std::static_pointer_cast<quad>(o));
         }
     }
     uint32_t n_spheres = static_cast<uint32_t>(sph.size() / 4);
@@ -1138,7 +1148,7 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
         std::memcpy(&bits, &f, sizeof(bits));
         pc.fog_bits = bits;
     }
-    pc.light_qd = light_qd < 0 ? 0xFFFFFFFFu : static_cast<uint32_t>(light_qd);
+    pc.n_lights = static_cast<uint32_t>(scene.lights.size());
     {
         float f = static_cast<float>(aperture);
         uint32_t bits = 0;

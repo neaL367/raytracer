@@ -79,6 +79,13 @@ inline scene_data build_scene(const render_config &cfg)
             vec3(-2, 5, -2), vec3(4, 0, 0), vec3(0, 0, 4), light_mat);
         scene.lights.push_back(area_light);
         scene.objects.add(area_light);
+        // Cool fill against the warm key: exercises multi-light mixture
+        // (uniform choice, 1/n weights, averaged pdfs) on every backend.
+        auto fill_mat = std::make_shared<diffuse_light>(vec3(1.5, 1.8, 2.5));
+        auto fill_light = std::make_shared<quad>(
+            vec3(3, 3.5, 1), vec3(2, 0, 0), vec3(0, 0, 2), fill_mat);
+        scene.lights.push_back(fill_light);
+        scene.objects.add(fill_light);
     }
 
     // --- scale the scene up to a size where a BVH actually pays off ---
