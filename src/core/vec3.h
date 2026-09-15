@@ -11,6 +11,10 @@ public:
     double x() const { return e[0]; } // read-only accessor for x component
     double y() const { return e[1]; } // read-only accessor for y component
     double z() const { return e[2]; } // read-only accessor for z component
+    // Indexed access into the same storage. Lets axis loops run over an
+    // integer index instead of a three-way branch per component — the form
+    // compilers can unroll and vectorize. No bounds check, same as x()/y()/z().
+    double operator[](int i) const { return e[i]; }
 
     vec3 &operator+=(const vec3 &other) // compound assignment: modifies *this in place, unlike operator+
     {

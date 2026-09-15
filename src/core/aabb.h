@@ -24,19 +24,13 @@ public:
     bool hit(const ray &r, double t_min, double t_max) const
     {
         count_box_test();
+        // Indexed over the axis: same arithmetic as the x/y/z ternary form,
+        // but a shape the optimizer can unroll (and vectorize, with AVX2 on).
         for (int a = 0; a < 3; a++)
         {
-            double origin_a = (a == 0) ? r.origin().x() : (a == 1) ? r.origin().y()
-                                                                   : r.origin().z();
-            double inv_d = (a == 0) ? r.inv_direction().x() : (a == 1) ? r.inv_direction().y()
-                                                                       : r.inv_direction().z();
-            double min_a = (a == 0) ? minimum.x() : (a == 1) ? minimum.y()
-                                                             : minimum.z();
-            double max_a = (a == 0) ? maximum.x() : (a == 1) ? maximum.y()
-                                                             : maximum.z();
-
-            double t0 = (min_a - origin_a) * inv_d;
-            double t1 = (max_a - origin_a) * inv_d;
+            double inv_d = r.inv_direction()[a];
+            double t0 = (minimum[a] - r.origin()[a]) * inv_d;
+            double t1 = (maximum[a] - r.origin()[a]) * inv_d;
 
             if (inv_d < 0.0)
                 std::swap(t0, t1);

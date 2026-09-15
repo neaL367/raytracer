@@ -8,15 +8,15 @@ class triangle : public hittable
 {
 public:
     triangle(const vec3 &v0, const vec3 &v1, const vec3 &v2, std::shared_ptr<material> mat)
-        : v0(v0), v1(v1), v2(v2), mat(mat) {}
+        : v0(v0), v1(v1), v2(v2), mat(mat),
+          edge1(v1 - v0), edge2(v2 - v0),
+          face_normal(unit_vector(cross(v1 - v0, v2 - v0))) {}
 
     bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const override
     {
-        count_prim_test();
         const double epsilon = 1e-8;
 
-        vec3 edge1 = v1 - v0;
-        vec3 edge2 = v2 - v0;
+        count_prim_test();
         vec3 h = cross(r.direction(), edge2);
         double a = dot(edge1, h);
 
@@ -43,8 +43,7 @@ public:
 
         rec.t = t;
         rec.point = r.at(t);
-        vec3 outward_normal = unit_vector(cross(edge1, edge2));
-        rec.set_face_normal(r, outward_normal);
+        rec.set_face_normal(r, face_normal);
         rec.mat = mat;
 
         return true;
@@ -69,5 +68,9 @@ public:
 
 private:
     vec3 v0, v1, v2;
+    // Edge vectors and unit face normal never change after construction;
+    // computing them per hit wastes two subtractions, a cross product, a
+    // length, and a division on every intersection test.
+    vec3 edge1, edge2, face_normal;
     std::shared_ptr<material> mat;
 };
