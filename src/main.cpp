@@ -86,19 +86,30 @@ int main(int argc, char **argv)
 
     // Guide buffers for denoisers: first-hit albedo + normals under the same
     // sampling, so every pixel lines up with the beauty pass. Separate
-    // single-purpose integrators — no interface change, negligible cost
-    // (primary rays only, no bounces). OIDN forces them on: unguided OIDN
-    // is strictly worse than guided, so there is no unguided code path.
+    // single-purpose integrators — no interface change. Guides render at
+    // most 16spp: first-hit albedo and geometric normals converge fast, so
+    // two guide passes cost ~16% of a full pass instead of 200%. OIDN forces
+    // guides on: unguided OIDN is strictly worse, so no unguided code path.
+    // Joint bilateral also wants them, but at reduced sampling: guides are
+    // smooth by nature (first-hit albedo, geometric normals), so 16spp
+    // converges them for ~8% of a full pass instead of 200%.
     std::vector<vec3> albedo_fb(image_width * image_height);
     std::vector<vec3> normal_fb(image_width * image_height);
-    bool need_aov = cfg.do_aov || cfg.do_oidn;
+    bool need_aov = cfg.do_aov || cfg.do_oidn || cfg.do_denoise;
     if (need_aov)
     {
+        render_config guide_cfg = cfg;
+        if (guide_cfg.samples_per_pixel > 16)
+        {
+            guide_cfg.samples_per_pixel = 16;
+            guide_cfg.strat_n = 4;
+            guide_cfg.stratified = guide_cfg.do_strat;
+        }
         albedo_integrator albedo_tracer;
         normal_integrator normal_tracer;
-        render_framebuffer(cam, bvh_world, scene.lights, albedo_tracer, cfg,
+        render_framebuffer(cam, bvh_world, scene.lights, albedo_tracer, guide_cfg,
                            image_width, image_height, albedo_fb);
-        render_framebuffer(cam, bvh_world, scene.lights, normal_tracer, cfg,
+        render_framebuffer(cam, bvh_world, scene.lights, normal_tracer, guide_cfg,
                            image_width, image_height, normal_fb);
     }
     if (cfg.do_aov)
@@ -144,11 +155,14 @@ int main(int argc, char **argv)
     if (cfg.do_denoise && denoise_used != "oidn")
     {
         auto denoise_start = std::chrono::high_resolution_clock::now();
-        framebuffer = bilateral_denoise(framebuffer, image_width, image_height);
+        // Joint bilateral when guides exist (always, here — they were forced
+        // above); plain bilateral is the no-guide fallback kept for tests.
+        framebuffer = joint_bilateral_denoise(framebuffer, albedo_fb, normal_fb,
+                                              image_width, image_height);
         denoise_seconds = std::chrono::duration<double>(
                               std::chrono::high_resolution_clock::now() - denoise_start)
                               .count();
-        denoise_used = "bilateral";
+        denoise_used = "joint";
     }
 
     std::uint64_t image_hash = write_ppm("output.ppm", framebuffer, image_width, image_height,
