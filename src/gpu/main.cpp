@@ -748,6 +748,8 @@ int run_normal(Gpu &g, const std::filesystem::path &shader_dir)
     cfg.do_nee = true;
     set_deterministic_rng(true, cfg.bench_seed);
     scene_data scene = build_scene(cfg);
+    // Pinhole here on purpose: the aperture lives in the push block and the
+    // kernel applies it (uploaded vectors are aperture-independent).
     camera cam = default_camera(0.0);
 
     // Flatten to SoA: spheres as center+radius, tris/quads as corner+edges.
@@ -859,11 +861,11 @@ struct PathPush
     uint32_t width, height, n_spheres, n_tris;
     uint32_t n_quads, samples, strat_n, max_depth;
     uint32_t img_w, img_h, use_bvh, probe;
-    uint32_t fog_bits, light_qd, pad2, pad3;
+    uint32_t fog_bits, light_qd, aperture_bits, pad3;
 };
 
 int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool use_bvh, int extra_spheres,
-             bool use_glass, uint32_t wg_x, uint32_t wg_y, bool probe, double fog_density)
+             bool use_glass, uint32_t wg_x, uint32_t wg_y, bool probe, double fog_density, double aperture)
 {
     int strat_n = static_cast<int>(std::sqrt(samples + 0.5));
     if (strat_n * strat_n != samples || strat_n <= 0)
@@ -1135,6 +1137,13 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
         pc.fog_bits = bits;
     }
     pc.light_qd = light_qd < 0 ? 0xFFFFFFFFu : static_cast<uint32_t>(light_qd);
+    {
+        float f = static_cast<float>(aperture);
+        uint32_t bits = 0;
+        static_assert(sizeof(bits) == sizeof(f), "float/uint32 size mismatch");
+        std::memcpy(&bits, &f, sizeof(bits));
+        pc.aperture_bits = bits;
+    }
 
     dispatch_and_wait(g, pipeline, pipeline_layout, bound.set, &pc, sizeof(pc), frame,
                       (width + wg_x - 1) / wg_x, (height + wg_y - 1) / wg_y, &staging);
@@ -1261,8 +1270,17 @@ int main(int argc, char **argv)
             std::fprintf(stderr, "fog density must be >= 0\n");
             return 1;
         }
+        // Eighth positional and last: further knobs convert this CLI to
+        // flags. Aperture mirrors CPU --aperture (0.0 pinhole default here
+        // preserves the established parity baseline — pass 0.05 to compare).
+        double aperture = (argc > 8) ? std::atof(argv[8]) : 0.0;
+        if (aperture < 0.0)
+        {
+            std::fprintf(stderr, "aperture must be >= 0\n");
+            return 1;
+        }
         rc = run_path(g, shader_dir, samples, use_bvh, spheres, glass, wg_x, wg_y, mode == "probe",
-                      fog_density);
+                      fog_density, aperture);
     }
     else
         rc = run_fill(g, shader_dir);

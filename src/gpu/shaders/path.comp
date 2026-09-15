@@ -19,8 +19,8 @@ layout(push_constant) uniform Push
     vec4 vert;
     uvec4 meta;  // width, height, n_spheres, n_tris
     uvec4 meta2; // n_quads, samples, strat_n, max_depth
-    uvec4 meta3; // img0 width, img0 height, use_bvh, probe
-    uvec4 meta4; // fog density bits, light quad index (-1 = none), 0, 0
+    uvec4 meta3; // img_w, img_h, use_bvh, probe
+    uvec4 meta4; // fog density bits, light quad index, aperture bits, 0
 } pc;
 
 layout(binding = 0) readonly buffer Spheres
@@ -775,7 +775,24 @@ void main()
         float t = (float(y) + oy) / float(h - 1u);
         vec3 o = pc.origin.xyz;
         vec3 d = pc.llc.xyz + s * pc.horiz.xyz + t * pc.vert.xyz - o;
-        g_segments = 0u;
+        // Depth of field: jitter the origin over the lens disk and re-aim.
+        // The basis is reconstructed on device (any perpendicular frame spans
+        // the same disk uniformly — a rotation of the CPU's frame), so only
+        // the aperture crosses the push boundary. Polar mapping replaces the
+        // CPU's rejection loop; same uniform distribution, other streams.
+        float aperture = uintBitsToFloat(pc.meta4.z);
+        if (aperture > 0.0)
+        {
+            vec3 fw = d / length(d);
+            vec3 helper = (abs(fw.x) > 0.9) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+            vec3 lv = normalize(cross(fw, helper));
+            vec3 lu = cross(fw, lv);
+            float rr = sqrt(rand01()) * aperture * 0.5;
+            float pa = 6.2831853 * rand01();
+            vec3 off = lu * (rr * cos(pa)) + lv * (rr * sin(pa));
+            o += off;
+            d -= off;
+        }
         pixel += trace(o, d, max_depth);
         segs += g_segments;
     }
