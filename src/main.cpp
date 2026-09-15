@@ -5,6 +5,7 @@
 #include "core/camera.h"
 #include "core/random.h"
 #include "core/triangle.h"
+#include "core/obj_loader.h"
 
 #include <fstream>
 #include <iostream>
@@ -50,6 +51,11 @@ int main()
     auto material_right = std::make_shared<metal>(vec3(0.8, 0.6, 0.2));
     auto material_triangle = std::make_shared<lambertian>(vec3(0.2, 0.8, 0.2));
 
+    auto material_mesh = std::make_shared<lambertian>(vec3(0.6, 0.6, 0.6));
+    auto mesh = load_obj("assets/model.obj", material_mesh);
+    std::cout << "Loaded " << mesh->size() << " triangles\n";
+    world.add(mesh);
+
     // world.add(std::make_shared<sphere>(vec3(-2.5, 0, -2.5), 0.6, material_behind_glass));
     world.add(std::make_shared<sphere>(vec3(0, -100.5, -1), 100, material_ground));
     world.add(std::make_shared<sphere>(vec3(0, 0, -1), 0.5, material_center));
@@ -60,12 +66,13 @@ int main()
         material_triangle));
 
     // camera
-    vec3 lookfrom(3, 3, 2);
-    vec3 lookat(0, 0, -1);
+    vec3 lookfrom(4, 3, 5);
+    vec3 lookat(0, 0, 0);
     vec3 vup(0, 1, 0);
     double dist_to_focus = (lookfrom - lookat).length();
-    double aperture = 1.0;
-    camera cam(lookfrom, lookat, vup, 20, 16.0 / 9.0, aperture, dist_to_focus);
+    double aperture = 0.05; // subtle — we want to see the cube's edges sharply, not blurred
+
+    camera cam(lookfrom, lookat, vup, 25, 16.0 / 9.0, aperture, dist_to_focus);
 
     // render
     std::ofstream out("output.ppm");

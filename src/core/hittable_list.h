@@ -9,6 +9,8 @@ class hittable_list : public hittable
 {
 public:
     hittable_list() {}
+    
+    size_t size() const { return objects.size(); }
 
     void add(std::shared_ptr<hittable> object)
     {
