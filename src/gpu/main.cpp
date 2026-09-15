@@ -779,10 +779,11 @@ struct PathPush
     uint32_t width, height, n_spheres, n_tris;
     uint32_t n_quads, samples, strat_n, max_depth;
     uint32_t img_w, img_h, use_bvh, probe;
+    uint32_t fog_bits, light_qd, pad2, pad3;
 };
 
 int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool use_bvh, int extra_spheres,
-             bool use_glass, uint32_t wg_x, uint32_t wg_y, bool probe)
+             bool use_glass, uint32_t wg_x, uint32_t wg_y, bool probe, double fog_density)
 {
     int strat_n = static_cast<int>(std::sqrt(samples + 0.5));
     if (strat_n * strat_n != samples || strat_n <= 0)
@@ -806,11 +807,14 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
 
     // Flatten prims + materials together so indices line up across buffers,
     // recording each prim's (type,index) for the BVH leaf refs below.
+    // Quad upload order also fixes each quad's device index; the scene light
+    // (if any) is located by pointer for the NEE light index.
     std::vector<float> sph, tri, qd;
     std::vector<float> sph_alb, tri_alb, qd_alb;
     std::vector<int32_t> sph_meta, tri_meta, qd_meta;
     std::map<const hittable *, FlatLeafRef> prim_ids;
     TexCollectors tc;
+    int light_qd = -1; // device quad index of the scene light, if present
     auto push_vec3 = [](std::vector<float> &v, const vec3 &p, float w) {
         v.push_back(static_cast<float>(p.x()));
         v.push_back(static_cast<float>(p.y()));
@@ -844,6 +848,8 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
         }
         else if (const auto *q = dynamic_cast<const quad *>(o.get()))
         {
+            if (!scene.lights.empty() && o.get() == scene.lights[0].get())
+                light_qd = static_cast<int>(qd.size() / 12);
             prim_ids[o.get()] = FlatLeafRef{2, static_cast<int>(qd.size() / 12)};
             push_vec3(qd, q->corner(), 0.0f);
             push_vec3(qd, q->edge_u(), 0.0f);
@@ -1041,6 +1047,14 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
     pc.img_h = img_h;
     pc.use_bvh = use_bvh ? 1u : 0u;
     pc.probe = probe ? 1u : 0u;
+    {
+        float f = static_cast<float>(fog_density);
+        uint32_t bits = 0;
+        static_assert(sizeof(bits) == sizeof(f), "float/uint32 size mismatch");
+        std::memcpy(&bits, &f, sizeof(bits));
+        pc.fog_bits = bits;
+    }
+    pc.light_qd = light_qd < 0 ? 0xFFFFFFFFu : static_cast<uint32_t>(light_qd);
 
     dispatch_and_wait(g, pipeline, pipeline_layout, set, &pc, sizeof(pc), frame,
                       (width + wg_x - 1) / wg_x, (height + wg_y - 1) / wg_y, &staging);
@@ -1125,8 +1139,8 @@ int main(int argc, char **argv)
         rc = run_normal(g, shader_dir);
     else if (mode == "path" || mode == "probe")
     {
-        // path [samples] [flat|bvh] [spheres] [glass] [WxH]: traversal A/B
-        // plus workgroup occupancy in one binary. probe [samples] [spheres]:
+        // path [samples] [flat|bvh] [spheres] [glass] [WxH] [fog]: traversal
+        // A/B plus workgroup occupancy in one binary. probe [samples] [spheres]:
         // same render plus a per-pixel path-length histogram for the
         // divergence verdict (stdout, no image comparison needed).
         int samples = (argc > 2) ? std::atoi(argv[2]) : 196;
@@ -1160,7 +1174,14 @@ int main(int argc, char **argv)
                 spheres = 300;
             use_bvh = true;
         }
-        rc = run_path(g, shader_dir, samples, use_bvh, spheres, glass, wg_x, wg_y, mode == "probe");
+        double fog_density = (argc > 7) ? std::atof(argv[7]) : 0.0;
+        if (fog_density < 0.0)
+        {
+            std::fprintf(stderr, "fog density must be >= 0\n");
+            return 1;
+        }
+        rc = run_path(g, shader_dir, samples, use_bvh, spheres, glass, wg_x, wg_y, mode == "probe",
+                      fog_density);
     }
     else
         rc = run_fill(g, shader_dir);

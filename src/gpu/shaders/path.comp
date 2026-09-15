@@ -20,6 +20,7 @@ layout(push_constant) uniform Push
     uvec4 meta;  // width, height, n_spheres, n_tris
     uvec4 meta2; // n_quads, samples, strat_n, max_depth
     uvec4 meta3; // img0 width, img0 height, use_bvh, probe
+    uvec4 meta4; // fog density bits, light quad index (-1 = none), 0, 0
 } pc;
 
 layout(binding = 0) readonly buffer Spheres
@@ -453,6 +454,33 @@ bool traverse_any(vec3 o, vec3 d, float tmax)
     return false;
 }
 
+// Solid-angle pdf of sampling direction sd from p via the (single) light.
+// Duplicates the inline block in trace() on purpose: sharing it would
+// recompile the surface path and risk moving its bits. Same math, same order.
+float light_pdf_dir(vec3 p, vec3 sd, uint li)
+{
+    vec3 ln0 = normalize(cross(qd[li * 3u + 1u].xyz, qd[li * 3u + 2u].xyz));
+    float denom = dot(ln0, sd);
+    if (abs(denom) <= 1e-8)
+        return 0.0;
+    float t = (dot(ln0, qd[li * 3u].xyz) - dot(ln0, p)) / denom;
+    if (t <= 0.001)
+        return 0.0;
+    vec3 pp = p + sd * t;
+    vec3 plan = pp - qd[li * 3u].xyz;
+    vec3 wv = cross(qd[li * 3u + 1u].xyz, qd[li * 3u + 2u].xyz);
+    wv = wv / dot(wv, wv);
+    float alpha = dot(wv, cross(plan, qd[li * 3u + 2u].xyz));
+    float beta = dot(wv, cross(qd[li * 3u + 1u].xyz, plan));
+    if (alpha < 0.0 || alpha > 1.0 || beta < 0.0 || beta > 1.0)
+        return 0.0;
+    float cos_l = abs(dot(sd, ln0));
+    float area0 = length(cross(qd[li * 3u + 1u].xyz, qd[li * 3u + 2u].xyz));
+    if (cos_l <= 1e-8)
+        return 0.0;
+    return t * t / (cos_l * area0);
+}
+
 // Full path: NEE + MIS + RR, iterative (GPUs dislike recursion).
 vec3 trace(vec3 o, vec3 d, int max_depth)
 {
@@ -461,6 +489,9 @@ vec3 trace(vec3 o, vec3 d, int max_depth)
     // Emission weight of the incoming ray (MIS: bounce-found emission).
     // Primary rays carry 1.0: the camera sampled neither strategy.
     float emit_w = 1.0;
+    float fog_density = uintBitsToFloat(pc.meta4.x);
+    int light_qd = int(pc.meta4.y);
+    bool has_light = light_qd >= 0;
 
     for (int depth = max_depth; depth > 0; --depth)
     {
@@ -530,6 +561,79 @@ vec3 trace(vec3 o, vec3 d, int max_depth)
             }
         }
         }
+        // Homogeneous fog: free-flight distance against the surface hit (or
+        // past it on a miss — infinite fog always interacts). Reaching the
+        // surface conditions away its transmittance, so that branch below is
+        // untouched; scattering first weighs the medium albedo. Mirrors the
+        // CPU free-flight branch operation for operation.
+        if (fog_density > 0.0)
+        {
+            float xi = rand01();
+            if (xi < 1e-12)
+                xi = 1e-12; // log(0) is not a scattering distance
+            float tm = -log(xi) / fog_density;
+            if (!hit || tm < closest)
+            {
+                vec3 mp = o + d * tm;
+                vec3 mcolor = vec3(0.0); // the medium itself emits nothing
+                if (has_light)
+                {
+                    uint li = uint(light_qd);
+                    vec3 ln;
+                    float area;
+                    vec3 lp = sample_quad(li, ln, area);
+                    vec3 to_l = lp - mp;
+                    float dist2 = dot(to_l, to_l);
+                    float dist = sqrt(dist2);
+                    vec3 ldir = to_l / dist;
+                    float cos_l = dot(-ldir, ln);
+                    if (cos_l > 0.0)
+                    {
+                        float trans = occluded(mp, ldir, dist - 0.001) ? 0.0 : exp(-fog_density * dist);
+                        if (trans > 0.0)
+                        {
+                            float pl = dist2 / (cos_l * area);
+                            float ps = 0.07957747; // 1/(4pi): isotropic phase
+                            float w = (pl + ps > 0.0) ? pl / (pl + ps) : 0.0;
+                            mcolor += vec3(0.85) * qd_albedo[li].xyz * ps * trans / pl * w;
+                        }
+                    }
+                }
+                // Isotropic scatter: uniform sphere (shape matches the CPU's
+                // rejection sampler; streams were never shared anyway).
+                float u1 = rand01();
+                float u2 = rand01();
+                float zz = 1.0 - 2.0 * u1;
+                float rr = sqrt(max(0.0, 1.0 - zz * zz));
+                float pp = 6.2831853 * u2;
+                vec3 ndir = vec3(rr * cos(pp), rr * sin(pp), zz);
+                float bw = 1.0;
+                if (has_light)
+                {
+                    float ps = 0.07957747;
+                    float pl = light_pdf_dir(mp, ndir, uint(light_qd));
+                    bw = (ps + pl > 0.0) ? ps / (ps + pl) : 1.0;
+                }
+                vec3 mthrough = throughput * 0.85;
+                float mstrong = max(mthrough.x, max(mthrough.y, mthrough.z));
+                float mscale = 1.0;
+                if (mstrong < 0.9)
+                {
+                    float q = max(mstrong, 0.05);
+                    if (rand01() >= q)
+                    {
+                        color += mcolor;
+                        break;
+                    }
+                    mscale = 1.0 / q;
+                }
+                throughput = mthrough * mscale;
+                o = mp;
+                d = ndir;
+                emit_w = bw;
+                continue;
+            }
+        }
         if (!hit)
         {
             color += throughput * sky(d);
@@ -578,59 +682,43 @@ vec3 trace(vec3 o, vec3 d, int max_depth)
                 scattered = refract_cpu(ud, nn, ri);
         }
 
-        // NEE on diffuse: explicit light sample, balance-weighted.
-        if (!specular)
+        // NEE on diffuse: explicit light sample, balance-weighted. Guarded
+        // on light presence: without a light, qd[] may hold no quads at all
+        // (this OOB read hid behind nee-only scenes until now).
+        if (!specular && has_light)
         {
+            uint li = uint(light_qd);
             vec3 ln;
             float area;
-            vec3 lp = sample_quad(0u, ln, area);
+            vec3 lp = sample_quad(li, ln, area);
             vec3 to_l = lp - hit_p;
             float dist2 = dot(to_l, to_l);
             float dist = sqrt(dist2);
             vec3 ldir = to_l / dist;
             float cos_s = dot(nrm, ldir);
             float cos_l = dot(-ldir, ln);
-            if (cos_s > 0.0 && cos_l > 0.0 && !occluded(hit_p, ldir, dist - 0.001))
+            // Zero until proven lit: a failed cosine guard must skip the
+            // block, not admit it (1.0 here would divide by cos_l <= 0).
+            float trans = 0.0;
+            if (cos_s > 0.0 && cos_l > 0.0)
+                trans = occluded(hit_p, ldir, dist - 0.001) ? 0.0 : exp(-fog_density * dist);
+            if (trans > 0.0)
             {
                 float pl = dist2 / (cos_l * area);
                 float cos_b = max(dot(nrm, ldir), 0.0);
                 float ps = cos_b / 3.14159265358979;
                 float w = (pl + ps > 0.0) ? pl / (pl + ps) : 0.0;
-                color += throughput * albedo * qd_albedo[0].xyz * cos_s / pl * w;
+                color += throughput * albedo * qd_albedo[li].xyz * cos_s * trans / pl * w;
             }
         }
 
-        // MIS weight for emission the bounce may find.
-        if (!specular)
+        // MIS weight for emission the bounce may find. Same helper the fog
+        // branch uses; the old inline copy is gone (one implementation now —
+        // the bit-equality A/B below re-verifies the move).
+        if (!specular && has_light)
         {
             vec3 sd = scattered / length(scattered);
-            // Light pdf toward the bounce direction (single light: direct).
-            vec3 to_q = qd[0].xyz - hit_p;
-            // Reuse: pdf of sampling sd via the light = dist^2/(cos*area)
-            // evaluated along sd through the quad plane.
-            vec3 ln0 = normalize(cross(qd[1].xyz, qd[2].xyz));
-            float denom = dot(ln0, sd);
-            float pl = 0.0;
-            if (abs(denom) > 1e-8)
-            {
-                float t = (dot(ln0, qd[0].xyz) - dot(ln0, hit_p)) / denom;
-                if (t > 0.001)
-                {
-                    vec3 pp = hit_p + sd * t;
-                    vec3 plan = pp - qd[0].xyz;
-                    vec3 wv = cross(qd[1].xyz, qd[2].xyz);
-                    wv = wv / dot(wv, wv);
-                    float alpha = dot(wv, cross(plan, qd[2].xyz));
-                    float beta = dot(wv, cross(qd[1].xyz, plan));
-                    if (alpha >= 0.0 && alpha <= 1.0 && beta >= 0.0 && beta <= 1.0)
-                    {
-                        float cos_l = abs(dot(sd, ln0));
-                        float area0 = length(cross(qd[1].xyz, qd[2].xyz));
-                        if (cos_l > 1e-8)
-                            pl = t * t / (cos_l * area0);
-                    }
-                }
-            }
+            float pl = light_pdf_dir(hit_p, sd, uint(light_qd));
             float cos_b = max(dot(nrm, sd), 0.0);
             float ps = cos_b / 3.14159265358979;
             emit_w = (ps + pl > 0.0) ? ps / (ps + pl) : 1.0;
