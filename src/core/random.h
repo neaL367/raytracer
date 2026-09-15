@@ -7,14 +7,13 @@
 #include <random>
 #include <atomic>
 
-// --- deterministic bench mode ------------------------------------------------
-// Set BEFORE any RNG use (and before spawning render threads). Each thread's
-// generator is seeded lazily on first use, so every worker gets the same
-// fixed seed on every run -> identical image for a given seed.
-// Why per-thread fixed seeds instead of one shared generator? A shared
-// generator needs a mutex per random number (millions of calls) and makes
-// output depend on thread scheduling order. Per-thread seeds cost nothing
-// and stay deterministic because each thread always renders the same rows.
+// --- fixed-seed mode ---------------------------------------------------------
+// When enabled, every thread's generator is seeded lazily with the same fixed
+// value, so repeated runs produce identical images. Call
+// set_deterministic_rng() before any random number is drawn (and before
+// worker threads start). A single shared generator would need a mutex on
+// every call and its output would depend on thread scheduling order;
+// per-thread generators avoid both problems.
 inline std::atomic<bool> &rng_deterministic_flag()
 {
     static std::atomic<bool> flag{false};
@@ -33,15 +32,30 @@ inline void set_deterministic_rng(bool on, unsigned seed = 42u)
     rng_deterministic_flag().store(on, std::memory_order_relaxed);
 }
 
-inline double random_double()
+inline std::mt19937 &thread_rng()
 {
     thread_local std::mt19937 generator = [] {
         if (rng_deterministic_flag().load(std::memory_order_relaxed))
             return std::mt19937(rng_bench_seed().load(std::memory_order_relaxed));
         return std::mt19937(std::random_device{}());
     }();
+    return generator;
+}
+
+// Replace this thread's generator with a freshly seeded one. The renderer
+// calls this once per work tile with seed_base + tile_index, so a given tile
+// always draws the same random stream no matter which worker thread renders
+// it. (Neighboring mt19937 seeds produce correlated opening values; that only
+// affects variety between tiles, never correctness or repeatability.)
+inline void reseed_thread_rng(unsigned seed)
+{
+    thread_rng() = std::mt19937(seed);
+}
+
+inline double random_double()
+{
     thread_local std::uniform_real_distribution<double> distribution(0.0, 1.0);
-    return distribution(generator);
+    return distribution(thread_rng());
 }
 
 inline double random_double(double min, double max)

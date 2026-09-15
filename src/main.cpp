@@ -43,12 +43,14 @@ vec3 ray_color(const ray &r, const hittable &world, int depth)
 
 int main(int argc, char **argv)
 {
-    // --- CLI: --bench enables deterministic RNG + stats + report ------------
-    // --spheres N scales the scene (default 300), --samples N overrides
-    // samples/pixel (default 200), --seed N sets the bench seed (default 42).
+    // Optional flags: --bench prints timing/counter report with fixed RNG seed,
+    // --spheres N sets added random spheres (default 300), --samples N sets
+    // samples per pixel (default 200), --tile N sets scheduling strip height
+    // in rows (default 8), --seed N sets the fixed RNG seed (default 42).
     bool bench = false;
     int extra_spheres = 300;
     int samples_per_pixel = 200;
+    int tile_rows = 8;
     unsigned bench_seed = 42u;
     for (int i = 1; i < argc; ++i)
     {
@@ -59,10 +61,13 @@ int main(int argc, char **argv)
             extra_spheres = std::stoi(argv[++i]);
         else if (arg == "--samples" && i + 1 < argc)
             samples_per_pixel = std::stoi(argv[++i]);
+        else if (arg == "--tile" && i + 1 < argc)
+            tile_rows = std::stoi(argv[++i]);
         else if (arg == "--seed" && i + 1 < argc)
             bench_seed = static_cast<unsigned>(std::stoul(argv[++i]));
     }
-    // Must precede ANY random_double use (scene scatter + BVH axis picks).
+    // Seed before the first random draw so every later one — scene scatter
+    // and BVH splits included — follows the fixed sequence.
     if (bench)
         set_deterministic_rng(true, bench_seed);
 
@@ -139,16 +144,32 @@ int main(int argc, char **argv)
 
     auto render_start = std::chrono::high_resolution_clock::now();
 
-    // NOTE: static strip assignment (kept for D0 baseline; D1 replaces this
-    // with a tile queue). The lambda takes its thread index by value so it
-    // can record its own busy time without any shared-state writes.
-    auto render_rows = [&](unsigned thread_idx, int row_start, int row_end)
+    // Workers grab row-strips from a shared atomic counter until none remain.
+    // Relaxed ordering suffices: the counter only mints unique indices, it
+    // publishes no data and enforces no ordering. Larger strips mean fewer
+    // atomic grabs but coarser balancing; smaller strips balance better at
+    // the cost of more grabs and worse cache reuse.
+    const int num_tiles = (image_height + tile_rows - 1) / tile_rows;
+    std::atomic<int> next_tile{0};
+
+    auto render_rows = [&](unsigned thread_idx)
     {
         auto t0 = std::chrono::high_resolution_clock::now();
-        // Snapshot this worker's own thread_local counters; the deltas are
-        // this strip's true cost, readable without any synchronization.
+        // Snapshot this worker's own thread-local counters; subtracting at the
+        // end yields this thread's totals with no synchronization.
         std::uint64_t b0 = thread_box_tests(), p0 = thread_prim_tests();
-        for (int j = row_start; j < row_end; ++j)
+        for (;;)
+        {
+            int tile = next_tile.fetch_add(1, std::memory_order_relaxed);
+            if (tile >= num_tiles)
+                break;
+            int row_start = tile * tile_rows;
+            int row_end = std::min(row_start + tile_rows, image_height);
+            // Reseed per tile so a given tile always draws the same random
+            // stream regardless of which worker thread renders it.
+            if (bench)
+                reseed_thread_rng(bench_seed + static_cast<unsigned>(tile));
+            for (int j = row_start; j < row_end; ++j)
         {
             for (int i = 0; i < image_width; ++i)
             {
@@ -171,6 +192,7 @@ int main(int argc, char **argv)
                     std::sqrt(pixel_color.z() * scale));
             }
         }
+        } // end tile-grab loop
         auto t1 = std::chrono::high_resolution_clock::now();
         // Disjoint indices: no lock needed, each thread writes only its slots.
         thread_seconds[thread_idx] = std::chrono::duration<double>(t1 - t0).count();
@@ -178,14 +200,8 @@ int main(int argc, char **argv)
         thread_prim[thread_idx] = thread_prim_tests() - p0;
     };
 
-    int rows_per_thread = image_height / num_threads;
-
     for (unsigned int t = 0; t < num_threads; ++t)
-    {
-        int row_start = t * rows_per_thread;
-        int row_end = (t == num_threads - 1) ? image_height : row_start + rows_per_thread;
-        threads.emplace_back(render_rows, t, row_start, row_end);
-    }
+        threads.emplace_back(render_rows, t);
 
     for (auto &th : threads)
         th.join();
@@ -245,6 +261,7 @@ int main(int argc, char **argv)
         std::cout << "[bench] seed=" << bench_seed
                   << " spheres=" << extra_spheres
                   << " samples=" << samples_per_pixel
+                  << " tile_rows=" << tile_rows
                   << " threads=" << num_threads << "\n";
         std::cout << "[bench] bvh_build=" << bvh_elapsed.count() << "s"
                   << " nodes=" << bvh_nodes

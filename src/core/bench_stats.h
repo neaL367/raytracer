@@ -1,15 +1,13 @@
 #pragma once
-// Bench-only counters for --bench runs.
+// Optional ray-statistics counters: how many bounding-box and primitive
+// intersection tests a render performs. Disabled by default, in which case
+// each counting call costs a single predictable branch and nothing else.
 //
-// Disabled by default: the normal render path pays exactly one predictable
-// branch per test and nothing else.
-//
-// Design note: counters are thread_local, NOT shared atomics. A shared
-// atomic fetch_add on every box test measured ~5x slowdown from contention
-// alone — it would pollute the timings this harness exists to capture.
-// thread_local ++ costs ~1 cycle. Each worker reads out its own deltas at
-// the end of its strip (see main.cpp render_rows); the main thread sums
-// them after join. No locks, no fences beyond the join that already exists.
+// The counters are thread_local rather than shared atomics: a shared atomic
+// increment on every box test measured about a 5x slowdown from contention,
+// while a thread-local increment costs roughly a cycle. Each worker reads out
+// its own totals when finished; the main thread adds them up after joining,
+// so there are no locks and no cross-thread traffic during the render.
 #include <atomic>
 #include <cstdint>
 

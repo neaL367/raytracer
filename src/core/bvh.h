@@ -77,10 +77,11 @@ public:
         return true;
     }
 
-    // One-time tree census for --bench runs. dynamic_cast here is fine: this
-    // runs once after the build, never in the per-ray hot path. Note the
-    // object_span == 1 case aliases left == right to the same primitive, so
-    // it must be counted exactly once.
+    // Count nodes, leaves, and maximum depth of a built tree (for reporting).
+    // Uses dynamic_cast to tell inner nodes from leaf primitives; that is
+    // fine here because a census runs once per build, never per ray. The
+    // single-object case stores the same child on both sides, so it is
+    // counted exactly once.
     void census(size_t &nodes, size_t &leaves, size_t &max_depth, size_t depth = 0) const
     {
         ++nodes;
