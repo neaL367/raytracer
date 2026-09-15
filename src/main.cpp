@@ -13,6 +13,7 @@
 #include "scene/scene.h"
 #include "app/config.h"
 #include "render/renderer.h"
+#include "io/denoise.h"
 #include "io/ppm.h"
 
 #include <iostream>
@@ -79,6 +80,16 @@ int main(int argc, char **argv)
     render_stats stats = render_framebuffer(cam, bvh_world, scene.lights, *tracer, cfg,
                                             image_width, image_height, framebuffer);
 
+    double denoise_seconds = 0.0;
+    if (cfg.do_denoise)
+    {
+        auto denoise_start = std::chrono::high_resolution_clock::now();
+        framebuffer = bilateral_denoise(framebuffer, image_width, image_height);
+        denoise_seconds = std::chrono::duration<double>(
+                              std::chrono::high_resolution_clock::now() - denoise_start)
+                              .count();
+    }
+
     std::uint64_t image_hash = write_ppm("output.ppm", framebuffer, image_width, image_height,
                                          cfg.exposure, cfg.bench);
     std::cout << "Wrote output.ppm\n";
@@ -114,6 +125,7 @@ int main(int argc, char **argv)
                   << " nee=" << (cfg.do_nee ? "on" : "off")
                   << " glass=" << (cfg.use_glass ? "on" : "off")
                   << " fog=" << cfg.fog_density
+                  << " denoise=" << (cfg.do_denoise ? "on" : "off")
                   << " shade=" << cfg.shade_mode
                   << " rr=" << (cfg.do_rr ? "on" : "off")
                   << " strat=" << (cfg.stratified ? "on" : "off")
@@ -125,6 +137,7 @@ int main(int argc, char **argv)
                   << " leaves=" << bvh_leaves
                   << " max_depth=" << bvh_depth << "\n";
         std::cout << "[bench] render=" << stats.render_seconds << "s"
+                  << " denoise=" << denoise_seconds << "s"
                   << " total=" << total_elapsed.count() << "s\n";
         std::cout << "[bench] per_thread=[";
         for (size_t k = 0; k < stats.thread_seconds.size(); ++k)
