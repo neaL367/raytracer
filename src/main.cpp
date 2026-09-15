@@ -22,6 +22,25 @@
 #include <algorithm>
 #include <cmath>
 
+// ACES fitted approximation (Narkowicz): maps unbounded linear HDR into
+// displayable range with a filmic shoulder — highlights roll off instead of
+// clipping, unlike the old clamp. Per-channel fit; slight hue shifts in
+// extreme highlights are the known price of the cheap version.
+inline double aces_fit(double x)
+{
+    return (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
+}
+
+// Full output transform: exposure, tonemap in linear, then gamma 2.2.
+// Framebuffer holds display-ready [0,1]; the write loop only quantizes.
+inline vec3 tonemap(const vec3 &linear_hdr, double exposure)
+{
+    vec3 c = linear_hdr * exposure;
+    c = vec3(aces_fit(c.x()), aces_fit(c.y()), aces_fit(c.z()));
+    const double inv_gamma = 1.0 / 2.2;
+    return vec3(std::pow(c.x(), inv_gamma), std::pow(c.y(), inv_gamma), std::pow(c.z(), inv_gamma));
+}
+
 int main(int argc, char **argv)
 {
     // Optional flags: --bench prints timing/counter report with fixed RNG seed,
@@ -33,7 +52,8 @@ int main(int argc, char **argv)
     // separately from the tree, --nee enables next-event estimation
     // against an overhead area light, --norr disables russian roulette
     // (paths always run to full depth), --nostrat disables stratified
-    // pixel sampling (pure jitter instead), --seed N sets the fixed
+    // pixel sampling (pure jitter instead), --exposure E scales linear HDR
+    // before tonemapping (default 1.0), --seed N sets the fixed
     // RNG seed (default 42).
     bool bench = false;
     int extra_spheres = 300;
@@ -45,6 +65,7 @@ int main(int argc, char **argv)
     bool do_nee = false;
     bool do_rr = true;
     bool do_strat = true;
+    double exposure = 1.0;
     for (int i = 1; i < argc; ++i)
     {
         std::string arg = argv[i];
@@ -66,6 +87,8 @@ int main(int argc, char **argv)
             do_rr = false;
         else if (arg == "--nostrat")
             do_strat = false;
+        else if (arg == "--exposure" && i + 1 < argc)
+            exposure = std::stod(argv[++i]);
         else if (arg == "--seed" && i + 1 < argc)
             bench_seed = static_cast<unsigned>(std::stoul(argv[++i]));
     }
@@ -237,10 +260,7 @@ int main(int argc, char **argv)
                 }
 
                 double scale = 1.0 / samples_per_pixel;
-                framebuffer[j * image_width + i] = vec3(
-                    std::sqrt(pixel_color.x() * scale),
-                    std::sqrt(pixel_color.y() * scale),
-                    std::sqrt(pixel_color.z() * scale));
+                framebuffer[j * image_width + i] = tonemap(pixel_color * scale, exposure);
             }
         }
         } // end tile-grab loop
@@ -280,8 +300,9 @@ int main(int argc, char **argv)
         for (int i = 0; i < image_width; ++i)
         {
             const vec3 &c = framebuffer[j * image_width + i];
-            // Clamp: lit values can exceed 1 (no tonemapper yet); raw >255
-            // bytes are malformed P3, so clip at the displayable range.
+            // Final guard: tonemapped values sit in [0,1] by construction;
+            // the clamp only catches float dust. NaN would poison through
+            // here — none observed, and the hash would catch it if one came.
             int ir = std::min(255, static_cast<int>(255.999 * c.x()));
             int ig = std::min(255, static_cast<int>(255.999 * c.y()));
             int ib = std::min(255, static_cast<int>(255.999 * c.z()));
@@ -320,6 +341,7 @@ int main(int argc, char **argv)
                   << " nee=" << (do_nee ? "on" : "off")
                   << " rr=" << (do_rr ? "on" : "off")
                   << " strat=" << (stratified ? "on" : "off")
+                  << " exposure=" << exposure
                   << " threads=" << num_threads << "\n";
         std::cout << "[bench] bvh_build=" << bvh_elapsed.count() << "s"
                   << " nodes=" << bvh_nodes
