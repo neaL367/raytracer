@@ -19,6 +19,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <map>
 #include <memory>
 #include <numbers>
 #include <string>
@@ -292,6 +293,88 @@ TEST(deterministic_rng)
     EXPECT_NEAR(random_double(), a1);
     EXPECT_NEAR(random_double(), a2);
     set_deterministic_rng(false);
+}
+
+TEST(bvh_flatten_covers_all)
+{
+    // Every primitive reachable exactly once through the flat arrays, with
+    // node/leaf counts agreeing with census.
+    auto mat = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));
+    hittable_list list;
+    auto s0 = std::make_shared<sphere>(vec3(0, 0, -2), 0.5, mat);
+    auto s1 = std::make_shared<sphere>(vec3(1.5, 0, -3), 0.7, mat);
+    auto t0 = std::make_shared<triangle>(vec3(-1, -1, -2), vec3(1, -1, -2), vec3(0, 1, -2), mat);
+    list.add(s0);
+    list.add(s1);
+    list.add(t0);
+    bvh_node root(list, 2);
+
+    std::map<const hittable *, FlatLeafRef> ids;
+    int next_sphere = 0, next_tri = 0;
+    for (const auto &o : list.objects_ref())
+    {
+        FlatLeafRef ref;
+        if (dynamic_cast<const sphere *>(o.get()))
+        {
+            ref.type = 0;
+            ref.index = next_sphere++;
+        }
+        else
+        {
+            ref.type = 1;
+            ref.index = next_tri++;
+        }
+        ids[o.get()] = ref;
+    }
+
+    std::vector<FlatNode> nodes;
+    std::vector<FlatLeafRef> refs;
+    root.flatten(nodes, refs, [&](const std::shared_ptr<hittable> &p) { return ids[p.get()]; });
+
+    size_t cn = 0, cl = 0, cd = 0;
+    root.census(cn, cl, cd);
+    EXPECT_TRUE(nodes.size() == cn);
+    EXPECT_TRUE(refs.size() == list.size());
+
+    // Walk the flat links from the root: visit every node once, collect refs.
+    std::vector<int> stack = {0};
+    std::vector<bool> seen(nodes.size(), false);
+    size_t leaf_nodes = 0, ref_total = 0;
+    while (!stack.empty())
+    {
+        int ni = stack.back();
+        stack.pop_back();
+        EXPECT_TRUE(ni >= 0 && static_cast<size_t>(ni) < nodes.size());
+        EXPECT_TRUE(!seen[ni]);
+        seen[ni] = true;
+        const FlatNode &n = nodes[ni];
+        if (n.left < 0)
+        {
+            ++leaf_nodes;
+            ref_total += n.count;
+            for (int k = 0; k < n.count; ++k)
+            {
+                FlatLeafRef r = refs[n.start + k];
+                EXPECT_TRUE(r.type == 0 || r.type == 1);
+                EXPECT_TRUE(r.index >= 0);
+            }
+        }
+        else
+        {
+            stack.push_back(n.left);
+            stack.push_back(n.right);
+        }
+    }
+    for (bool s : seen)
+        EXPECT_TRUE(s);
+    EXPECT_TRUE(leaf_nodes == cl);
+    EXPECT_TRUE(ref_total == list.size());
+    // Root box matches the flat list's own bounds.
+    aabb list_box, root_box;
+    EXPECT_TRUE(list.bounding_box(list_box));
+    EXPECT_TRUE(root.bounding_box(root_box));
+    EXPECT_NEAR(list_box.min().x(), root_box.min().x());
+    EXPECT_NEAR(list_box.max().z(), root_box.max().z());
 }
 
 TEST(normal_integrator_shade)

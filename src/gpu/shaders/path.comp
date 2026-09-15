@@ -15,7 +15,7 @@ layout(push_constant) uniform Push
     vec4 vert;
     uvec4 meta;  // width, height, n_spheres, n_tris
     uvec4 meta2; // n_quads, samples, strat_n, max_depth
-    uvec4 meta3; // img0 width, img0 height, 0, 0
+    uvec4 meta3; // img0 width, img0 height, use_bvh, 0
 } pc;
 
 layout(binding = 0) readonly buffer Spheres
@@ -80,6 +80,20 @@ layout(binding = 10) readonly buffer Img0
 layout(binding = 11) buffer Frame
 {
     float pixels[];
+};
+
+// Flattened BVH: node boxes (min,max per node) plus one ivec4 array holding
+// node links (left,right,leaf_start,leaf_count) followed by leaf refs
+// (prim_type,prim_index,0,0). Starts are absolute ivec4 indices, so the
+// arrays upload as-is with no pointer fixups.
+layout(binding = 12) readonly buffer BvhBox
+{
+    vec4 bb[];
+};
+
+layout(binding = 13) readonly buffer BvhLink
+{
+    ivec4 bl[];
 };
 
 // --- hash RNG: unique stream per (pixel, sample), no shared state ---------
@@ -262,8 +276,13 @@ vec3 sample_quad(uint qi, out vec3 lp_normal, out float area)
     return Q + rand01() * u + rand01() * v;
 }
 
+// traverse_any is defined after occluded() (with the other tree walkers).
+bool traverse_any(vec3 o, vec3 d, float tmax);
+
 bool occluded(vec3 o, vec3 d, float tmax)
 {
+    if (pc.meta3.z != 0u)
+        return traverse_any(o, d, tmax);
     float th;
     vec3 n;
     for (uint i = 0u; i < pc.meta.z; ++i)
@@ -278,6 +297,147 @@ bool occluded(vec3 o, vec3 d, float tmax)
     return false;
 }
 
+bool box_hit(vec3 bmin, vec3 bmax, vec3 o, vec3 inv, float tmin, float tmax)
+{
+    // Same slab arithmetic as the CPU box test: per-axis multiply by the
+    // precomputed reciprocal, swap on negative, narrow, early exit.
+    for (int a = 0; a < 3; ++a)
+    {
+        float t0 = (bmin[a] - o[a]) * inv[a];
+        float t1 = (bmax[a] - o[a]) * inv[a];
+        if (inv[a] < 0.0)
+        {
+            float tmp = t0;
+            t0 = t1;
+            t1 = tmp;
+        }
+        tmin = max(tmin, t0);
+        tmax = min(tmax, t1);
+        if (tmax <= tmin)
+            return false;
+    }
+    return true;
+}
+
+bool test_prim(int type, int idx, vec3 o, vec3 d, float tmin, float tmax, out float th, out vec3 n)
+{
+    if (type == 0)
+        return hit_sphere(o, d, sph[idx], tmin, tmax, th, n);
+    if (type == 1)
+        return hit_tri(o, d, tri[idx * 3].xyz, tri[idx * 3 + 1].xyz, tri[idx * 3 + 2].xyz,
+                       tmin, tmax, th, n);
+    return hit_quad(o, d, qd[idx * 3].xyz, qd[idx * 3 + 1].xyz, qd[idx * 3 + 2].xyz,
+                    tmin, tmax, th, n);
+}
+
+void fetch_mat(int type, int idx, out vec3 alb, out float alb_w,
+               out int kind, out int texk, out int texi)
+{
+    if (type == 0)
+    {
+        alb = sph_albedo[idx].xyz;
+        alb_w = sph_albedo[idx].w;
+        ivec4 m = sph_meta[idx];
+        kind = m.x;
+        texk = m.y;
+        texi = m.z;
+    }
+    else if (type == 1)
+    {
+        alb = tri_albedo[idx].xyz;
+        alb_w = tri_albedo[idx].w;
+        ivec4 m = tri_meta[idx];
+        kind = m.x;
+        texk = m.y;
+        texi = m.z;
+    }
+    else
+    {
+        alb = qd_albedo[idx].xyz;
+        alb_w = qd_albedo[idx].w;
+        ivec4 m = qd_meta[idx];
+        kind = m.x;
+        texk = m.y;
+        texi = m.z;
+    }
+}
+
+// Stack walk over the flat tree. Depth 32 covers the measured ~15 several
+// times over; the guard below is against pathological future trees, and can
+// only drop subtrees that cannot exist today.
+bool traverse_closest(vec3 o, vec3 d, out float th, out vec3 n,
+                      out vec3 alb, out float alb_w, out int kind, out int texk, out int texi)
+{
+    vec3 inv = vec3(1.0) / d; // inf on zero components, same as CPU 1.0/dir
+    float closest = 1000.0;
+    bool found = false;
+    int stack[32];
+    int sp = 0;
+    stack[sp++] = 0;
+    while (sp > 0)
+    {
+        int ni = stack[--sp];
+        if (!box_hit(bb[ni * 2].xyz, bb[ni * 2 + 1].xyz, o, inv, 0.001, closest))
+            continue;
+        ivec4 link = bl[ni];
+        if (link.x < 0)
+        {
+            for (int k = 0; k < link.w; ++k)
+            {
+                ivec4 ref = bl[link.z + k];
+                float t;
+                vec3 nn;
+                if (test_prim(ref.x, ref.y, o, d, 0.001, closest, t, nn))
+                {
+                    closest = t;
+                    n = nn;
+                    fetch_mat(ref.x, ref.y, alb, alb_w, kind, texk, texi);
+                    found = true;
+                }
+            }
+        }
+        else if (sp < 31)
+        {
+            stack[sp++] = link.y; // right first: left pops first
+            stack[sp++] = link.x;
+        }
+    }
+    th = closest;
+    return found;
+}
+
+bool traverse_any(vec3 o, vec3 d, float tmax)
+{
+    vec3 inv = vec3(1.0) / d;
+    int stack[32];
+    int sp = 0;
+    stack[sp++] = 0;
+    while (sp > 0)
+    {
+        int ni = stack[--sp];
+        if (!box_hit(bb[ni * 2].xyz, bb[ni * 2 + 1].xyz, o, inv, 0.001, tmax))
+            continue;
+        ivec4 link = bl[ni];
+        if (link.x < 0)
+        {
+            for (int k = 0; k < link.w; ++k)
+            {
+                ivec4 ref = bl[link.z + k];
+                float t;
+                vec3 nn;
+                if (test_prim(ref.x, ref.y, o, d, 0.001, tmax, t, nn))
+                    return true;
+            }
+        }
+        else if (sp < 31)
+        {
+            stack[sp++] = link.y;
+            stack[sp++] = link.x;
+        }
+    }
+    return false;
+}
+
 // Full path: NEE + MIS + RR, iterative (GPUs dislike recursion).
 vec3 trace(vec3 o, vec3 d, int max_depth)
 {
@@ -289,7 +449,9 @@ vec3 trace(vec3 o, vec3 d, int max_depth)
 
     for (int depth = max_depth; depth > 0; --depth)
     {
-        // Closest hit over all lists, gathering material on the way.
+        // Closest hit, gathering material on the way. Tree walk and flat
+        // scan share the intersectors; only the traversal differs, so the
+        // flag below isolates traversal cost with identical shading.
         float closest = 1000.0;
         vec3 nrm = vec3(0.0);
         vec3 hit_p = vec3(0.0);
@@ -301,6 +463,14 @@ vec3 trace(vec3 o, vec3 d, int max_depth)
         bool hit = false;
         float th;
         vec3 n;
+        if (pc.meta3.z != 0u)
+        {
+            hit = traverse_closest(o, d, th, n, alb, alb_w, kind, texk, texi);
+            closest = th;
+            nrm = n;
+        }
+        else
+        {
         for (uint i = 0u; i < pc.meta.z; ++i)
         {
             if (hit_sphere(o, d, sph[i], 0.001, closest, th, n))
@@ -342,6 +512,7 @@ vec3 trace(vec3 o, vec3 d, int max_depth)
                 texi = qd_meta[i].z;
                 hit = true;
             }
+        }
         }
         if (!hit)
         {

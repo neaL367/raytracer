@@ -3,6 +3,7 @@
 // with normal shading for CPU parity. No surface, no swapchain: instance ->
 // GPU -> compute queue -> dispatch -> host readback -> existing PPM writer.
 #include "../app/config.h"
+#include "../core/bvh.h"
 #include "../core/camera.h"
 #include "../core/material.h"
 #include "../core/quad.h"
@@ -19,6 +20,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <vector>
 
 #ifdef _WIN32
@@ -622,10 +624,10 @@ struct PathPush
     float vert[4];
     uint32_t width, height, n_spheres, n_tris;
     uint32_t n_quads, samples, strat_n, max_depth;
-    uint32_t img_w, img_h, pad0, pad1;
+    uint32_t img_w, img_h, use_bvh, pad1;
 };
 
-int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples)
+int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool use_bvh, int extra_spheres)
 {
     int strat_n = static_cast<int>(std::sqrt(samples + 0.5));
     if (strat_n * strat_n != samples || strat_n <= 0)
@@ -640,16 +642,18 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples)
     // Same scene, same seed as the CPU parity run (--bench --nee).
     render_config cfg;
     cfg.bench = true;
-    cfg.extra_spheres = 300;
+    cfg.extra_spheres = extra_spheres;
     cfg.do_nee = true;
     set_deterministic_rng(true, cfg.bench_seed);
     scene_data scene = build_scene(cfg);
     camera cam = default_camera(0.05);
 
-    // Flatten prims + materials together so indices line up across buffers.
+    // Flatten prims + materials together so indices line up across buffers,
+    // recording each prim's (type,index) for the BVH leaf refs below.
     std::vector<float> sph, tri, qd;
     std::vector<float> sph_alb, tri_alb, qd_alb;
     std::vector<int32_t> sph_meta, tri_meta, qd_meta;
+    std::map<const hittable *, FlatLeafRef> prim_ids;
     TexCollectors tc;
     auto push_vec3 = [](std::vector<float> &v, const vec3 &p, float w) {
         v.push_back(static_cast<float>(p.x()));
@@ -670,11 +674,13 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples)
     {
         if (const auto *s = dynamic_cast<const sphere *>(o.get()))
         {
+            prim_ids[o.get()] = FlatLeafRef{0, static_cast<int>(sph.size() / 4)};
             push_vec3(sph, s->position(), static_cast<float>(s->size()));
             push_mat(sph_alb, sph_meta, s->mat_ptr());
         }
         else if (const auto *t = dynamic_cast<const triangle *>(o.get()))
         {
+            prim_ids[o.get()] = FlatLeafRef{1, static_cast<int>(tri.size() / 12)};
             push_vec3(tri, t->a(), 0.0f);
             push_vec3(tri, t->b(), 0.0f);
             push_vec3(tri, t->c(), 0.0f);
@@ -682,6 +688,7 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples)
         }
         else if (const auto *q = dynamic_cast<const quad *>(o.get()))
         {
+            prim_ids[o.get()] = FlatLeafRef{2, static_cast<int>(qd.size() / 12)};
             push_vec3(qd, q->corner(), 0.0f);
             push_vec3(qd, q->edge_u(), 0.0f);
             push_vec3(qd, q->edge_v(), 0.0f);
@@ -693,6 +700,41 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples)
     uint32_t n_quads = static_cast<uint32_t>(qd.size() / 12);
     std::printf("upload: %u spheres %u tris %u quads, %zu checkers, %zu images\n",
                 n_spheres, n_tris, n_quads, tc.checkers.size(), tc.images.size());
+
+    // Same SAH tree the CPU traces (leaf size 2 matches the bench default).
+    // Node links occupy ivec4 slots [0, nnodes), leaf refs follow them, so
+    // leaf starts are absolute buffer indices — no pointer fixups.
+    bvh_node bvh_root(scene.objects, 2);
+    std::vector<FlatNode> fnodes;
+    std::vector<FlatLeafRef> frefs;
+    bvh_root.flatten(fnodes, frefs, [&](const std::shared_ptr<hittable> &p) { return prim_ids[p.get()]; });
+    std::printf("bvh: %zu nodes, %zu leaf refs\n", fnodes.size(), frefs.size());
+    std::vector<float> bvh_box;
+    bvh_box.reserve(fnodes.size() * 8);
+    std::vector<int32_t> bvh_link;
+    bvh_link.reserve((fnodes.size() + frefs.size()) * 4);
+    for (const auto &n : fnodes)
+    {
+        bvh_box.push_back(static_cast<float>(n.bmin.x()));
+        bvh_box.push_back(static_cast<float>(n.bmin.y()));
+        bvh_box.push_back(static_cast<float>(n.bmin.z()));
+        bvh_box.push_back(0.0f);
+        bvh_box.push_back(static_cast<float>(n.bmax.x()));
+        bvh_box.push_back(static_cast<float>(n.bmax.y()));
+        bvh_box.push_back(static_cast<float>(n.bmax.z()));
+        bvh_box.push_back(0.0f);
+        bvh_link.push_back(n.left);
+        bvh_link.push_back(n.right);
+        bvh_link.push_back(n.left < 0 ? static_cast<int32_t>(fnodes.size()) + n.start : 0);
+        bvh_link.push_back(n.count);
+    }
+    for (const auto &r : frefs)
+    {
+        bvh_link.push_back(r.type);
+        bvh_link.push_back(r.index);
+        bvh_link.push_back(0);
+        bvh_link.push_back(0);
+    }
 
     // Checker table: (scale,0,0,0),(c1,0),(c2,0) per entry.
     std::vector<float> chk;
@@ -748,6 +790,8 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples)
     Buffer b_qd_meta = make_buffer(g, qd_meta.size() * sizeof(int32_t));
     Buffer b_chk = make_buffer(g, chk.size() * sizeof(float));
     Buffer b_img = make_buffer(g, img.size() * sizeof(float));
+    Buffer b_bvh_box = make_buffer(g, bvh_box.size() * sizeof(float));
+    Buffer b_bvh_link = make_buffer(g, bvh_link.size() * sizeof(int32_t));
     Buffer frame = make_buffer(g, static_cast<VkDeviceSize>(width) * height * 3 * sizeof(float));
     upload_floats(g, b_sph, sph);
     upload_floats(g, b_tri, tri);
@@ -757,6 +801,7 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples)
     upload_floats(g, b_qd_alb, qd_alb);
     upload_floats(g, b_chk, chk);
     upload_floats(g, b_img, img);
+    upload_floats(g, b_bvh_box, bvh_box);
     auto upload_ints = [&](const Buffer &b, const std::vector<int32_t> &v) {
         void *mapped = nullptr;
         VK_CHECK(vkMapMemory(g.device, b.memory, 0, b.size, 0, &mapped));
@@ -766,8 +811,9 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples)
     upload_ints(b_sph_meta, sph_meta);
     upload_ints(b_tri_meta, tri_meta);
     upload_ints(b_qd_meta, qd_meta);
+    upload_ints(b_bvh_link, bvh_link);
 
-    VkDescriptorSetLayout layout = make_layout(g, 12);
+    VkDescriptorSetLayout layout = make_layout(g, 14);
     VkPushConstantRange push = {};
     push.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     push.size = sizeof(PathPush);
@@ -782,7 +828,7 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples)
 
     VkDescriptorSet set = bind_buffers(g, layout, {b_sph, b_tri, b_qd, b_sph_alb, b_sph_meta,
                                                    b_tri_alb, b_tri_meta, b_qd_alb, b_qd_meta,
-                                                   b_chk, b_img, frame});
+                                                   b_chk, b_img, frame, b_bvh_box, b_bvh_link});
     VkShaderModule module = load_shader(g, shader_dir / "path.spv");
     VkPipeline pipeline = make_pipeline(g, module, pipeline_layout);
 
@@ -807,19 +853,23 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples)
     pc.max_depth = static_cast<uint32_t>(max_depth);
     pc.img_w = img_w;
     pc.img_h = img_h;
+    pc.use_bvh = use_bvh ? 1u : 0u;
 
     dispatch_and_wait(g, pipeline, pipeline_layout, set, &pc, sizeof(pc), frame,
                       (width + 7) / 8, (height + 7) / 8);
 
     std::vector<vec3> fb = download_frame(g, frame, width, height);
-    std::uint64_t hash = write_ppm("gpu_path.ppm", fb, width, height, 1.0, true);
-    std::printf("wrote gpu_path.ppm hash=%llu\n", static_cast<unsigned long long>(hash));
+    std::string out_name = use_bvh ? "gpu_path.ppm" : "gpu_path_flat.ppm";
+    std::uint64_t hash = write_ppm(out_name, fb, width, height, 1.0, true);
+    std::printf("wrote %s hash=%llu\n", out_name.c_str(), static_cast<unsigned long long>(hash));
 
     vkDestroyPipeline(g.device, pipeline, nullptr);
     vkDestroyShaderModule(g.device, module, nullptr);
     vkDestroyPipelineLayout(g.device, pipeline_layout, nullptr);
     vkDestroyDescriptorSetLayout(g.device, layout, nullptr);
     free_buffer(g, frame);
+    free_buffer(g, b_bvh_link);
+    free_buffer(g, b_bvh_box);
     free_buffer(g, b_img);
     free_buffer(g, b_chk);
     free_buffer(g, b_qd_meta);
@@ -845,7 +895,13 @@ int main(int argc, char **argv)
     if (mode == "normal")
         rc = run_normal(g, shader_dir);
     else if (mode == "path")
-        rc = run_path(g, shader_dir, (argc > 2) ? std::atoi(argv[2]) : 196);
+    {
+        // path [samples] [flat|bvh] [spheres]: traversal A/B in one binary.
+        int samples = (argc > 2) ? std::atoi(argv[2]) : 196;
+        bool use_bvh = (argc <= 3) || (std::string(argv[3]) != "flat");
+        int spheres = (argc > 4) ? std::atoi(argv[4]) : 300;
+        rc = run_path(g, shader_dir, samples, use_bvh, spheres);
+    }
     else
         rc = run_fill(g, shader_dir);
     shutdown_gpu(g);

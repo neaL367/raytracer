@@ -4,8 +4,28 @@
 #include "aabb.h"
 
 #include <algorithm>
+#include <functional>
 #include <vector>
 #include <iostream>
+
+// Flat BVH for device upload: depth-first node array plus a dense leaf
+// table. Inner nodes name children by index; leaves name a range of leaf
+// refs. types: 0 sphere, 1 triangle, 2 quad (upload-side convention).
+struct FlatLeafRef
+{
+    int type = -1;
+    int index = -1;
+};
+
+struct FlatNode
+{
+    vec3 bmin;
+    vec3 bmax;
+    int left = -1;
+    int right = -1;
+    int start = 0;
+    int count = 0;
+};
 
 class bvh_node : public hittable // hierarchy of bounding boxes; inner nodes route rays, leaves hold the primitives
 {
@@ -72,6 +92,19 @@ public:
         right->census(nodes, leaves, max_depth, depth + 1);
     }
 
+    // Flattens the tree into depth-first arrays for device upload. prim_id
+    // maps each leaf primitive to the backend's own reference (here
+    // type+index into its SoA buffers), keeping this header backend-free.
+    // Parent indices always precede children, so a single linear upload
+    // preserves the topology with no pointer fixups.
+    void flatten(std::vector<FlatNode> &nodes, std::vector<FlatLeafRef> &refs,
+                 const std::function<FlatLeafRef(const std::shared_ptr<hittable> &)> &prim_id) const
+    {
+        nodes.clear();
+        refs.clear();
+        flatten_into(nodes, refs, prim_id);
+    }
+
 private:
     // Child constructor: shares the root's vector by reference, owns nothing.
     bvh_node(std::vector<std::shared_ptr<hittable>> &objects, size_t start, size_t end, size_t max_leaf)
@@ -133,6 +166,28 @@ private:
         is_leaf = true;
         prims.assign(objects.begin() + start, objects.begin() + end);
         box = node_box;
+    }
+
+    // Pre-order emit: this node's index precedes its children, so the arrays
+    // upload as-is with plain integer child links.
+    int flatten_into(std::vector<FlatNode> &nodes, std::vector<FlatLeafRef> &refs,
+                     const std::function<FlatLeafRef(const std::shared_ptr<hittable> &)> &prim_id) const
+    {
+        int mine = static_cast<int>(nodes.size());
+        nodes.push_back(FlatNode());
+        nodes[mine].bmin = box.min();
+        nodes[mine].bmax = box.max();
+        if (is_leaf)
+        {
+            nodes[mine].start = static_cast<int>(refs.size());
+            nodes[mine].count = static_cast<int>(prims.size());
+            for (const auto &p : prims)
+                refs.push_back(prim_id(p));
+            return mine;
+        }
+        nodes[mine].left = left->flatten_into(nodes, refs, prim_id);
+        nodes[mine].right = right->flatten_into(nodes, refs, prim_id);
+        return mine;
     }
 
     // Median split along the range's longest axis. Always leaves both sides
