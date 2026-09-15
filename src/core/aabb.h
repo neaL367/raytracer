@@ -28,14 +28,13 @@ public:
         {
             double origin_a = (a == 0) ? r.origin().x() : (a == 1) ? r.origin().y()
                                                                    : r.origin().z();
-            double dir_a = (a == 0) ? r.direction().x() : (a == 1) ? r.direction().y()
-                                                                   : r.direction().z();
+            double inv_d = (a == 0) ? r.inv_direction().x() : (a == 1) ? r.inv_direction().y()
+                                                                       : r.inv_direction().z();
             double min_a = (a == 0) ? minimum.x() : (a == 1) ? minimum.y()
                                                              : minimum.z();
             double max_a = (a == 0) ? maximum.x() : (a == 1) ? maximum.y()
                                                              : maximum.z();
 
-            double inv_d = 1.0 / dir_a;
             double t0 = (min_a - origin_a) * inv_d;
             double t1 = (max_a - origin_a) * inv_d;
 
