@@ -6,6 +6,7 @@
 #include "core/random.h"
 #include "core/triangle.h"
 #include "core/quad.h"
+#include "core/integrator.h"
 #include "core/obj_loader.h"
 #include "core/bvh.h"
 #include "core/bench_stats.h"
@@ -19,68 +20,6 @@
 #include <string>
 #include <cstdint>
 #include <algorithm>
-
-vec3 sky_color(const ray &r)
-{
-    vec3 unit_direction = unit_vector(r.direction());
-    double a = 0.5 * (unit_direction.y() + 1.0);
-    return (1.0 - a) * vec3(1.0, 1.0, 1.0) + a * vec3(0.5, 0.7, 1.0);
-}
-
-// Next-event estimation: pick one light uniformly, sample a point on it,
-// and test the shadow ray. The uniform area sample (pdf 1/area, times 1/n
-// for the light choice) is converted to solid angle at the shading point:
-// pdf_dir = dist^2 / (cos_light * area * n). Only diffuse surfaces take this
-// branch; delta materials (mirror, glass) integrate the bounce alone.
-vec3 direct_light(const hit_record &rec, const vec3 &albedo,
-                  const hittable &world,
-                  const std::vector<std::shared_ptr<quad>> &lights)
-{
-    size_t n = lights.size();
-    size_t idx = (n == 1) ? 0 : std::min(n - 1, static_cast<size_t>(random_double(0, n)));
-    const auto &light = lights[idx];
-
-    vec3 to_light = light->sample() - rec.point;
-    double dist2 = to_light.length_squared();
-    double dist = std::sqrt(dist2);
-    vec3 dir = to_light / dist;
-
-    double cos_surface = dot(rec.normal, dir);
-    double cos_light = dot(-dir, light->normal());
-    if (cos_surface <= 0.0 || cos_light <= 0.0)
-        return vec3(0, 0, 0);
-
-    hit_record tmp;
-    if (world.hit(ray(rec.point, dir), 0.001, dist - 0.001, tmp))
-        return vec3(0, 0, 0); // occluded
-
-    double pdf_dir = dist2 / (cos_light * light->area() * static_cast<double>(n));
-    vec3 emission = light->mat_ptr()->emitted();
-    return albedo * emission * cos_surface / pdf_dir;
-}
-
-vec3 ray_color(const ray &r, const hittable &world,
-               const std::vector<std::shared_ptr<quad>> &lights, bool do_nee, int depth)
-{
-    if (depth <= 0)
-        return vec3(0, 0, 0);
-
-    hit_record rec;
-    if (!world.hit(r, 0.001, 1000.0, rec))
-        return sky_color(r);
-
-    vec3 color = rec.mat->emitted();
-
-    ray scattered;
-    vec3 attenuation;
-    if (!rec.mat->scatter(r, rec, attenuation, scattered))
-        return color; // emissive surface: no bounce
-
-    if (do_nee && !rec.mat->specular() && !lights.empty())
-        color += direct_light(rec, attenuation, world, lights);
-
-    return color + attenuation * ray_color(scattered, world, lights, do_nee, depth - 1);
-}
 
 int main(int argc, char **argv)
 {
@@ -203,6 +142,12 @@ int main(int argc, char **argv)
 
     camera cam(lookfrom, lookat, vup, 25, 16.0 / 9.0, aperture, dist_to_focus);
 
+    // Sole owner, called through the base interface: the render loop below
+    // never names path_tracer, so swapping strategies touches one line.
+    // One virtual call per primary ray — inaudible next to the millions of
+    // virtual hit() calls inside each path.
+    std::unique_ptr<integrator> tracer = std::make_unique<path_tracer>(do_nee);
+
     std::vector<vec3> framebuffer(image_width * image_height);
 
     unsigned int num_threads = std::thread::hardware_concurrency();
@@ -255,7 +200,7 @@ int main(int argc, char **argv)
                     double t = (j + random_double()) / (image_height - 1);
 
                     ray r = cam.get_ray(s, t);
-                    pixel_color += ray_color(r, bvh_world, lights, do_nee, max_depth);
+                    pixel_color += tracer->Li(r, bvh_world, lights, max_depth);
                     // pixel_color += ray_color(r, flat_objects, max_depth);
                 }
 
