@@ -49,6 +49,8 @@ build-*/
 # Render output (all PPMs except committed assets)
 *.ppm
 !assets/*.ppm
+# Render output directory
+out/
 
 # CMake generated files
 CMakeFiles/

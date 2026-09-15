@@ -2,14 +2,24 @@
 // PPM output: tonemaps the linear framebuffer, quantizes to bytes, and
 // optionally hashes the exact bytes written (FNV-1a, one pass with the
 // write loop). Returns the hash, or 0 when hashing is off.
+//
+// All renders land in out/ (created on demand): one image per
+// configuration, named by role, never in the repo root.
 #include "../core/vec3.h"
 #include "tonemap.h"
 
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
+
+inline void ensure_out_dir()
+{
+    std::error_code ec;
+    std::filesystem::create_directories("out", ec);
+}
 
 inline std::uint64_t write_ppm(const std::string &path, const std::vector<vec3> &framebuffer,
                                int image_width, int image_height, double exposure, bool do_hash)

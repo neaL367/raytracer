@@ -629,8 +629,8 @@ int run_fill(Gpu &g, const std::filesystem::path &shader_dir)
                       (width + 15) / 16, (height + 15) / 16);
 
     std::vector<vec3> fb = download_frame(g, frame, width, height);
-    std::uint64_t hash = write_ppm("gpu_fill.ppm", fb, width, height, 1.0, true);
-    std::printf("wrote gpu_fill.ppm hash=%llu\n", static_cast<unsigned long long>(hash));
+    std::uint64_t hash = write_ppm("out/gpu_fill.ppm", fb, width, height, 1.0, true);
+    std::printf("wrote out/gpu_fill.ppm hash=%llu\n", static_cast<unsigned long long>(hash));
 
     vkDestroyPipeline(g.device, pipeline, nullptr);
     vkDestroyShaderModule(g.device, module, nullptr);
@@ -839,8 +839,8 @@ int run_normal(Gpu &g, const std::filesystem::path &shader_dir)
                       (width + 15) / 16, (height + 15) / 16);
 
     std::vector<vec3> fb = download_frame(g, frame, width, height);
-    std::uint64_t hash = write_ppm("gpu_normal.ppm", fb, width, height, 1.0, true);
-    std::printf("wrote gpu_normal.ppm hash=%llu\n", static_cast<unsigned long long>(hash));
+    std::uint64_t hash = write_ppm("out/gpu_normal.ppm", fb, width, height, 1.0, true);
+    std::printf("wrote out/gpu_normal.ppm hash=%llu\n", static_cast<unsigned long long>(hash));
 
     vkDestroyPipeline(g.device, pipeline, nullptr);
     vkDestroyShaderModule(g.device, module, nullptr);
@@ -1162,9 +1162,9 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
                       (width + wg_x - 1) / wg_x, (height + wg_y - 1) / wg_y, &staging);
 
     std::vector<vec3> fb = download_frame(g, staging, width, height);
-    std::string out_name = use_bvh ? "gpu_path.ppm" : "gpu_path_flat.ppm";
+    std::string out_name = use_bvh ? "out/gpu_path.ppm" : "out/gpu_path_flat.ppm";
     if (probe)
-        out_name = "gpu_probe.ppm";
+        out_name = "out/gpu_probe.ppm";
     std::uint64_t hash = write_ppm(out_name, fb, width, height, 1.0, true);
     std::printf("wrote %s hash=%llu\n", out_name.c_str(), static_cast<unsigned long long>(hash));
 
@@ -1292,8 +1292,10 @@ int main(int argc, char **argv)
             std::fprintf(stderr, "usage: rt_gpu oidn color.ppm albedo.ppm normal.ppm out.ppm\n");
             return 1;
         }
+        ensure_out_dir();
         return run_oidn_files(argv[2], argv[3], argv[4], argv[5]);
     }
+    ensure_out_dir();
     Gpu g = init_gpu();
     std::filesystem::path shader_dir = exe_dir(argv[0]) / "shaders";
     int rc = 0;

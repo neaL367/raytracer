@@ -25,7 +25,9 @@ ctest --test-dir build -C Release
 build\Release\raytracer.exe --bench
 ```
 
-Renders `output.ppm` (800×450, 196 samples/px by default).
+Renders `out/output.ppm` (800×450, 196 samples/px by default).
+All renders land in `out/` (created on demand, git-ignored), one file per
+configuration: `output.ppm`, `gpu_*.ppm`, `albedo.ppm`, `normal.ppm`.
 `raytracer.exe --help` lists all flags.
 
 ## Deterministic benchmarking

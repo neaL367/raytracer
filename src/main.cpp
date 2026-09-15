@@ -37,6 +37,7 @@ int main(int argc, char **argv)
     case cli_result::run:
         break;
     }
+    ensure_out_dir();
     // Seed before the first random draw so every later one — scene scatter
     // and BVH splits included — follows the fixed sequence.
     if (cfg.bench)
@@ -116,9 +117,9 @@ int main(int argc, char **argv)
     }
     if (cfg.do_aov)
     {
-        write_ppm("albedo.ppm", albedo_fb, image_width, image_height, cfg.exposure, false);
-        write_ppm("normal.ppm", normal_fb, image_width, image_height, cfg.exposure, false);
-        std::cout << "Wrote albedo.ppm + normal.ppm\n";
+        write_ppm("out/albedo.ppm", albedo_fb, image_width, image_height, cfg.exposure, false);
+        write_ppm("out/normal.ppm", normal_fb, image_width, image_height, cfg.exposure, false);
+        std::cout << "Wrote out/albedo.ppm + out/normal.ppm\n";
     }
 
     if (cfg.do_oidn)
@@ -167,9 +168,9 @@ int main(int argc, char **argv)
         denoise_used = "joint";
     }
 
-    std::uint64_t image_hash = write_ppm("output.ppm", framebuffer, image_width, image_height,
+    std::uint64_t image_hash = write_ppm("out/output.ppm", framebuffer, image_width, image_height,
                                          cfg.exposure, cfg.bench);
-    std::cout << "Wrote output.ppm\n";
+    std::cout << "Wrote out/output.ppm\n";
 
     auto total_end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> total_elapsed = total_end - total_start;
