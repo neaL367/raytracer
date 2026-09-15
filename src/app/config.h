@@ -35,6 +35,8 @@ struct render_config
     // "full" path tracing or "normal" reference shading (closest-hit
     // normals, no materials/lights/RNG) for backend parity checks.
     std::string shade_mode = "full";
+    // Scene selector: default bench scene or Cornell-style validation box.
+    std::string scene_name = "default";
     double exposure = 1.0;
     // Stratified pixel sampling needs a perfect square count; anything else
     // falls back to plain jitter.
@@ -51,6 +53,7 @@ inline void print_usage(const char *prog)
               << "                     must be a perfect square for stratification)\n"
               << "  --shade MODE       full path tracing (default) or normal reference\n"
               << "                     shading for backend parity checks\n"
+              << "  --scene NAME       default bench scene or cornell validation box\n"
               << "  --glass            add a dielectric sphere (covers the glass branch)\n"
               << "  --fog D            homogeneous fog extinction (default 0 = off)\n"
               << "  --denoise          bilateral denoise on linear HDR pre-tonemap\n"
@@ -151,6 +154,8 @@ inline cli_result parse_cli(int argc, char **argv, render_config &cfg)
             }
             else if (arg == "--shade")
                 cfg.shade_mode = take_value(i, "--shade", ok);
+            else if (arg == "--scene")
+                cfg.scene_name = take_value(i, "--scene", ok);
             else if (arg == "--exposure")
                 cfg.exposure = std::stod(take_value(i, "--exposure", ok));
             else if (arg == "--seed")
@@ -181,6 +186,11 @@ inline cli_result parse_cli(int argc, char **argv, render_config &cfg)
     if (cfg.shade_mode != "full" && cfg.shade_mode != "normal")
     {
         std::cerr << "--shade must be full or normal\n";
+        return cli_result::error;
+    }
+    if (cfg.scene_name != "default" && cfg.scene_name != "cornell")
+    {
+        std::cerr << "--scene must be default or cornell\n";
         return cli_result::error;
     }
     if (cfg.bench && cfg.do_strat && !cfg.stratified)

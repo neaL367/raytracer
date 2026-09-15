@@ -19,14 +19,6 @@
 #include <memory>
 #include <vector>
 
-struct scene_data
-{
-    hittable_list objects; // flat: every primitive individually, no nesting
-    std::vector<std::shared_ptr<quad>> lights;
-    // Non-null only with --ground outside: tested beside the tree, not in it.
-    std::shared_ptr<hittable> ground_outside;
-};
-
 // The one camera both backends use. Aperture comes from config so parity
 // runs can stop the lens down to a pinhole (identical primary rays).
 inline camera default_camera(double aperture)
@@ -38,9 +30,76 @@ inline camera default_camera(double aperture)
     return camera(lookfrom, lookat, vup, 25, 16.0 / 9.0, aperture, dist_to_focus);
 }
 
-inline scene_data build_scene(const render_config &cfg)
+struct scene_data
+{
+    hittable_list objects; // flat: every primitive individually, no nesting
+    std::vector<std::shared_ptr<quad>> lights;
+    // Non-null only with --ground outside: tested beside the tree, not in it.
+    std::shared_ptr<hittable> ground_outside;
+    // Viewpoint travels with the scene. Defaults to the bench camera;
+    // builders overwrite it (cornell looks down +z, not at the cluster).
+    camera cam = default_camera(0.05);
+};
+
+// Axis-aligned box from one corner plus three edge vectors (six quads).
+// Winding is irrelevant here: hit records flip normals toward the ray, and
+// emission ignores faces — every face shades correctly from any side.
+inline void add_box(hittable_list &objects, const vec3 &corner, const vec3 &dx,
+                    const vec3 &dy, const vec3 &dz, std::shared_ptr<material> mat)
+{
+    objects.add(std::make_shared<quad>(corner, dx, dy, mat));
+    objects.add(std::make_shared<quad>(corner + dz, dx, dy, mat));
+    objects.add(std::make_shared<quad>(corner, dz, dy, mat));
+    objects.add(std::make_shared<quad>(corner + dx, dz, dy, mat));
+    objects.add(std::make_shared<quad>(corner, dx, dz, mat));
+    objects.add(std::make_shared<quad>(corner + dy, dx, dz, mat));
+}
+
+// Cornell-style validation box (canonical 555 unit dims, classic albedos).
+// Red left / green right / white shell, two white boxes, one ceiling light.
+// Front face open (camera side). No spheres, no mesh, no scatter spheres:
+// 18 quads that exercise the quad intersector, NEE, and MIS in isolation.
+inline scene_data build_cornell(const render_config &cfg)
 {
     scene_data scene;
+
+    auto red = std::make_shared<lambertian>(vec3(0.63, 0.065, 0.05));
+    auto green = std::make_shared<lambertian>(vec3(0.14, 0.45, 0.15));
+    auto white = std::make_shared<lambertian>(vec3(0.725, 0.71, 0.68));
+
+    scene.objects.add(std::make_shared<quad>(vec3(0, 0, 0), vec3(555, 0, 0), vec3(0, 0, 555), white)); // floor
+    scene.objects.add(std::make_shared<quad>(vec3(0, 555, 0), vec3(555, 0, 0), vec3(0, 0, 555), white)); // ceiling
+    scene.objects.add(std::make_shared<quad>(vec3(0, 0, 555), vec3(555, 0, 0), vec3(0, 555, 0), white)); // back
+    // Red on max-x: this camera's u axis points -x, so image-left sees +x.
+    // (Classic Cornell shows red image-left; keep the image canonical.)
+    scene.objects.add(std::make_shared<quad>(vec3(0, 0, 0), vec3(0, 0, 555), vec3(0, 555, 0), green)); // x=0
+    scene.objects.add(std::make_shared<quad>(vec3(555, 0, 0), vec3(0, 0, 555), vec3(0, 555, 0), red)); // x=555
+
+    add_box(scene.objects, vec3(265, 0, 295), vec3(165, 0, 0), vec3(0, 330, 0), vec3(0, 0, 165), white); // tall
+    add_box(scene.objects, vec3(130, 0, 65), vec3(165, 0, 0), vec3(0, 165, 0), vec3(0, 0, 165), white); // short
+
+    auto light_mat = std::make_shared<diffuse_light>(vec3(8, 8, 8));
+    auto light = std::make_shared<quad>(
+        vec3(213, 554, 227), vec3(130, 0, 0), vec3(0, 0, 105), light_mat);
+    scene.lights.push_back(light);
+    scene.objects.add(light);
+
+    vec3 lookfrom(278, 278, -800);
+    vec3 lookat(278, 278, 0);
+    scene.cam = camera(lookfrom, lookat, vec3(0, 1, 0), 40, 16.0 / 9.0,
+                       cfg.aperture, (lookfrom - lookat).length());
+
+    std::cout << "Total flat primitives: " << scene.objects.size() << "\n";
+    return scene;
+}
+
+inline scene_data build_scene(const render_config &cfg)
+{
+    if (cfg.scene_name == "cornell")
+        return build_cornell(cfg);
+
+    scene_data scene;
+    scene.cam = default_camera(cfg.aperture);
 
     auto material_ground = std::make_shared<lambertian>(
         std::make_shared<checker_texture>(0.32, vec3(0.8, 0.8, 0.8), vec3(0.2, 0.2, 0.2)));

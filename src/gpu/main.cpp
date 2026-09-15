@@ -751,8 +751,9 @@ int run_normal(Gpu &g, const std::filesystem::path &shader_dir)
     set_deterministic_rng(true, cfg.bench_seed);
     scene_data scene = build_scene(cfg);
     // Pinhole here on purpose: the aperture lives in the push block and the
-    // kernel applies it (uploaded vectors are aperture-independent).
-    camera cam = default_camera(0.0);
+    // kernel applies it (uploaded vectors are aperture-independent, so the
+    // scene camera's aperture value never reaches these buffers).
+    const camera &cam = scene.cam;
 
     // Flatten to SoA: spheres as center+radius, tris/quads as corner+edges.
     std::vector<float> sph, tri, qd;
@@ -887,7 +888,7 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
     cfg.use_glass = use_glass;
     set_deterministic_rng(true, cfg.bench_seed);
     scene_data scene = build_scene(cfg);
-    camera cam = default_camera(0.05);
+    const camera &cam = scene.cam;
 
     // Flatten prims + materials together so indices line up across buffers,
     // recording each prim's (type,index) for the BVH leaf refs below.

@@ -3,6 +3,7 @@
 #include "vec3.h"
 #include "material.h"
 #include "random.h"
+#include "bench_stats.h"
 #include <memory>
 
 // Quadrilateral: origin corner Q plus edge vectors u and v. Hit test solves
@@ -25,6 +26,7 @@ public:
 
     bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const override
     {
+        count_prim_test();
         double denom = dot(normal_vec, r.direction());
         if (std::fabs(denom) < 1e-8)
             return false;

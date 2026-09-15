@@ -65,7 +65,9 @@ int main(int argc, char **argv)
     if (cfg.bench)
         bvh_root->census(bvh_nodes, bvh_leaves, bvh_depth);
 
-    camera cam = default_camera(cfg.aperture);
+    // Viewpoint travels with the scene (cornell looks down +z, not at the
+    // bench cluster) — same camera object both backends would upload.
+    const camera &cam = scene.cam;
 
     // Sole owner, called through the base interface: the render loop never
     // names the strategy, so swapping touches the lines below only. One
@@ -198,6 +200,7 @@ int main(int argc, char **argv)
                   << " leaf=" << cfg.max_leaf_size
                   << " ground=" << (cfg.ground_in_bvh ? "in" : "out")
                   << " nee=" << (cfg.do_nee ? "on" : "off")
+                  << " scene=" << cfg.scene_name
                   << " glass=" << (cfg.use_glass ? "on" : "off")
                   << " fog=" << cfg.fog_density
                   << " denoise=" << denoise_used
