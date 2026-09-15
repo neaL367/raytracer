@@ -4,6 +4,7 @@
 #include "core/hittable_list.h"
 #include "core/camera.h"
 #include "core/random.h"
+#include "core/triangle.h"
 
 #include <fstream>
 #include <iostream>
@@ -34,7 +35,7 @@ vec3 ray_color(const ray &r, const hittable &world, int depth)
 int main()
 {
     // image
-    const int image_width = 400;
+    const int image_width = 720;
     const int image_height = static_cast<int>(image_width / (16.0 / 9.0));
     const int samples_per_pixel = 100;
     const int max_depth = 50;
@@ -42,17 +43,21 @@ int main()
     // world
     hittable_list world;
 
-    auto material_behind_glass = std::make_shared<lambertian>(vec3(1.0, 1.0, 0.0));
+    // auto material_behind_glass = std::make_shared<lambertian>(vec3(1.0, 1.0, 0.0));
     auto material_ground = std::make_shared<lambertian>(vec3(0.8, 0.8, 0.0));
     auto material_center = std::make_shared<lambertian>(vec3(1.0, 0.0, 0.0));
-    auto material_left = std::make_shared<dielectric>(1.5);
+    // auto material_left = std::make_shared<dielectric>(1.5);
     auto material_right = std::make_shared<metal>(vec3(0.8, 0.6, 0.2));
+    auto material_triangle = std::make_shared<lambertian>(vec3(0.2, 0.8, 0.2));
 
-    world.add(std::make_shared<sphere>(vec3(-2.5, 0, -2.5), 0.6, material_behind_glass));
+    // world.add(std::make_shared<sphere>(vec3(-2.5, 0, -2.5), 0.6, material_behind_glass));
     world.add(std::make_shared<sphere>(vec3(0, -100.5, -1), 100, material_ground));
     world.add(std::make_shared<sphere>(vec3(0, 0, -1), 0.5, material_center));
-    world.add(std::make_shared<sphere>(vec3(-1, 0, -1), 0.5, material_left));
+    // world.add(std::make_shared<sphere>(vec3(-1, 0, -1), 0.5, material_left));
     world.add(std::make_shared<sphere>(vec3(1, 0, -1), 0.5, material_right));
+    world.add(std::make_shared<triangle>(
+        vec3(-1, -1, -2), vec3(1, -1, -2), vec3(0, 1, -2),
+        material_triangle));
 
     // camera
     vec3 lookfrom(3, 3, 2);
