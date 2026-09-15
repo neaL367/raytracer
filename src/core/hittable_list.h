@@ -9,8 +9,9 @@ class hittable_list : public hittable
 {
 public:
     hittable_list() {}
-    
+
     size_t size() const { return objects.size(); }
+    const std::vector<std::shared_ptr<hittable>> &objects_ref() const { return objects; }
 
     void add(std::shared_ptr<hittable> object)
     {
@@ -34,6 +35,25 @@ public:
         }
 
         return hit_anything;
+    }
+
+    bool bounding_box(aabb &output_box) const override
+    {
+        if (objects.empty())
+            return false;
+
+        aabb temp_box;
+        bool first_box = true;
+
+        for (const auto &object : objects)
+        {
+            if (!object->bounding_box(temp_box))
+                return false;
+            output_box = first_box ? temp_box : surrounding_box(output_box, temp_box);
+            first_box = false;
+        }
+
+        return true;
     }
 
 private:

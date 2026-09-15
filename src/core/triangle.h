@@ -49,6 +49,20 @@ public:
         return true;
     }
 
+    bool bounding_box(aabb &output_box) const override
+    {
+        vec3 small(
+            std::fmin(std::fmin(v0.x(), v1.x()), v2.x()),
+            std::fmin(std::fmin(v0.y(), v1.y()), v2.y()),
+            std::fmin(std::fmin(v0.z(), v1.z()), v2.z()));
+        vec3 big(
+            std::fmax(std::fmax(v0.x(), v1.x()), v2.x()),
+            std::fmax(std::fmax(v0.y(), v1.y()), v2.y()),
+            std::fmax(std::fmax(v0.z(), v1.z()), v2.z()));
+        output_box = aabb(small, big);
+        return true;
+    }
+
 private:
     vec3 v0, v1, v2;
     std::shared_ptr<material> mat;
