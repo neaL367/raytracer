@@ -12,6 +12,8 @@
 #include <iostream>
 #include <memory>
 #include <chrono>
+#include <thread>
+#include <vector>
 
 vec3 ray_color(const ray &r, const hittable &world, int depth)
 {
@@ -88,6 +90,53 @@ int main()
 
     camera cam(lookfrom, lookat, vup, 25, 16.0 / 9.0, aperture, dist_to_focus);
 
+    std::vector<vec3> framebuffer(image_width * image_height);
+
+    unsigned int num_threads = std::thread::hardware_concurrency();
+    if (num_threads == 0)
+        num_threads = 4; // fallback if the system can't report a count
+
+    std::vector<std::thread> threads;
+
+    auto render_rows = [&](int row_start, int row_end)
+    {
+        for (int j = row_start; j < row_end; ++j)
+        {
+            for (int i = 0; i < image_width; ++i)
+            {
+                vec3 pixel_color(0, 0, 0);
+
+                for (int sample = 0; sample < samples_per_pixel; ++sample)
+                {
+                    double s = (i + random_double()) / (image_width - 1);
+                    double t = (j + random_double()) / (image_height - 1);
+
+                    ray r = cam.get_ray(s, t);
+                    pixel_color += ray_color(r, bvh_world, max_depth);
+                }
+
+                double scale = 1.0 / samples_per_pixel;
+                framebuffer[j * image_width + i] = vec3(
+                    std::sqrt(pixel_color.x() * scale),
+                    std::sqrt(pixel_color.y() * scale),
+                    std::sqrt(pixel_color.z() * scale));
+            }
+        }
+    };
+
+    int rows_per_thread = image_height / num_threads;
+
+    for (unsigned int t = 0; t < num_threads; ++t)
+    {
+        int row_start = t * rows_per_thread;
+        int row_end = (t == num_threads - 1) ? image_height : row_start + rows_per_thread;
+        threads.emplace_back(render_rows, row_start, row_end);
+    }
+
+    for (auto &th : threads)
+        th.join();
+
+    // single-threaded: write the completed framebuffer out to the PPM file
     std::ofstream out("output.ppm");
     out << "P3\n"
         << image_width << ' ' << image_height << "\n255\n";
@@ -96,27 +145,10 @@ int main()
     {
         for (int i = 0; i < image_width; ++i)
         {
-            vec3 pixel_color(0, 0, 0);
-
-            for (int sample = 0; sample < samples_per_pixel; ++sample)
-            {
-                double s = (i + random_double()) / (image_width - 1);
-                double t = (j + random_double()) / (image_height - 1);
-
-                ray r = cam.get_ray(s, t);
-                pixel_color += ray_color(r, bvh_world, max_depth); // through the BVH now
-                // pixel_color += ray_color(r, flat_objects, max_depth); // temporarily bypass the BVH
-            }
-
-            double scale = 1.0 / samples_per_pixel;
-            double r_out = std::sqrt(pixel_color.x() * scale);
-            double g_out = std::sqrt(pixel_color.y() * scale);
-            double b_out = std::sqrt(pixel_color.z() * scale);
-
-            int ir = static_cast<int>(255.999 * r_out);
-            int ig = static_cast<int>(255.999 * g_out);
-            int ib = static_cast<int>(255.999 * b_out);
-
+            const vec3 &c = framebuffer[j * image_width + i];
+            int ir = static_cast<int>(255.999 * c.x());
+            int ig = static_cast<int>(255.999 * c.y());
+            int ib = static_cast<int>(255.999 * c.z());
             out << ir << ' ' << ig << ' ' << ib << '\n';
         }
     }
