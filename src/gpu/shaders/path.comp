@@ -5,7 +5,11 @@
 // mean statistical parity (means within a few percent), never bit equality.
 // Divergence across neighboring pixels is the known cost of this layout;
 // wavefront staging is the later answer, not smuggled in here.
-layout(local_size_x = 8, local_size_y = 8) in;
+// Workgroup size is a specialization constant: one compiled shader, sized
+// at pipeline creation. Lets occupancy experiments run without recompiles.
+layout(constant_id = 0) const uint WG_X = 8;
+layout(constant_id = 1) const uint WG_Y = 8;
+layout(local_size_x_id = 0, local_size_y_id = 1) in;
 
 layout(push_constant) uniform Push
 {

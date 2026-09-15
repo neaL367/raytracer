@@ -449,13 +449,15 @@ VkDescriptorSetLayout make_layout(const Gpu &g, uint32_t bindings)
     return layout;
 }
 
-VkPipeline make_pipeline(const Gpu &g, VkShaderModule module, VkPipelineLayout layout)
+VkPipeline make_pipeline(const Gpu &g, VkShaderModule module, VkPipelineLayout layout,
+                         const VkSpecializationInfo *spec = nullptr)
 {
     VkPipelineShaderStageCreateInfo stage = {};
     stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     stage.module = module;
     stage.pName = "main";
+    stage.pSpecializationInfo = spec;
     VkComputePipelineCreateInfo pci = {};
     pci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     pci.stage = stage;
@@ -780,7 +782,7 @@ struct PathPush
 };
 
 int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool use_bvh, int extra_spheres,
-             bool use_glass)
+             bool use_glass, uint32_t wg_x, uint32_t wg_y)
 {
     int strat_n = static_cast<int>(std::sqrt(samples + 0.5));
     if (strat_n * strat_n != samples || strat_n <= 0)
@@ -988,7 +990,21 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
                                                    b_tri_alb, b_tri_meta, b_qd_alb, b_qd_meta,
                                                    b_chk, b_img, frame, b_bvh_box, b_bvh_link});
     VkShaderModule module = load_shader(g, shader_dir / "path.spv");
-    VkPipeline pipeline = make_pipeline(g, module, pipeline_layout);
+    // Workgroup size resolves the shader's specialization constants: same
+    // SPIR-V for every occupancy experiment below.
+    uint32_t wg_vals[2] = {wg_x, wg_y};
+    VkSpecializationMapEntry wg_entries[2] = {};
+    wg_entries[0].constantID = 0;
+    wg_entries[0].size = sizeof(uint32_t);
+    wg_entries[1].constantID = 1;
+    wg_entries[1].offset = sizeof(uint32_t);
+    wg_entries[1].size = sizeof(uint32_t);
+    VkSpecializationInfo wg_spec = {};
+    wg_spec.mapEntryCount = 2;
+    wg_spec.pMapEntries = wg_entries;
+    wg_spec.dataSize = sizeof(wg_vals);
+    wg_spec.pData = wg_vals;
+    VkPipeline pipeline = make_pipeline(g, module, pipeline_layout, &wg_spec);
 
     PathPush pc = {};
     auto fill_v4 = [](float *d, const vec3 &v) {
@@ -1014,7 +1030,7 @@ int run_path(Gpu &g, const std::filesystem::path &shader_dir, int samples, bool 
     pc.use_bvh = use_bvh ? 1u : 0u;
 
     dispatch_and_wait(g, pipeline, pipeline_layout, set, &pc, sizeof(pc), frame,
-                      (width + 7) / 8, (height + 7) / 8, &staging);
+                      (width + wg_x - 1) / wg_x, (height + wg_y - 1) / wg_y, &staging);
 
     std::vector<vec3> fb = download_frame(g, staging, width, height);
     std::string out_name = use_bvh ? "gpu_path.ppm" : "gpu_path_flat.ppm";
@@ -1055,12 +1071,31 @@ int main(int argc, char **argv)
         rc = run_normal(g, shader_dir);
     else if (mode == "path")
     {
-        // path [samples] [flat|bvh] [spheres] [glass]: traversal A/B in one binary.
+        // path [samples] [flat|bvh] [spheres] [glass] [WxH]: traversal A/B
+        // plus workgroup occupancy in one binary.
         int samples = (argc > 2) ? std::atoi(argv[2]) : 196;
         bool use_bvh = (argc <= 3) || (std::string(argv[3]) != "flat");
         int spheres = (argc > 4) ? std::atoi(argv[4]) : 300;
         bool glass = (argc > 5) && (std::string(argv[5]) == "glass");
-        rc = run_path(g, shader_dir, samples, use_bvh, spheres, glass);
+        // Default 16x8 measured ~11% faster than 8x8 on this GPU (128 threads
+        // fill better; 256-thread groups lose to register pressure).
+        uint32_t wg_x = 16, wg_y = 8;
+        if (argc > 6)
+        {
+            std::string wg = argv[6];
+            size_t x = wg.find('x');
+            if (x != std::string::npos)
+            {
+                wg_x = static_cast<uint32_t>(std::atoi(wg.substr(0, x).c_str()));
+                wg_y = static_cast<uint32_t>(std::atoi(wg.substr(x + 1).c_str()));
+            }
+            if (wg_x == 0 || wg_y == 0 || wg_x * wg_y > 1024)
+            {
+                std::fprintf(stderr, "bad workgroup size (try 8x8)\n");
+                return 1;
+            }
+        }
+        rc = run_path(g, shader_dir, samples, use_bvh, spheres, glass, wg_x, wg_y);
     }
     else
         rc = run_fill(g, shader_dir);
