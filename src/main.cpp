@@ -14,6 +14,7 @@
 #include "app/config.h"
 #include "render/renderer.h"
 #include "io/denoise.h"
+#include "io/oidn_denoise.h"
 #include "io/ppm.h"
 
 #include <iostream>
@@ -81,13 +82,73 @@ int main(int argc, char **argv)
                                             image_width, image_height, framebuffer);
 
     double denoise_seconds = 0.0;
-    if (cfg.do_denoise)
+    std::string denoise_used = "off";
+
+    // Guide buffers for denoisers: first-hit albedo + normals under the same
+    // sampling, so every pixel lines up with the beauty pass. Separate
+    // single-purpose integrators — no interface change, negligible cost
+    // (primary rays only, no bounces). OIDN forces them on: unguided OIDN
+    // is strictly worse than guided, so there is no unguided code path.
+    std::vector<vec3> albedo_fb(image_width * image_height);
+    std::vector<vec3> normal_fb(image_width * image_height);
+    bool need_aov = cfg.do_aov || cfg.do_oidn;
+    if (need_aov)
+    {
+        albedo_integrator albedo_tracer;
+        normal_integrator normal_tracer;
+        render_framebuffer(cam, bvh_world, scene.lights, albedo_tracer, cfg,
+                           image_width, image_height, albedo_fb);
+        render_framebuffer(cam, bvh_world, scene.lights, normal_tracer, cfg,
+                           image_width, image_height, normal_fb);
+    }
+    if (cfg.do_aov)
+    {
+        write_ppm("albedo.ppm", albedo_fb, image_width, image_height, cfg.exposure, false);
+        write_ppm("normal.ppm", normal_fb, image_width, image_height, cfg.exposure, false);
+        std::cout << "Wrote albedo.ppm + normal.ppm\n";
+    }
+
+    if (cfg.do_oidn)
+    {
+        auto denoise_start = std::chrono::high_resolution_clock::now();
+        // OIDN speaks float triplets; the framebuffer is double.
+        size_t px = static_cast<size_t>(image_width) * image_height;
+        std::vector<float> color(px * 3), albedo(px * 3), normal(px * 3);
+        for (size_t i = 0; i < px; ++i)
+        {
+            color[i * 3] = static_cast<float>(framebuffer[i].x());
+            color[i * 3 + 1] = static_cast<float>(framebuffer[i].y());
+            color[i * 3 + 2] = static_cast<float>(framebuffer[i].z());
+            albedo[i * 3] = static_cast<float>(albedo_fb[i].x());
+            albedo[i * 3 + 1] = static_cast<float>(albedo_fb[i].y());
+            albedo[i * 3 + 2] = static_cast<float>(albedo_fb[i].z());
+            normal[i * 3] = static_cast<float>(normal_fb[i].x());
+            normal[i * 3 + 1] = static_cast<float>(normal_fb[i].y());
+            normal[i * 3 + 2] = static_cast<float>(normal_fb[i].z());
+        }
+        if (oidn_denoise_rt(color.data(), albedo.data(), normal.data(), image_width, image_height))
+        {
+            for (size_t i = 0; i < px; ++i)
+                framebuffer[i] = vec3(color[i * 3], color[i * 3 + 1], color[i * 3 + 2]);
+            denoise_used = "oidn";
+        }
+        else if (cfg.do_denoise)
+        {
+            // OIDN unavailable or failed: bilateral instead of nothing.
+            std::cout << "oidn failed: falling back to bilateral\n";
+        }
+        denoise_seconds = std::chrono::duration<double>(
+                              std::chrono::high_resolution_clock::now() - denoise_start)
+                              .count();
+    }
+    if (cfg.do_denoise && denoise_used != "oidn")
     {
         auto denoise_start = std::chrono::high_resolution_clock::now();
         framebuffer = bilateral_denoise(framebuffer, image_width, image_height);
         denoise_seconds = std::chrono::duration<double>(
                               std::chrono::high_resolution_clock::now() - denoise_start)
                               .count();
+        denoise_used = "bilateral";
     }
 
     std::uint64_t image_hash = write_ppm("output.ppm", framebuffer, image_width, image_height,
@@ -125,7 +186,8 @@ int main(int argc, char **argv)
                   << " nee=" << (cfg.do_nee ? "on" : "off")
                   << " glass=" << (cfg.use_glass ? "on" : "off")
                   << " fog=" << cfg.fog_density
-                  << " denoise=" << (cfg.do_denoise ? "on" : "off")
+                  << " denoise=" << denoise_used
+                  << " aov=" << (cfg.do_aov ? "on" : "off")
                   << " shade=" << cfg.shade_mode
                   << " rr=" << (cfg.do_rr ? "on" : "off")
                   << " strat=" << (cfg.stratified ? "on" : "off")

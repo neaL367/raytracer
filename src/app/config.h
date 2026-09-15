@@ -28,6 +28,10 @@ struct render_config
     double fog_density = 0.0;
     // Edge-aware bilateral denoise on linear HDR before tonemapping.
     bool do_denoise = false;
+    // Intel OIDN (RT filter, HDR + guides) instead of bilateral.
+    bool do_oidn = false;
+    // Write albedo + normal guide buffers (for denoisers and debugging).
+    bool do_aov = false;
     // "full" path tracing or "normal" reference shading (closest-hit
     // normals, no materials/lights/RNG) for backend parity checks.
     std::string shade_mode = "full";
@@ -50,6 +54,8 @@ inline void print_usage(const char *prog)
               << "  --glass            add a dielectric sphere (covers the glass branch)\n"
               << "  --fog D            homogeneous fog extinction (default 0 = off)\n"
               << "  --denoise          bilateral denoise on linear HDR pre-tonemap\n"
+              << "  --oidn             Intel OIDN denoise instead (needs guides)\n"
+              << "  --aov              write albedo.ppm + normal.ppm guide buffers\n"
               << "  --depth N          max path depth (default 50)\n"
               << "  --tile N           scheduling strip height in rows (default 8)\n"
               << "  --aperture A       lens aperture (default 0.05; 0 = pinhole)\n"
@@ -122,6 +128,10 @@ inline cli_result parse_cli(int argc, char **argv, render_config &cfg)
                 cfg.fog_density = std::stod(take_value(i, "--fog", ok));
             else if (arg == "--denoise")
                 cfg.do_denoise = true;
+            else if (arg == "--oidn")
+                cfg.do_oidn = true;
+            else if (arg == "--aov")
+                cfg.do_aov = true;
             else if (arg == "--fog" && (ok = true, true))
             {
                 if (i + 1 >= argc)

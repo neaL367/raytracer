@@ -47,6 +47,9 @@ src/io/       tonemapping + PPM output + image decoding glue
 src/gpu/      headless Vulkan compute (rt_gpu) + GLSL kernels
 src/main.cpp  scene/BVH setup + bench report
 external/stb/ vendored stb_image v2.30 (PNG/JPG/BMP/TGA decoding)
+Intel OIDN is downloaded at configure time into the build tree (never
+committed); -DRAYTRACER_OIDN=OFF builds fully offline with a bilateral
+fallback for --oidn.
 tests/        unit tests (no external framework) + PPM compare script
 assets/       mesh + calibration textures (copied next to the binary)
 ```

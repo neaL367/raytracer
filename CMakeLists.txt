@@ -4,7 +4,7 @@ project(raytracer LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_executable(raytracer src/main.cpp src/io/stb_image.cpp)
+add_executable(raytracer src/main.cpp src/io/stb_image.cpp src/io/oidn_denoise.cpp)
 target_include_directories(raytracer PRIVATE src external/stb)
 
 # SIMD baseline: MSVC targets SSE2 unless told otherwise, which caps the
@@ -25,6 +25,40 @@ enable_testing()
 add_executable(raytracer_tests tests/test_all.cpp src/io/stb_image.cpp)
 target_include_directories(raytracer_tests PRIVATE src external/stb)
 add_test(NAME unit_tests COMMAND raytracer_tests WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# Intel OIDN denoiser (for --oidn): downloaded once into the build tree, never
+# committed. Disable with -DRAYTRACER_OIDN=OFF for fully offline configures.
+option(RAYTRACER_OIDN "Download Intel OIDN for --oidn denoising" ON)
+set(RAYTRACER_OIDN_AVAILABLE OFF)
+if(RAYTRACER_OIDN)
+    set(OIDN_VERSION 2.5.1)
+    set(OIDN_URL https://github.com/RenderKit/oidn/releases/download/v${OIDN_VERSION}/oidn-${OIDN_VERSION}.x64.windows.zip)
+    set(OIDN_SHA256 f11f91bc072a5e3a564515724cb72ab8fcfbc445c84a84c197ff9b16cc01396f)
+    set(OIDN_ROOT ${CMAKE_BINARY_DIR}/external/oidn/oidn-${OIDN_VERSION}.x64.windows)
+    if(NOT EXISTS "${OIDN_ROOT}/include/OpenImageDenoise/oidn.h")
+        message(STATUS "downloading OIDN ${OIDN_VERSION} (build tree only)")
+        file(DOWNLOAD ${OIDN_URL} ${CMAKE_BINARY_DIR}/oidn.zip
+             EXPECTED_HASH SHA256=${OIDN_SHA256} SHOW_PROGRESS
+             STATUS OIDN_DL_STATUS)
+        list(GET OIDN_DL_STATUS 0 OIDN_DL_CODE)
+        if(OIDN_DL_CODE EQUAL 0)
+            file(ARCHIVE_EXTRACT INPUT ${CMAKE_BINARY_DIR}/oidn.zip DESTINATION ${CMAKE_BINARY_DIR}/external/oidn)
+        else()
+            message(WARNING "OIDN download failed (${OIDN_DL_STATUS}); --oidn will fall back to bilateral")
+        endif()
+    endif()
+    if(EXISTS "${OIDN_ROOT}/include/OpenImageDenoise/oidn.h")
+        set(RAYTRACER_OIDN_AVAILABLE ON)
+    endif()
+endif()
+if(RAYTRACER_OIDN_AVAILABLE)
+    target_include_directories(raytracer PRIVATE ${OIDN_ROOT}/include)
+    target_link_libraries(raytracer PRIVATE ${OIDN_ROOT}/lib/OpenImageDenoise.lib)
+    target_compile_definitions(raytracer PRIVATE RAYTRACER_OIDN=1)
+    add_custom_command(TARGET raytracer POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${OIDN_ROOT}/bin $<TARGET_FILE_DIR:raytracer>)
+endif()
 
 # GPU scaffold: headless Vulkan compute (see src/gpu/main.cpp). CPU binary untouched.
 find_package(Vulkan REQUIRED)
