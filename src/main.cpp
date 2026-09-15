@@ -9,15 +9,18 @@
 #include <iostream>
 #include <memory>
 
-vec3 ray_color(const ray &r, const hittable &world)
+vec3 ray_color(const ray &r, const hittable &world, int depth)
 {
+    if (depth <= 0)
+        return vec3(0, 0, 0);
+
     hit_record rec;
-    if (world.hit(r, 0.0, 1000.0, rec))
+    if (world.hit(r, 0.001, 1000.0, rec))
     {
-        return 0.5 * (rec.normal + vec3(1, 1, 1));
+        vec3 direction = rec.normal + random_unit_vector();
+        return 0.5 * ray_color(ray(rec.point, direction), world, depth - 1);
     }
 
-    // background: simple vertical gradient, blue to white
     vec3 unit_direction = unit_vector(r.direction());
     double a = 0.5 * (unit_direction.y() + 1.0);
     return (1.0 - a) * vec3(1.0, 1.0, 1.0) + a * vec3(0.5, 0.7, 1.0);
@@ -29,6 +32,7 @@ int main()
     const int image_width = 400;
     const int image_height = static_cast<int>(image_width / (16.0 / 9.0));
     const int samples_per_pixel = 4;
+    const int max_depth = 50;
 
     // world
     hittable_list world;
@@ -55,13 +59,17 @@ int main()
                 double v = (j + random_double()) / (image_height - 1);
 
                 ray r = cam.get_ray(u, v);
-                pixel_color += ray_color(r, world);
+                pixel_color += ray_color(r, world, max_depth);
             }
 
             double scale = 1.0 / samples_per_pixel;
-            int ir = static_cast<int>(255.999 * (pixel_color.x() * scale));
-            int ig = static_cast<int>(255.999 * (pixel_color.y() * scale));
-            int ib = static_cast<int>(255.999 * (pixel_color.z() * scale));
+            double r_out = std::sqrt(pixel_color.x() * scale);
+            double g_out = std::sqrt(pixel_color.y() * scale);
+            double b_out = std::sqrt(pixel_color.z() * scale);
+
+            int ir = static_cast<int>(255.999 * r_out);
+            int ig = static_cast<int>(255.999 * g_out);
+            int ib = static_cast<int>(255.999 * b_out);
 
             out << ir << ' ' << ig << ' ' << ib << '\n';
         }
