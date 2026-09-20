@@ -8,6 +8,7 @@
 #include "geometry/quad.h"
 #include "material/material.h"
 #include "io/ppm_image.h"
+#include "io/denoise.h"
 #include "output/film.h"
 
 #include <filesystem>
@@ -113,10 +114,46 @@ static void t_film() {
     EXPECT_TRUE(lamp.x() > 0.95 && lamp.y() > 0.95 && lamp.z() > 0.95);
 }
 
+static void t_denoise() {
+    test_current = "denoise";
+    // Flat field passes through untouched.
+    std::vector<vec3> flat(64, vec3(0.5, 0.5, 0.5));
+    auto f2 = bilateral_denoise(flat, 8, 8);
+    EXPECT_NEAR(f2[27].x(), 0.5);
+    EXPECT_NEAR(f2[27].y(), 0.5);
+    // Step edge: contrast preserved (no cross-edge bleed past midpoint).
+    std::vector<vec3> step(64);
+    for (int y = 0; y < 8; ++y)
+        for (int x = 0; x < 8; ++x)
+            step[(size_t)y * 8 + x] = (x < 4) ? vec3(0.2, 0.2, 0.2) : vec3(0.8, 0.8, 0.8);
+    auto s2 = bilateral_denoise(step, 8, 8);
+    EXPECT_TRUE(s2[(size_t)4 * 8 + 3].x() < 0.5);  // dark side stays dark
+    EXPECT_TRUE(s2[(size_t)4 * 8 + 4].x() > 0.5);  // bright side stays bright
+    EXPECT_TRUE(s2[(size_t)4 * 8 + 3].x() < s2[(size_t)4 * 8 + 4].x());
+    // Noisy ramp: variance drops.
+    rng_seed(60);
+    std::vector<vec3> ramp(64);
+    for (int i = 0; i < 64; ++i) {
+        double g = (i % 8) / 7.0;
+        double n = (random_double() - 0.5) * 0.2;
+        ramp[i] = vec3(g + n, g + n, g + n);
+    }
+    // Detrend: residual energy around the true ramp must fall.
+    auto r2 = bilateral_denoise(ramp, 8, 8);
+    double raw_res = 0, den_res = 0;
+    for (int i = 0; i < 64; ++i) {
+        double g = (i % 8) / 7.0;
+        raw_res += (ramp[i].x() - g) * (ramp[i].x() - g);
+        den_res += (r2[i].x() - g) * (r2[i].x() - g);
+    }
+    EXPECT_TRUE(den_res < raw_res); // noise energy falls
+}
+
 void run_shading_tests() {
     t_materials();
     t_texture();
     t_emissive();
     t_ppm();
     t_film();
+    t_denoise();
 }

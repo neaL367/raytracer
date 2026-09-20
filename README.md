@@ -42,4 +42,5 @@ M6 done: headless Vulkan compute backend (rt_gpu), CPU parity.
 M7 done: textures + OBJ meshes, checker demo, GPU parity.
 M8 done: exposure + ACES + sRGB film, shared CPU/GPU writer.
 M9 done: binned SAH BVH, --split flag, prim tests halved.
-Next: test split or CI.
+M10 done: HDR bilateral --denoise, 1.25x vs 64spp ref.
+Next: CI or done.

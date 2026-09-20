@@ -13,6 +13,7 @@
 #include "accel/bvh.h"
 #include "material/material.h"
 #include "integrator/integrator.h"
+#include "io/denoise.h"
 #include "output/ppm.h"
 
 #include <atomic>
@@ -35,6 +36,7 @@ int main(int argc, char **argv) {
     int tile_rows = 8;
     bool bench = false;
     bool use_sah = true;
+    bool do_denoise = false;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--samples" && i + 1 < argc)
@@ -49,6 +51,8 @@ int main(int argc, char **argv) {
             use_sah = (std::string(argv[++i]) != "median");
         else if (a == "--exposure" && i + 1 < argc)
             exposure = std::max(0.0, std::atof(argv[++i]));
+        else if (a == "--denoise")
+            do_denoise = true;
         else if (a == "--bench")
             bench = true;
     }
@@ -148,6 +152,13 @@ int main(int argc, char **argv) {
         th.join();
     auto t_end = std::chrono::high_resolution_clock::now();
     double secs = std::chrono::duration<double>(t_end - t_start).count();
+
+    if (do_denoise) {
+        auto d0 = std::chrono::high_resolution_clock::now();
+        fb = bilateral_denoise(fb, W, H);
+        secs += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - d0)
+                    .count();
+    }
 
     std::filesystem::create_directories("out");
     if (!write_ppm("out/image.ppm", fb, W, H, exposure)) {
