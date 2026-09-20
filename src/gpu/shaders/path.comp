@@ -10,6 +10,10 @@ layout(binding = 1) uniform Cam {
     GPUCam cam;
 };
 // Scene buffers + traversal live in common.glsl (shared with normal).
+// Binding 7: image-texture texels (linear, top-first rows).
+layout(binding = 7) readonly buffer ImgTex {
+    vec4 imgTex[];
+};
 layout(push_constant) uniform PC {
     int W;
     int H;
@@ -19,6 +23,8 @@ layout(push_constant) uniform PC {
     int spp;
     int seed;
     int nlights; // leading quads are emissive
+    int imgW;
+    int imgH;
 }
 pc;
 
@@ -58,10 +64,20 @@ void wonb(vec3 n, out vec3 u, out vec3 v, out vec3 w) {
 // Closest hit: BVH walk from common.glsl (same contract as the old
 // brute loops, now logarithmic). Shadow probes share it.
 bool trace(vec3 o, vec3 d, float tmax, out float t, out vec3 n, out vec4 alb,
-           out vec4 alb2, out vec4 emit, out vec4 params, out int light_idx) {
+           out vec4 alb2, out vec4 emit, out vec4 params, out int light_idx,
+           out vec2 huv) {
     bool any;
-    traverse(o, d, tmax, t, n, alb, alb2, emit, params, light_idx, any);
+    traverse(o, d, tmax, t, n, alb, alb2, emit, params, light_idx, huv, any);
     return any;
+}
+
+// Nearest image sample, same convention as CPU image_texture.
+vec3 image_sample(vec2 uv) {
+    float u = clamp(uv.x, 0.0, 1.0);
+    float v = clamp(uv.y, 0.0, 1.0);
+    int x = int(u * float(pc.imgW - 1) + 0.5);
+    int y = int((1.0 - v) * float(pc.imgH - 1) + 0.5);
+    return imgTex[y * pc.imgW + x].xyz;
 }
 
 // World-pos checker, same parity rule as CPU (negative % stays odd).
@@ -87,7 +103,8 @@ vec3 Li(vec3 o, vec3 d) {
         vec3 n;
         vec4 alb, alb2, emit, params;
         int light_idx;
-        if (!trace(o, d, 1e30, t, n, alb, alb2, emit, params, light_idx)) {
+        vec2 huv;
+        if (!trace(o, d, 1e30, t, n, alb, alb2, emit, params, light_idx, huv)) {
             vec3 unit = normalize(d);
             float tt = 0.5 * (unit.y + 1.0);
             L += throughput * ((1.0 - tt) * vec3(1.0) + tt * vec3(0.5, 0.7, 1.0));
@@ -117,13 +134,15 @@ vec3 Li(vec3 o, vec3 d) {
         int mtype = int(params.x + 0.5);
         vec3 hitp0 = o + d * t;
         // Type 4 = checker diffuse: world-pos parity like CPU texture.
+        // Type 5 = image diffuse: UV sample like CPU image_texture.
         vec3 base_alb = (mtype == 4) ? checker_col(hitp0, alb.xyz, alb2.xyz, params.y)
-                                     : alb.xyz;
+                        : (mtype == 5) ? image_sample(huv)
+                                       : alb.xyz;
         vec3 attenuation;
         vec3 sd;
         bool ok = true;
         bool diffuse = false;
-        if (mtype == 0 || mtype == 4) {
+        if (mtype == 0 || mtype == 4 || mtype == 5) {
             vec3 u, v, w;
             wonb(n, u, v, w);
             vec3 cd = wcosine_dir();
@@ -167,9 +186,10 @@ vec3 Li(vec3 o, vec3 d) {
                 float tt2;
                 vec3 nn2;
                 vec4 a2, ab2, e2, p2;
+                vec2 huv2;
                 int lx2;
                 // Shadow probe: any hit before the light blocks.
-                bool blocked = trace(hitp, wi, dist - 0.001, tt2, nn2, a2, ab2, e2, p2, lx2);
+                bool blocked = trace(hitp, wi, dist - 0.001, tt2, nn2, a2, ab2, e2, p2, lx2, huv2);
                 // trace() tmin is 0.001 inside; but it also returns the
                 // light itself at ~dist: blocked only if something nearer.
                 blocked = blocked && tt2 < dist - 0.002;

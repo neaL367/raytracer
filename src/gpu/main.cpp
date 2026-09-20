@@ -57,19 +57,26 @@ int main(int argc, char **argv) {
     scene.cam = build_gpu_camera(W, H, scene_name);
     GpuContext gpu{};
     gpu_init(gpu, W, H);
-    const void *data[6] = {&scene.cam, scene.spheres.data(), scene.quads.data(),
-                           scene.tris.data(), flat.nodes.data(), flat.refs.data()};
-    const size_t bytes[6] = {sizeof scene.cam, scene.spheres.size() * sizeof(GPUSphere),
+    // Image texture blob: empty (16B pad) when the scene has none.
+    static const float empty_blob[4] = {};
+    const void *img_ptr = flat.img_rgba.empty() ? empty_blob : flat.img_rgba.data();
+    size_t img_bytes = flat.img_rgba.empty() ? sizeof empty_blob
+                                             : flat.img_rgba.size() * sizeof(float);
+    const void *data[7] = {&scene.cam, scene.spheres.data(), scene.quads.data(),
+                           scene.tris.data(), flat.nodes.data(), flat.refs.data(),
+                           img_ptr};
+    const size_t bytes[7] = {sizeof scene.cam, scene.spheres.size() * sizeof(GPUSphere),
                              scene.quads.size() * sizeof(GPUQuad),
                              scene.tris.size() * sizeof(GPUTri),
                              flat.nodes.size() * sizeof(GPUNode),
-                             flat.refs.size() * sizeof(GPURef)};
+                             flat.refs.size() * sizeof(GPURef), img_bytes};
     gpu_set_scene(gpu, data, bytes);
 
-    int push8[8] = {W, H, (int)scene.spheres.size(), (int)scene.quads.size(),
-                    (int)scene.tris.size(), spp, seed, flat.nlights};
+    int push10[10] = {W, H, (int)scene.spheres.size(), (int)scene.quads.size(),
+                      (int)scene.tris.size(), spp, seed, flat.nlights, flat.img_w,
+                      flat.img_h};
     std::vector<float> rgba;
-    double dispatch_ms = gpu_run(gpu, shader, push8, rgba);
+    double dispatch_ms = gpu_run(gpu, shader, push10, rgba);
 
     // Image rows top-first -> flip for PPM writer (bottom-first).
     std::vector<vec3> fb((size_t)W * H);

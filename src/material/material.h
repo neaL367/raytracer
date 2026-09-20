@@ -41,6 +41,8 @@ class lambertian : public material {
 public:
     lambertian(const vec3 &a) : tex(std::make_shared<solid_color>(a)) {}
     lambertian(std::shared_ptr<texture> t) : tex(t) {}
+    // GPU flatten reads the pattern for image textures.
+    const std::shared_ptr<texture> &tex_ref() const { return tex; }
     bool scatter(const ray &, const hit_record &rec,
                  vec3 &attenuation, ray &scattered) const override {
         // Cosine-weighted: pdf cos/PI cancels f*cos term, throughput *= albedo exact.

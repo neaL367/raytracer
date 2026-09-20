@@ -2,6 +2,7 @@
 // BVH flatten: CPU tree -> node + leaf-ref arrays for GPU upload.
 // Pure logic, zero Vulkan: testable via unit tests. Pointer identity
 // maps scene objects to typed-array slots (BVH sorts ptr copies).
+// Order: data structs, image export, detail fns, entry point.
 #include "host_scene.h"
 #include "../accel/bvh.h"
 #include "../scene/scene.h"
@@ -22,6 +23,44 @@ struct GPURef {
     int index = -1;
 };
 
+struct flat_scene {
+    gpu_scene gs;
+    std::vector<GPUNode> nodes;
+    std::vector<GPURef> refs;
+    int nlights = 0; // leading emissive quads (NEE indexes [0, nlights))
+    // Single image texture blob (multi-image flagged for later).
+    int img_w = 0, img_h = 0;
+    std::vector<float> img_rgba; // top-first rows, linear HDR
+};
+
+// Image-backed lambertian: collect pixels once, emit type-5 params.
+// Second distinct image fails loudly (single-texture scope for now).
+// NOTE: caller must pass alb/alb2/emit arrays too (cleared here: the
+// magenta fallback runs first and must not leak into type-5 prims).
+inline bool try_image_export(flat_scene &out, const std::shared_ptr<lambertian> &lamb,
+                             float alb[4], float alb2[4], float emit[4], float prm[4]) {
+    auto it = std::dynamic_pointer_cast<image_texture>(lamb->tex_ref());
+    if (!it)
+        return false;
+    if (!out.img_rgba.empty())
+        return false;
+    out.img_w = it->width();
+    out.img_h = it->height();
+    out.img_rgba.reserve((size_t)out.img_w * out.img_h * 4);
+    for (const vec3 &p : it->texels()) {
+        out.img_rgba.push_back((float)p.x());
+        out.img_rgba.push_back((float)p.y());
+        out.img_rgba.push_back((float)p.z());
+        out.img_rgba.push_back(1.0f);
+    }
+    alb[0] = alb[1] = alb[2] = alb[3] = 0;
+    alb2[0] = alb2[1] = alb2[2] = alb2[3] = 0;
+    emit[0] = emit[1] = emit[2] = emit[3] = 0;
+    prm[0] = 5;
+    prm[1] = prm[2] = prm[3] = 0;
+    return true;
+}
+
 namespace flat_detail {
 
 inline void export_or_magenta(const std::shared_ptr<material> &m, float alb[4], float alb2[4],
@@ -38,8 +77,17 @@ inline void export_or_magenta(const std::shared_ptr<material> &m, float alb[4], 
     prm[1] = prm[2] = prm[3] = 0;
 }
 
-inline bool push_prim(gpu_scene &gs, std::map<const hittable *, std::pair<int, int>> &id,
+// Material fill shared by all shapes: export, then image override.
+inline void fill_material(flat_scene &out, const std::shared_ptr<material> &m, float alb[4],
+                          float alb2[4], float emit[4], float prm[4]) {
+    export_or_magenta(m, alb, alb2, emit, prm);
+    if (auto l = std::dynamic_pointer_cast<lambertian>(m))
+        try_image_export(out, l, alb, alb2, emit, prm);
+}
+
+inline bool push_prim(flat_scene &out, std::map<const hittable *, std::pair<int, int>> &id,
                       const std::shared_ptr<hittable> &o) {
+    gpu_scene &gs = out.gs;
     if (auto s = std::dynamic_pointer_cast<sphere>(o)) {
         GPUSphere g{};
         vec3 c = s->center_ref();
@@ -47,7 +95,7 @@ inline bool push_prim(gpu_scene &gs, std::map<const hittable *, std::pair<int, i
         g.c[1] = (float)c.y();
         g.c[2] = (float)c.z();
         g.c[3] = (float)s->radius_val();
-        export_or_magenta(s->mat_ptr(), g.alb, g.alb2, g.emit, g.prm);
+        fill_material(out, s->mat_ptr(), g.alb, g.alb2, g.emit, g.prm);
         id[o.get()] = {0, (int)gs.spheres.size()};
         gs.spheres.push_back(g);
         return true;
@@ -64,7 +112,7 @@ inline bool push_prim(gpu_scene &gs, std::map<const hittable *, std::pair<int, i
         g.v[0] = (float)v.x();
         g.v[1] = (float)v.y();
         g.v[2] = (float)v.z();
-        export_or_magenta(q->mat_ptr(), g.alb, g.alb2, g.emit, g.prm);
+        fill_material(out, q->mat_ptr(), g.alb, g.alb2, g.emit, g.prm);
         id[o.get()] = {1, (int)gs.quads.size()};
         gs.quads.push_back(g);
         return true;
@@ -78,7 +126,7 @@ inline bool push_prim(gpu_scene &gs, std::map<const hittable *, std::pair<int, i
             dst[1] = (float)vv.y();
             dst[2] = (float)vv.z();
         }
-        export_or_magenta(t->mat_ptr(), g.alb, g.alb2, g.emit, g.prm);
+        fill_material(out, t->mat_ptr(), g.alb, g.alb2, g.emit, g.prm);
         id[o.get()] = {2, (int)gs.tris.size()};
         gs.tris.push_back(g);
         return true;
@@ -119,18 +167,38 @@ inline int flatten_node(const bvh_node &n, std::vector<GPUNode> &nodes,
 
 } // namespace flat_detail
 
-struct flat_scene {
-    gpu_scene gs;
-    std::vector<GPUNode> nodes;
-    std::vector<GPURef> refs;
-    int nlights = 0; // leading emissive quads (NEE indexes [0, nlights))
-};
-
 // Build typed arrays + SAH tree + flat nodes from a scene. False on
 // unknown shapes only; lights stay quads in the same arrays.
 // Emissive quads sort first so NEE indexing stays a prefix.
 inline bool flatten_scene(const scene_data &scene, flat_scene &out) {
     out = flat_scene{};
+    // Single-image scope: count distinct image textures up front.
+    {
+        std::vector<const void *> seen;
+        for (const auto &o : scene.objs) {
+            std::shared_ptr<material> m;
+            if (auto s = std::dynamic_pointer_cast<sphere>(o))
+                m = s->mat_ptr();
+            else if (auto q = std::dynamic_pointer_cast<quad>(o))
+                m = q->mat_ptr();
+            else if (auto t = std::dynamic_pointer_cast<triangle>(o))
+                m = t->mat_ptr();
+            else
+                return false;
+            auto l = std::dynamic_pointer_cast<lambertian>(m);
+            if (l && std::dynamic_pointer_cast<image_texture>(l->tex_ref())) {
+                const void *p = l->tex_ref().get();
+                bool known = false;
+                for (auto k : seen)
+                    if (k == p)
+                        known = true;
+                if (!known)
+                    seen.push_back(p);
+            }
+        }
+        if (seen.size() > 1)
+            return false; // multi-image flagged for later
+    }
     std::vector<std::shared_ptr<hittable>> ordered = scene.objs;
     std::stable_partition(
         ordered.begin(), ordered.end(), [](const std::shared_ptr<hittable> &o) {
@@ -144,7 +212,7 @@ inline bool flatten_scene(const scene_data &scene, flat_scene &out) {
         });
     std::map<const hittable *, std::pair<int, int>> id;
     for (const auto &o : ordered)
-        if (!flat_detail::push_prim(out.gs, id, o))
+        if (!flat_detail::push_prim(out, id, o))
             return false;
     for (const auto &q : out.gs.quads)
         if (q.prm[0] == 3)

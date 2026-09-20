@@ -41,7 +41,7 @@ struct GPUCam {
 };
 
 bool hit_sphere(vec3 o, vec3 d, float tmin, float tmax, GPUSphere s,
-                out float t, out vec3 n) {
+                out float t, out vec3 n, out vec2 uv) {
     vec3 oc = o - s.c_r.xyz;
     float a = dot(d, d);
     float hb = dot(oc, d);
@@ -58,11 +58,15 @@ bool hit_sphere(vec3 o, vec3 d, float tmin, float tmax, GPUSphere s,
     }
     t = root;
     n = (o + d * root - s.c_r.xyz) / s.c_r.w;
+    // Spherical UVs mirror the CPU (azimuth u, polar v).
+    vec3 op = (o + d * root - s.c_r.xyz) / s.c_r.w;
+    uv = vec2((atan(-op.z, op.x) + 3.14159265) / 6.2831853,
+              acos(clamp(op.y, -1.0, 1.0)) / 3.14159265);
     return true;
 }
 
 bool hit_tri(vec3 o, vec3 d, float tmin, float tmax, GPUTri t_,
-             out float t, out vec3 n) {
+             out float t, out vec3 n, out vec2 uv) {
     const float eps = 1e-8;
     vec3 e1 = t_.b.xyz - t_.a.xyz;
     vec3 e2 = t_.c.xyz - t_.a.xyz;
@@ -87,11 +91,12 @@ bool hit_tri(vec3 o, vec3 d, float tmin, float tmax, GPUTri t_,
     // Double-sided: flip toward ray like CPU set_face_normal.
     if (dot(d, n) > 0.0)
         n = -n;
+    uv = vec2(u, v); // barycentric, mirrors CPU
     return true;
 }
 
 bool hit_quad(vec3 o, vec3 d, float tmin, float tmax, GPUQuad q,
-              out float t, out vec3 n) {    vec3 nrm = normalize(cross(q.u.xyz, q.v.xyz));
+              out float t, out vec3 n, out vec2 uv) {    vec3 nrm = normalize(cross(q.u.xyz, q.v.xyz));
     float denom = dot(nrm, d);
     if (abs(denom) < 1e-8)
         return false;
@@ -109,6 +114,7 @@ bool hit_quad(vec3 o, vec3 d, float tmin, float tmax, GPUQuad q,
         return false;
     t = tt;
     n = (dot(d, nrm) > 0.0) ? -nrm : nrm;
+    uv = vec2(alpha, beta); // parametric, mirrors CPU
     return true;
 }
 
@@ -144,13 +150,14 @@ bool hit_box(vec3 o, vec3 d, float tmin, float tmax, vec3 bmin, vec3 bmax) {
 // contract as the old brute loops (narrowing tmax), so kernels just swap.
 void traverse(vec3 o, vec3 d, float tmax, out float t, out vec3 n, out vec4 alb,
               out vec4 alb2, out vec4 emit, out vec4 params, out int light_idx,
-              out bool any) {
+              out vec2 huv, out bool any) {
     int stack[32];
     int sp = 0;
     stack[sp++] = 0;
     t = tmax;
     any = false;
     light_idx = -1;
+    huv = vec2(0.0);
     while (sp > 0) {
         GPUNode nd = nodes[stack[--sp]];
         if (!hit_box(o, d, 0.001, t, nd.bmin.xyz, nd.bmax.xyz))
@@ -160,8 +167,9 @@ void traverse(vec3 o, vec3 d, float tmax, out float t, out vec3 n, out vec4 alb,
                 GPURef ref = refs[nd.lrsc.z + k];
                 float tt;
                 vec3 nn;
+                vec2 uv;
                 if (ref.ti.x == 0) {
-                    if (!hit_sphere(o, d, 0.001, t, spheres[ref.ti.y], tt, nn))
+                    if (!hit_sphere(o, d, 0.001, t, spheres[ref.ti.y], tt, nn, uv))
                         continue;
                     GPUSphere s = spheres[ref.ti.y];
                     t = tt;
@@ -170,9 +178,10 @@ void traverse(vec3 o, vec3 d, float tmax, out float t, out vec3 n, out vec4 alb,
                     alb2 = s.alb2;
                     emit = s.emit;
                     params = s.params;
+                    huv = uv;
                     any = true;
                 } else if (ref.ti.x == 1) {
-                    if (!hit_quad(o, d, 0.001, t, quads[ref.ti.y], tt, nn))
+                    if (!hit_quad(o, d, 0.001, t, quads[ref.ti.y], tt, nn, uv))
                         continue;
                     GPUQuad q = quads[ref.ti.y];
                     t = tt;
@@ -181,10 +190,11 @@ void traverse(vec3 o, vec3 d, float tmax, out float t, out vec3 n, out vec4 alb,
                     alb2 = q.alb2;
                     emit = q.emit;
                     params = q.params;
+                    huv = uv;
                     light_idx = (emit.x + emit.y + emit.z > 0.0) ? ref.ti.y : -1;
                     any = true;
                 } else {
-                    if (!hit_tri(o, d, 0.001, t, tris[ref.ti.y], tt, nn))
+                    if (!hit_tri(o, d, 0.001, t, tris[ref.ti.y], tt, nn, uv))
                         continue;
                     GPUTri tr = tris[ref.ti.y];
                     t = tt;
@@ -193,6 +203,7 @@ void traverse(vec3 o, vec3 d, float tmax, out float t, out vec3 n, out vec4 alb,
                     alb2 = tr.alb2;
                     emit = tr.emit;
                     params = tr.params;
+                    huv = uv;
                     any = true;
                 }
             }

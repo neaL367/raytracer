@@ -4,8 +4,8 @@ project(raytracer LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_executable(raytracer src/app/main.cpp)
-target_include_directories(raytracer PRIVATE src)
+add_executable(raytracer src/app/main.cpp src/io/stb_image.cpp)
+target_include_directories(raytracer PRIVATE src external)
 if(MSVC)
     target_compile_options(raytracer PRIVATE /W4)
 else()
@@ -20,8 +20,8 @@ add_custom_command(TARGET raytracer POST_BUILD
 
 enable_testing()
 add_executable(raytracer_tests tests/test_all.cpp tests/test_core.cpp tests/test_geometry.cpp
-               tests/test_shading.cpp tests/test_scene.cpp)
-target_include_directories(raytracer_tests PRIVATE src tests)
+               tests/test_shading.cpp tests/test_scene.cpp src/io/stb_image.cpp)
+target_include_directories(raytracer_tests PRIVATE src tests external)
 add_test(NAME unit_tests COMMAND raytracer_tests WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # GPU backend: headless Vulkan compute. CPU binary untouched.
@@ -43,8 +43,8 @@ foreach(shader grad normal path)
 endforeach()
 add_custom_target(gpu_shaders DEPENDS ${GPU_SHADERS_COMPILED})
 
-add_executable(rt_gpu src/gpu/main.cpp)
-target_include_directories(rt_gpu PRIVATE src)
+add_executable(rt_gpu src/gpu/main.cpp src/io/stb_image.cpp)
+target_include_directories(rt_gpu PRIVATE src external)
 target_link_libraries(rt_gpu PRIVATE Vulkan::Vulkan)
 target_compile_definitions(rt_gpu PRIVATE SHADER_DIR="${GPU_SHADER_DIR}")
 add_dependencies(rt_gpu gpu_shaders)

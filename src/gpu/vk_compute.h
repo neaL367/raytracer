@@ -41,13 +41,12 @@ struct GpuContext {
     GpuBuffer staging;
     VkDescriptorSetLayout layout = VK_NULL_HANDLE;
     VkDescriptorPool pool = VK_NULL_HANDLE;
-    VkDescriptorSet set = VK_NULL_HANDLE;
-    VkPipeline pipe = VK_NULL_HANDLE;
+    VkDescriptorSet set = VK_NULL_HANDLE;    VkPipeline pipe = VK_NULL_HANDLE;
     VkPipelineLayout pipe_layout = VK_NULL_HANDLE;
     VkCommandPool cmd_pool = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkQueryPool query_pool = VK_NULL_HANDLE;
-    GpuBuffer scene_bufs[6];
+    GpuBuffer scene_bufs[7];
     bool has_scene = false;
 };
 
@@ -184,12 +183,12 @@ inline void gpu_init(GpuContext &g, int W, int H) {
         VKC_CHECK(vkBindBufferMemory(g.device, g.staging.buf, g.staging.mem, 0));
     }
     {
-        VkDescriptorSetLayoutBinding b[7]{};
+        VkDescriptorSetLayoutBinding b[9]{};
         b[0].binding = 0;
         b[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         b[0].descriptorCount = 1;
         b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        for (uint32_t i = 1; i < 7; ++i) {
+        for (uint32_t i = 1; i < 9; ++i) {
             b[i].binding = i;
             b[i].descriptorCount = 1;
             b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -198,7 +197,7 @@ inline void gpu_init(GpuContext &g, int W, int H) {
         }
         VkDescriptorSetLayoutCreateInfo ci{};
         ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        ci.bindingCount = 7;
+        ci.bindingCount = 9;
         ci.pBindings = b;
         VKC_CHECK(vkCreateDescriptorSetLayout(g.device, &ci, nullptr, &g.layout));
         VkDescriptorPoolSize ps[3]{};
@@ -207,7 +206,7 @@ inline void gpu_init(GpuContext &g, int W, int H) {
         ps[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         ps[1].descriptorCount = 1;
         ps[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        ps[2].descriptorCount = 5;
+        ps[2].descriptorCount = 7;
         VkDescriptorPoolCreateInfo pi{};
         pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         pi.maxSets = 1;
@@ -234,11 +233,11 @@ inline void gpu_init(GpuContext &g, int W, int H) {
     }
 }
 
-// Upload 6 blobs as UBO + 5 SSBOs, wire descriptor set.
+// Upload 7 blobs as UBO + 6 SSBOs, wire descriptor set.
 // bufs[0] = camera UBO, [1..3] = prim SSBOs, [4] = BVH nodes,
-// [5] = leaf refs (empty blobs get 16B pad: zero-size is illegal).
-inline void gpu_set_scene(GpuContext &g, const void *data[6], const size_t bytes[6]) {
-    for (int i = 0; i < 6; ++i) {
+// [5] = leaf refs, [6] = image-texture texels.
+inline void gpu_set_scene(GpuContext &g, const void *data[7], const size_t bytes[7]) {
+    for (int i = 0; i < 7; ++i) {
         size_t n = bytes[i] ? bytes[i] : 16;
         VkBufferCreateInfo ci{};
         ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -274,19 +273,19 @@ inline void gpu_set_scene(GpuContext &g, const void *data[6], const size_t bytes
     VkDescriptorImageInfo ii{};
     ii.imageView = g.view;
     ii.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    VkDescriptorBufferInfo bi[6]{};
-    for (int i = 0; i < 6; ++i) {
+    VkDescriptorBufferInfo bi[7]{};
+    for (int i = 0; i < 7; ++i) {
         bi[i].buffer = g.scene_bufs[i].buf;
         bi[i].range = g.scene_bufs[i].bytes;
     }
-    VkWriteDescriptorSet w[7]{};
+    VkWriteDescriptorSet w[9]{};
     w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     w[0].dstSet = g.set;
     w[0].dstBinding = 0;
     w[0].descriptorCount = 1;
     w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     w[0].pImageInfo = &ii;
-    for (int i = 1; i < 7; ++i) {
+    for (int i = 1; i < 9; ++i) {
         w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         w[i].dstSet = g.set;
         w[i].dstBinding = (uint32_t)i;
@@ -295,13 +294,13 @@ inline void gpu_set_scene(GpuContext &g, const void *data[6], const size_t bytes
                                        : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         w[i].pBufferInfo = &bi[i - 1];
     }
-    vkUpdateDescriptorSets(g.device, 7, w, 0, nullptr);
+    vkUpdateDescriptorSets(g.device, 9, w, 0, nullptr);
     g.has_scene = true;
 }
 
 // Dispatch spv with 32B push block, copy image to host, report device ms.
 // out_rgba receives W*H*4 floats, top-first rows.
-inline double gpu_run(GpuContext &g, const std::string &spv_path, const int push8[8],
+inline double gpu_run(GpuContext &g, const std::string &spv_path, const int push10[10],
                       std::vector<float> &out_rgba) {
     std::ifstream f(spv_path, std::ios::binary | std::ios::ate);
     if (!f) {
@@ -324,7 +323,7 @@ inline double gpu_run(GpuContext &g, const std::string &spv_path, const int push
     {
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        pc.size = 32;
+        pc.size = 40;
         VkPipelineLayoutCreateInfo li{};
         li.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         li.setLayoutCount = 1;
@@ -361,7 +360,7 @@ inline double gpu_run(GpuContext &g, const std::string &spv_path, const int push
         vkCmdBindPipeline(g.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g.pipe);
         vkCmdBindDescriptorSets(g.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g.pipe_layout, 0,
                                 1, &g.set, 0, nullptr);
-        vkCmdPushConstants(g.cmd, g.pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 32, push8);
+        vkCmdPushConstants(g.cmd, g.pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 40, push10);
         vkCmdWriteTimestamp(g.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.query_pool, 0);
         vkCmdDispatch(g.cmd, (g.W + 15) / 16, (g.H + 15) / 16, 1);
         vkCmdWriteTimestamp(g.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.query_pool, 1);

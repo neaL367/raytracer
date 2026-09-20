@@ -100,10 +100,18 @@ static void t_flatten() {
     for (auto &n : fs.nodes)
         leaf_prims += (n.left < 0) ? n.count : 0;
     EXPECT_TRUE(leaf_prims == (int)def.objs.size());
-    // Ground checker exports even/odd + type 4 (float32: loose eps).
+    // Ground is image-textured (type 5) with collected pixels.
     EXPECT_TRUE(!fs.gs.spheres.empty());
-    EXPECT_TRUE(fs.gs.spheres[0].prm[0] == 4);
-    EXPECT_TRUE(fabs(fs.gs.spheres[0].alb[0] - 0.8) < 1e-6);
+    EXPECT_TRUE(fs.gs.spheres[0].prm[0] == 5);
+    EXPECT_TRUE(fs.img_w == 128 && fs.img_h == 64);
+    EXPECT_TRUE((int)fs.img_rgba.size() == 128 * 64 * 4);
+    // Cube checker survives: type 4, scale 3, red even.
+    bool found_checker = false;
+    for (auto &t : fs.gs.tris)
+        if (t.prm[0] == 4 && fabs(t.prm[1] - 3.0f) < 1e-6 &&
+            fabs(t.alb[0] - 0.7f) < 1e-6)
+            found_checker = true;
+    EXPECT_TRUE(found_checker);
     // Cornell: 18 quads flat, light first for NEE indexing.
     scene_data cor = build_scene("cornell", 1.0, 0.0);
     flat_scene fc;

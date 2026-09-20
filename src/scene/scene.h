@@ -9,6 +9,7 @@
 #include "../geometry/quad.h"
 #include "../geometry/sphere.h"
 #include "../geometry/triangle.h"
+#include "../io/stb_loader.h"
 #include "../material/material.h"
 
 #include <iostream>
@@ -44,9 +45,16 @@ inline void add_box(std::vector<std::shared_ptr<hittable>> &objs, const vec3 &lo
 // sphere fallback, metal/glass spheres, ceiling light.
 inline scene_data build_default(double aspect, double aperture) {
     scene_data scene;
-    auto ground_mat =
-        std::make_shared<lambertian>(std::make_shared<checker>(4.0, vec3(0.8, 0.8, 0.8),
-                                                               vec3(0.3, 0.3, 0.3)));
+    // Photo ground (spherical UVs); checker fallback keeps binary alive
+    // when the asset is missing.
+    std::shared_ptr<texture> ground_tex =
+        std::make_shared<checker>(4.0, vec3(0.8, 0.8, 0.8), vec3(0.3, 0.3, 0.3));
+    ppm_io::image photo;
+    if (stb_loader::load_image("assets/photo_test.jpg", photo))
+        ground_tex = std::make_shared<image_texture>(photo.w, photo.h, photo.px);
+    else
+        std::cerr << "assets/photo_test.jpg missing: checker ground\n";
+    auto ground_mat = std::make_shared<lambertian>(ground_tex);
     auto cube_mat =
         std::make_shared<lambertian>(std::make_shared<checker>(3.0, vec3(0.7, 0.3, 0.3),
                                                                vec3(0.9, 0.9, 0.9)));

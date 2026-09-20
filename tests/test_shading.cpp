@@ -10,6 +10,7 @@
 #include "geometry/sphere.h"
 #include "integrator/integrator.h"
 #include "io/ppm_image.h"
+#include "io/stb_loader.h"
 #include "io/denoise.h"
 #include "output/film.h"
 
@@ -202,6 +203,49 @@ static void t_joint() {
     EXPECT_TRUE(joint[(size_t)8 * S + 8].z() > joint[(size_t)8 * S + 8].x());
 }
 
+static void t_stb() {
+    test_current = "stb";
+    // Exact sRGB inverse (not gamma 2.2): 0.5 -> ~0.214.
+    EXPECT_TRUE(fabs(stb_loader::srgb_to_linear(0.5) - 0.2140) < 0.002);
+    EXPECT_NEAR(stb_loader::srgb_to_linear(0.0), 0.0);
+    EXPECT_NEAR(stb_loader::srgb_to_linear(1.0), 1.0);
+    // Hand-written 2x2 BMP (54B header, BGR, bottom-first, padded rows).
+    std::string bmp = (std::filesystem::temp_directory_path() / "rt_2x2.bmp").string();
+    {
+        unsigned char hdr[54] = {};
+        hdr[0] = 'B';
+        hdr[1] = 'M';
+        hdr[2] = 70;
+        hdr[10] = 54;
+        hdr[14] = 40;
+        hdr[18] = 2;
+        hdr[22] = 2;
+        hdr[26] = 1;
+        hdr[28] = 24;
+        hdr[34] = 16;
+        // Bottom row: red, green. Top row: blue, white. (BGR triples.)
+        unsigned char px[16] = {0, 0, 255, 0, 255, 0, 0, 0,
+                                255, 0, 0, 255, 255, 255, 0, 0};
+        std::ofstream f(bmp, std::ios::binary);
+        f.write((char *)hdr, 54);
+        f.write((char *)px, 16);
+    }
+    ppm_io::image img;
+    EXPECT_TRUE(stb_loader::load_image(bmp, img));
+    EXPECT_TRUE(img.w == 2 && img.h == 2);
+    EXPECT_NEAR(img.px[0].x(), 0); // top-left blue (linearized, still ~0 red)
+    EXPECT_TRUE(img.px[0].z() > 0.9);
+    EXPECT_TRUE(img.px[1].x() > 0.9); // top-right white
+    EXPECT_TRUE(img.px[3].y() > 0.9); // bottom-right green
+    // Committed JPEG asset: gradient red→x, green→y, flat blue.
+    ppm_io::image photo;
+    EXPECT_TRUE(stb_loader::load_image("assets/photo_test.jpg", photo));
+    EXPECT_TRUE(photo.w == 128 && photo.h == 64);
+    EXPECT_TRUE(photo.px[0].x() < photo.px[127].x()); // red rises with x
+    EXPECT_TRUE(photo.px[0].y() < photo.px[(size_t)63 * 128].y()); // green rises
+    EXPECT_TRUE(!stb_loader::load_image(bmp + ".missing", photo));
+}
+
 void run_shading_tests() {
     t_materials();
     t_texture();
@@ -211,4 +255,5 @@ void run_shading_tests() {
     t_denoise();
     t_aov();
     t_joint();
+    t_stb();
 }

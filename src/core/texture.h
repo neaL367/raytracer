@@ -69,6 +69,8 @@ public:
     }
     int width() const { return W; }
     int height() const { return H; }
+    // GPU upload accessor (linear HDR texels, row 0 = top).
+    const std::vector<vec3> &texels() const { return pixels; }
 
 private:
     int W = 0, H = 0;
