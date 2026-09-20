@@ -45,4 +45,9 @@ public:
             return 0;
         return (d.y() > d.z()) ? 1 : 2;
     }
+
+    double surface_area() const {
+        vec3 d = maximum - minimum;
+        return 2.0 * (d.x() * d.y() + d.y() * d.z() + d.z() * d.x());
+    }
 };

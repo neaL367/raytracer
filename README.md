@@ -41,4 +41,5 @@ M5 done: median BVH, tile thread pool, bench counters.
 M6 done: headless Vulkan compute backend (rt_gpu), CPU parity.
 M7 done: textures + OBJ meshes, checker demo, GPU parity.
 M8 done: exposure + ACES + sRGB film, shared CPU/GPU writer.
-Next: CI or binned SAH.
+M9 done: binned SAH BVH, --split flag, prim tests halved.
+Next: test split or CI.

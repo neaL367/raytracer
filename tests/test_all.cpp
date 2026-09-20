@@ -390,10 +390,68 @@ static void t_film() {
     EXPECT_TRUE(lamp.x() > 0.95 && lamp.y() > 0.95 && lamp.z() > 0.95);
 }
 
+static void t_sah() {
+    cur = "sah";
+    rng_seed(50);
+    auto m = std::make_shared<lambertian>(vec3(0.6, 0.6, 0.6));
+    // 50 random spheres: SAH must agree with list everywhere.
+    std::vector<std::shared_ptr<hittable>> objs;
+    for (int i = 0; i < 50; ++i)
+        objs.push_back(std::make_shared<sphere>(
+            vec3(random_double(-5, 5), random_double(-2, 3), random_double(-6, 0)),
+            random_double(0.1, 0.6), m));
+    hittable_list list;
+    for (auto &o : objs)
+        list.add(o);
+    std::vector<std::shared_ptr<hittable>> for_sah = objs;
+    bvh_node sah(for_sah, 0, for_sah.size(), true);
+    EXPECT_TRUE(sah.count_prims() == 50); // nothing lost in partition
+    // Aim rays at random spheres so most hit (uniform rays mostly miss).
+    std::vector<vec3> centers;
+    for (auto &o : objs) {
+        aabb b;
+        o->bounding_box(b);
+        centers.push_back((b.minimum + b.maximum) * 0.5);
+    }
+    int agree = 0;
+    for (int k = 0; k < 200; ++k) {
+        vec3 target = centers[(size_t)(random_double() * centers.size()) % centers.size()];
+        vec3 o = target + vec3(random_double(-3, 3), random_double(-3, 3), random_double(2, 5));
+        ray r(o, unit_vector(target - o)); // aimed, guaranteed near-miss-or-hit
+        hit_record rl, rb;
+        bool hl = list.hit(r, 0.001, 1e30, rl);
+        bool hb = sah.hit(r, 0.001, 1e30, rb);
+        EXPECT_TRUE(hl == hb);
+        if (hl && hb) {
+            EXPECT_TRUE(fabs(rl.t - rb.t) < 1e-9);
+            ++agree;
+        }
+    }
+    EXPECT_TRUE(agree > 150);
+    // Two far clusters: SAH root splits (inner node), not a leaf.
+    std::vector<std::shared_ptr<hittable>> cl;
+    for (int i = 0; i < 6; ++i) {
+        cl.push_back(std::make_shared<sphere>(vec3(-10 + 0.1 * i, 0, -5), 0.2, m));
+        cl.push_back(std::make_shared<sphere>(vec3(10 + 0.1 * i, 0, -5), 0.2, m));
+    }
+    bvh_node clustered(cl, 0, cl.size(), true);
+    EXPECT_TRUE(!clustered.is_leaf());
+    EXPECT_TRUE(clustered.count_prims() == 12);
+    // Degenerate: coincident boxes stay correct, no infinite split.
+    std::vector<std::shared_ptr<hittable>> deg;
+    for (int i = 0; i < 10; ++i)
+        deg.push_back(std::make_shared<sphere>(vec3(0, 0, -3), 0.5, m));
+    bvh_node dnode(deg, 0, deg.size(), true);
+    EXPECT_TRUE(dnode.count_prims() == 10);
+    hit_record hr;
+    EXPECT_TRUE(dnode.hit(ray(vec3(0, 0, 0), vec3(0, 0, -1)), 0.001, 1e30, hr));
+    EXPECT_NEAR(hr.t, 2.5);
+}
+
 int main() {
     t_vec3(); t_ray(); t_camera(); t_sphere(); t_list(); t_triangle_quad();
     t_materials(); t_sampler(); t_montecarlo(); t_onb_cosine(); t_emissive();
-    t_defocus(); t_rr(); t_aabb(); t_bvh(); t_texture_uv(); t_ppm_obj(); t_film();
+    t_defocus(); t_rr(); t_aabb(); t_bvh(); t_texture_uv(); t_ppm_obj(); t_film(); t_sah();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

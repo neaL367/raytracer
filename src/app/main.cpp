@@ -34,6 +34,7 @@ int main(int argc, char **argv) {
         num_threads = 4;
     int tile_rows = 8;
     bool bench = false;
+    bool use_sah = true;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--samples" && i + 1 < argc)
@@ -44,6 +45,8 @@ int main(int argc, char **argv) {
             num_threads = (unsigned)std::max(1, std::atoi(argv[++i]));
         else if (a == "--tile" && i + 1 < argc)
             tile_rows = std::max(1, std::atoi(argv[++i]));
+        else if (a == "--split" && i + 1 < argc)
+            use_sah = (std::string(argv[++i]) != "median");
         else if (a == "--exposure" && i + 1 < argc)
             exposure = std::max(0.0, std::atof(argv[++i]));
         else if (a == "--bench")
@@ -94,7 +97,7 @@ int main(int argc, char **argv) {
     lights.push_back(light);
 
     // BVH over everything incl. light quad: shadow + NEE rays traverse it.
-    bvh_node world(objs, 0, objs.size());
+    bvh_node world(objs, 0, objs.size(), use_sah);
 
     camera cam(vec3(0, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0),
                90.0, double(W) / double(H), aperture, 1.0);
@@ -154,6 +157,7 @@ int main(int argc, char **argv) {
     std::uint64_t rays = bench_rays().load();
     std::cout << "wrote out/image.ppm " << W << "x" << H << " spp=" << spp
               << " threads=" << num_threads << " tile=" << tile_rows
+              << " split=" << (use_sah ? "sah" : "median")
               << " exposure=" << exposure << "\n";
     std::cout << "render " << secs << "s";
     if (bench) {

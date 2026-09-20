@@ -5,13 +5,14 @@
 #include <memory>
 #include <vector>
 
-// Median-split BVH on the hittable interface. Longest-axis partition,
-// leaf cap 4, near-first traversal. Integrator never names it: one-line
-// swap list->BVH in main. Binned SAH later rebuilds only this file.
+// BVH on the hittable interface. Binned SAH by default (16 bins/axis,
+// Ct=1 box, Ci=1 prim, leaf cap 4); median split kept for A/B via flag.
+// Integrator never names it. Zero interface change for future rebuilds.
 class bvh_node : public hittable {
 public:
     bvh_node() {}
-    bvh_node(std::vector<std::shared_ptr<hittable>> &objs, size_t start, size_t end) {
+    bvh_node(std::vector<std::shared_ptr<hittable>> &objs, size_t start, size_t end,
+             bool use_sah = true) {
         aabb bounds;
         bool first = true;
         for (size_t i = start; i < end; ++i) {
@@ -29,20 +30,21 @@ public:
                 prims.push_back(objs[i]);
             return;
         }
-        int axis = bounds.longest_axis();
-        auto cmp = [axis](const std::shared_ptr<hittable> &a,
-                          const std::shared_ptr<hittable> &b) {
-            aabb ba, bb;
-            a->bounding_box(ba);
-            b->bounding_box(bb);
-            double ca = (ba.minimum.e[axis] + ba.maximum.e[axis]) * 0.5;
-            double cb = (bb.minimum.e[axis] + bb.maximum.e[axis]) * 0.5;
-            return ca < cb;
-        };
-        std::sort(objs.begin() + (long)start, objs.begin() + (long)end, cmp);
-        size_t mid = start + span / 2;
-        left = std::make_shared<bvh_node>(objs, start, mid);
-        right = std::make_shared<bvh_node>(objs, mid, end);
+        if (use_sah && try_sah_split(objs, start, end, bounds))
+            return;
+        median_split(objs, start, end, bounds, use_sah);
+    }
+
+    bool is_leaf() const { return !prims.empty(); }
+    size_t count_prims() const {
+        if (is_leaf())
+            return prims.size();
+        size_t n = 0;
+        if (left)
+            n += left->count_prims();
+        if (right)
+            n += right->count_prims();
+        return n;
     }
 
     bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const override {
@@ -106,4 +108,144 @@ private:
     aabb box;
     std::shared_ptr<bvh_node> left, right;
     std::vector<std::shared_ptr<hittable>> prims; // non-empty = leaf
+
+    static double centroid(const std::shared_ptr<hittable> &o, int axis) {
+        aabb b;
+        o->bounding_box(b);
+        return (b.minimum.e[axis] + b.maximum.e[axis]) * 0.5;
+    }
+
+    void median_split(std::vector<std::shared_ptr<hittable>> &objs, size_t start,
+                      size_t end, const aabb &bounds, bool sub_sah) {
+        int axis = bounds.longest_axis();
+        std::sort(objs.begin() + (long)start, objs.begin() + (long)end,
+                  [axis](const std::shared_ptr<hittable> &a,
+                         const std::shared_ptr<hittable> &b) {
+                      aabb ba, bb;
+                      a->bounding_box(ba);
+                      b->bounding_box(bb);
+                      double ca = (ba.minimum.e[axis] + ba.maximum.e[axis]) * 0.5;
+                      double cb = (bb.minimum.e[axis] + bb.maximum.e[axis]) * 0.5;
+                      return ca < cb;
+                  });
+        size_t mid = start + (end - start) / 2;
+        left = std::make_shared<bvh_node>(objs, start, mid, sub_sah);
+        right = std::make_shared<bvh_node>(objs, mid, end, sub_sah);
+    }
+
+    // Binned SAH: 16 bins/axis over centroid bounds, sweep both sides,
+    // cheapest split wins if it beats leaf cost. Returns false when no
+    // split pays (caller falls back to median).
+    bool try_sah_split(std::vector<std::shared_ptr<hittable>> &objs, size_t start,
+                       size_t end, const aabb &bounds) {
+        const int BINS = 16;
+        const double Ct = 1.0, Ci = 1.0;
+        double span = (double)(end - start);
+        double leaf_cost = Ci * span;
+        double node_area = bounds.surface_area();
+        if (node_area <= 0)
+            return false;
+
+        // Centroid bounds: zero extent on every axis = degenerate.
+        vec3 cmin(1e30, 1e30, 1e30), cmax(-1e30, -1e30, -1e30);
+        for (size_t i = start; i < end; ++i) {
+            aabb b;
+            objs[i]->bounding_box(b);
+            vec3 c = (b.minimum + b.maximum) * 0.5;
+            for (int a = 0; a < 3; ++a) {
+                if (c.e[a] < cmin.e[a])
+                    cmin.e[a] = c.e[a];
+                if (c.e[a] > cmax.e[a])
+                    cmax.e[a] = c.e[a];
+            }
+        }
+
+        int best_axis = -1, best_bin = -1;
+        double best_cost = leaf_cost;
+        for (int axis = 0; axis < 3; ++axis) {
+            double lo = cmin.e[axis], hi = cmax.e[axis];
+            if (hi - lo < 1e-12)
+                continue; // all centroids coincide on this axis
+            int count[BINS] = {};
+            aabb bnds[BINS];
+            bool used[BINS] = {};
+            for (size_t i = start; i < end; ++i) {
+                aabb b;
+                objs[i]->bounding_box(b);
+                double c = ((b.minimum.e[axis] + b.maximum.e[axis]) * 0.5 - lo) / (hi - lo);
+                int bin = (int)(c * BINS);
+                if (bin < 0)
+                    bin = 0;
+                if (bin >= BINS)
+                    bin = BINS - 1;
+                if (!used[bin]) {
+                    bnds[bin] = b;
+                    used[bin] = true;
+                } else {
+                    bnds[bin] = aabb::surrounding(bnds[bin], b);
+                }
+                count[bin]++;
+            }
+            // Prefix/suffix sweeps: bounds + counts each side of each cut.
+            aabb left_box[BINS];
+            int left_n[BINS] = {};
+            aabb acc;
+            int n = 0;
+            bool have = false;
+            for (int b = 0; b < BINS; ++b) {
+                if (used[b]) {
+                    acc = have ? aabb::surrounding(acc, bnds[b]) : bnds[b];
+                    have = true;
+                    n += count[b];
+                }
+                left_box[b] = acc;
+                left_n[b] = n;
+            }
+            aabb right_box[BINS];
+            int right_n[BINS] = {};
+            have = false;
+            n = 0;
+            for (int b = BINS - 1; b >= 0; --b) {
+                if (used[b]) {
+                    acc = have ? aabb::surrounding(acc, bnds[b]) : bnds[b];
+                    have = true;
+                    n += count[b];
+                }
+                right_box[b] = acc;
+                right_n[b] = n;
+            }
+            for (int b = 0; b < BINS - 1; ++b) {
+                if (left_n[b] == 0 || right_n[b + 1] == 0)
+                    continue;
+                double cost = Ct + Ci * (left_box[b].surface_area() * left_n[b] +
+                                         right_box[b + 1].surface_area() * right_n[b + 1]) /
+                                        node_area;
+                if (cost < best_cost) {
+                    best_cost = cost;
+                    best_axis = axis;
+                    best_bin = b;
+                }
+            }
+        }
+        if (best_axis < 0)
+            return false; // no paying split: median fallback
+
+        // Partition in place by centroid vs winning bin boundary.
+        double lo = cmin.e[best_axis], hi = cmax.e[best_axis];
+        auto mid_it = std::partition(
+            objs.begin() + (long)start, objs.begin() + (long)end,
+            [&](const std::shared_ptr<hittable> &o) {
+                double c = (centroid(o, best_axis) - lo) / (hi - lo);
+                int bin = (int)(c * BINS);
+                if (bin >= BINS)
+                    bin = BINS - 1;
+                return bin <= best_bin;
+            });
+        size_t mid = (size_t)(mid_it - objs.begin());
+        if (mid == start || mid == end)
+            return false; // degenerate partition: median fallback
+        left = std::make_shared<bvh_node>(objs, start, mid, true);
+        right = std::make_shared<bvh_node>(objs, mid, end, true);
+        return true;
+    }
 };
