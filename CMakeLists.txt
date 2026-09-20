@@ -18,8 +18,9 @@ add_custom_command(TARGET raytracer POST_BUILD
     ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:raytracer>/assets
 )
 enable_testing()
-add_executable(raytracer_tests tests/test_all.cpp)
-target_include_directories(raytracer_tests PRIVATE src)
+add_executable(raytracer_tests tests/test_all.cpp tests/test_core.cpp tests/test_geometry.cpp
+               tests/test_shading.cpp tests/test_scene.cpp)
+target_include_directories(raytracer_tests PRIVATE src tests)
 add_test(NAME unit_tests COMMAND raytracer_tests)
 
 # GPU backend: headless Vulkan compute. CPU binary untouched.

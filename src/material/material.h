@@ -2,6 +2,7 @@
 #include "../core/vec3.h"
 #include "../core/ray.h"
 #include "../core/random.h"
+#include "../core/sampler.h"
 #include "../core/onb.h"
 #include "../core/texture.h"
 #include "../geometry/hittable.h"
