@@ -276,6 +276,46 @@ static void t_volume() {
     EXPECT_TRUE(!fog.hit(ray(vec3(5, 5, 0), vec3(0, 0, -1)), 0.001, 1e30, hr));
 }
 
+static void t_hetero() {
+    test_current = "hetero";
+    auto phase = std::make_shared<isotropic>(vec3(0.9, 0.9, 0.9));
+    auto border = std::make_shared<sphere>(vec3(0, 0, -1), 1.0, phase);
+    heterogeneous_medium het(border, 2.0, phase);
+    // Modulation exact at sin zeros/peaks, bounded everywhere on grid.
+    EXPECT_NEAR(het.modulation(vec3(0, 0, 0)), 0.5);
+    double pk = 3.1415926535897932385 / 2.0;
+    EXPECT_NEAR(het.modulation(vec3(pk / 5, pk / 4, pk / 6)), 1.0);
+    EXPECT_NEAR(het.modulation(vec3(-pk / 5, pk / 4, pk / 6)), 0.0);
+    for (int i = 0; i < 200; ++i) {
+        double m = het.modulation(vec3(0.13 * i, -0.29 * i, 0.07 * i));
+        EXPECT_TRUE(m >= 0 && m <= 1); // majorant exact: tracking unbiased
+    }
+    // Miss escapes; seeded hit is deterministic and inside the chord.
+    hit_record hr;
+    EXPECT_TRUE(!het.hit(ray(vec3(5, 5, 0), vec3(0, 0, -1)), 0.001, 1e30, hr));
+    rng_seed(91);
+    EXPECT_TRUE(het.hit(ray(vec3(0, 0, 0), vec3(0, 0, -1)), 0.001, 1e30, hr));
+    EXPECT_TRUE(hr.t > 0 && hr.t < 2.0 && hr.mat == phase);
+    rng_seed(91);
+    hit_record hr2;
+    EXPECT_TRUE(het.hit(ray(vec3(0, 0, 0), vec3(0, 0, -1)), 0.001, 1e30, hr2));
+    EXPECT_NEAR(hr.t, hr2.t); // replay bit-exact
+    EXPECT_NEAR(het.density_val(), 2.0);
+    EXPECT_TRUE((het.freqs() - vec3(5, 4, 6)).length() < 1e-12);
+    // Unbiasedness in situ: center ray sees constant m=0.5 (x=y=0 kills
+    // the sines); escape fraction must match exp(-sig*0.5*L), L~=2.
+    rng_seed(126);
+    int esc = 0;
+    const int ET = 20000;
+    for (int i = 0; i < ET; ++i) {
+        hit_record hre;
+        if (!het.hit(ray(vec3(0, 0, 0), vec3(0, 0, -1)), 0.001, 1e30, hre))
+            esc++;
+    }
+    double theory = std::exp(-2.0 * 0.5 * 1.999);
+    EXPECT_TRUE(fabs((double)esc / ET - theory) < 0.01);
+}
+
 static void t_trimotion() {
     test_current = "trimotion";
     auto m = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));
@@ -301,6 +341,67 @@ static void t_trimotion() {
     EXPECT_TRUE(b.minimum.z() <= 0 && b.maximum.z() >= 1);
 }
 
+// fp32 replica of the GLSL modulation (mirrors common.glsl exactly).
+static float het_m32(float x, float y, float z) {
+    float v = 0.5f + 0.5f * sinf(5.0f * x) * sinf(4.0f * y) * sinf(6.0f * z);
+    if (v < 0)
+        v = 0;
+    if (v > 1)
+        v = 1;
+    return v;
+}
+
+static void t_hetprec() {
+    test_current = "hetprec";
+    auto phase = std::make_shared<isotropic>(vec3(0.9, 0.9, 0.9));
+    auto border = std::make_shared<sphere>(vec3(0, 0, -1), 1.0, phase);
+    heterogeneous_medium het(border, 2.0, phase);
+    // Modulation mean: fp64 real code vs fp32 GLSL replica agree.
+    rng_seed(124);
+    double s64 = 0, s32 = 0;
+    const int N = 60000;
+    for (int i = 0; i < N; ++i) {
+        vec3 p(random_double(-2, 0), random_double(-2, 0), -1 + random_double(-1, 1));
+        s64 += het.modulation(p);
+        s32 += het_m32((float)p.x(), (float)p.y(), (float)p.z());
+    }
+    EXPECT_TRUE(fabs(s64 / N - 0.5) < 0.01); // symmetric modulation
+    EXPECT_TRUE(fabs(s64 / N - s32 / N) < 1e-4); // fp32 mirror faithful
+    // Full tracking loop in fp32 vs theory 1-exp(-sig*M) on an offset ray.
+    double ox = 0.3, oy = 0.2;
+    double t0 = 1 - std::sqrt(0.87), t1 = 1 + std::sqrt(0.87);
+    double M = 0;
+    const int Q = 2000;
+    for (int i = 0; i < Q; ++i) {
+        double t = t0 + (t1 - t0) * (i + 0.5) / Q;
+        M += het.modulation(vec3(ox, oy, -t));
+    }
+    M *= (t1 - t0) / Q;
+    rng_seed(125);
+    int ev = 0;
+    const int T = 60000;
+    for (int i = 0; i < T; ++i) {
+        float cursor = (float)t0;
+        while (true) {
+            float su = (float)random_double();
+            if (su <= 0)
+                su = 1e-7f;
+            float s = -logf(su) / 2.0f;
+            float x = cursor + s;
+            if (x > (float)t1)
+                break;
+            float au = (float)random_double();
+            if (het_m32((float)ox, (float)oy, (float)-x) > au) {
+                ev++;
+                break;
+            }
+            cursor = x;
+        }
+    }
+    double theory = 1 - std::exp(-2.0 * M);
+    EXPECT_TRUE(fabs((double)ev / T - theory) < 0.01); // fp32 tracking sound
+}
+
 void run_geometry_tests() {
     t_sphere();
     t_list();
@@ -314,4 +415,6 @@ void run_geometry_tests() {
     t_motion();
     t_trimotion();
     t_volume();
+    t_hetero();
+    t_hetprec();
 }

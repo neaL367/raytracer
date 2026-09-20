@@ -344,6 +344,17 @@ static void t_flatten() {
     EXPECT_TRUE(ff.gs.spheres[0].prm[0] == 6);
     EXPECT_TRUE(fabs(ff.gs.spheres[0].prm[1] - 0.25f) < 1e-6);
     EXPECT_TRUE(fabs(ff.gs.spheres[0].alb[0] - 0.9f) < 1e-6);
+    // Hetero medium exports as type-8 slot (boundary + sigma + freqs).
+    scene_data hety;
+    hety.objs.push_back(std::make_shared<heterogeneous_medium>(border, 0.6, phase));
+    flat_scene fh;
+    EXPECT_TRUE(flatten_scene(hety, fh));
+    EXPECT_TRUE(fh.gs.spheres[0].prm[0] == 8);
+    EXPECT_TRUE(fabs(fh.gs.spheres[0].prm[1] - 0.6f) < 1e-6);
+    EXPECT_TRUE(fabs(fh.gs.spheres[0].alb[0] - 0.9f) < 1e-6);
+    EXPECT_TRUE(fabs(fh.gs.spheres[0].alb2[0] - 5.0f) < 1e-6);
+    EXPECT_TRUE(fabs(fh.gs.spheres[0].alb2[1] - 4.0f) < 1e-6);
+    EXPECT_TRUE(fabs(fh.gs.spheres[0].alb2[2] - 6.0f) < 1e-6);
     auto mm = std::make_shared<metal>(vec3(0.8, 0.8, 0.8), 0.3);
     float alb[4] = {}, alb2[4] = {}, emit[4] = {}, prm[4] = {};
     EXPECT_TRUE(mm->export_gpu(alb, alb2, emit, prm));

@@ -7,7 +7,7 @@ struct GPUSphere {
     vec4 alb;
     vec4 alb2;
     vec4 emit;
-    vec4 params; // mat_type, rough, ir, motionflag (fog: type 6, density)
+    vec4 params; // mat_type, rough, ir, motionflag (fog: type 6/8, density)
 };
 struct GPUQuad {
     vec4 Q;
@@ -174,15 +174,27 @@ bool hit_box(vec3 o, vec3 d, float tmin, float tmax, vec3 bmin, vec3 bmax) {
 // here (volume events come from fog_event, mirroring the CPU where
 // the boundary never shades).
 //
-// Nearest fog event (type-6 slots) along the ray: boundary chord vs
-// exponential sample with caller RNG. Mirrors CPU constant_medium:
-// entry clamps to tmin (rays born inside still scatter), then exit.
+// Counter-based hash: independent uniforms per (base, bounce, step, tag).
+// Delta tracking must not chain one xorshift stream (consecutive-pair
+// lattice biases acceptance); each tentative draws fresh hashes.
+uint h32(uint x) {
+    x += 0x9E3779B9u;
+    x = (x ^ (x >> 16u)) * 0x21f0aaadu;
+    x = (x ^ (x >> 15u)) * 0x735a2d97u;
+    return x ^ (x >> 15u);
+}
+float h32f(uint base, int bounce, int site, int k, int tag) {
+    uint h = base ^ (uint(bounce) * 0x85EBCA6Bu) ^ (uint(site) * 0xC2B2AE35u) ^
+             (uint(k) * 2u + uint(tag));
+    return float(h32(h)) / 4294967296.0;
+}
 bool fog_event(vec3 o, vec3 d, float rtime, int ns, float u01, float tmax,
-               out float tevent, out vec3 talb) {
+               out float tevent, out vec3 talb, uint hbase, int bounce, int site) {
     tevent = 1e30;
     bool any = false;
     for (int i = 0; i < ns; ++i) {
-        if (spheres[i].params.x != 6.0)
+        float mtype = spheres[i].params.x;
+        if (mtype != 6.0 && mtype != 8.0)
             continue;
         float te, tx;
         vec3 dn;
@@ -190,13 +202,43 @@ bool fog_event(vec3 o, vec3 d, float rtime, int ns, float u01, float tmax,
         if (!hit_sphere(o, d, rtime, -1e30, tmax, spheres[i], te, dn, duv))
             continue;
         te = max(te, 0.001);
-        if (!hit_sphere(o, d, rtime, te + 0.01, tmax, spheres[i], tx, dn, duv))
+        // Exit search is unbounded, then clamped (mirrors CPU): a border
+        // past the light still fills the ray up to the light. Bounding the
+        // search by tmax instead drops those events and leaks lights.
+        if (!hit_sphere(o, d, rtime, te + 0.01, 1e30, spheres[i], tx, dn, duv))
             continue;
-        float s = -log(max(u01, 1e-7)) / max(spheres[i].params.y, 1e-7);
-        if (s < tx - te && te + s < tevent) {
-            tevent = te + s;
-            talb = spheres[i].alb.xyz;
-            any = true;
+        tx = min(tx, tmax);
+        if (mtype == 6.0) {
+            float s = -log(max(u01, 1e-7)) / max(spheres[i].params.y, 1e-7);
+            if (s < tx - te && te + s < tevent) {
+                tevent = te + s;
+                talb = spheres[i].alb.xyz;
+                any = true;
+            }
+        } else {
+            // Delta tracking at the majorant; accept on modulation.
+            // Tentative k draws independent counter hashes (no chaining).
+            float sig = max(spheres[i].params.y, 1e-7);
+            vec3 fr = spheres[i].alb2.xyz;
+            float cursor = te;
+            for (int k = 0; k < 1024; ++k) {
+                float s = -log(max(h32f(hbase, bounce, site, k, 0), 1e-7)) / sig;
+                float x = cursor + s;
+                if (x > tx)
+                    break;
+                vec3 p = o + d * x;
+                float m = 0.5 + 0.5 * sin(fr.x * p.x) * sin(fr.y * p.y) *
+                                            sin(fr.z * p.z);
+                if (m > h32f(hbase, bounce, site, k, 1)) {
+                    if (x < tevent) {
+                        tevent = x;
+                        talb = spheres[i].alb.xyz;
+                        any = true;
+                    }
+                    break;
+                }
+                cursor = x;
+            }
         }
     }
     return any;
@@ -296,7 +338,7 @@ bool trace_solid(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 
                  light_ty, huv, any);
         if (!any)
             return false;
-        if (params.x != 6.0) {
+        if (params.x != 6.0 && params.x != 8.0) {
             t = trav + t;
             return true;
         }
@@ -308,10 +350,11 @@ bool trace_solid(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 
 
 // Shadow probe mirrors CPU: blocked by fog events OR solid surfaces
 // before the light (medium competes by t on the CPU too).
-bool shadow_occluded(vec3 o, vec3 wi, float rtime, int ns, float u01, float dist) {
+bool shadow_occluded(vec3 o, vec3 wi, float rtime, int ns, float u01, float dist,
+                     uint hbase, int bounce, int site) {
     float fev;
     vec3 fa;
-    if (fog_event(o, wi, rtime, ns, u01, dist - 0.001, fev, fa))
+    if (fog_event(o, wi, rtime, ns, u01, dist - 0.001, fev, fa, hbase, bounce, site))
         return true;
     float t;
     vec3 n;

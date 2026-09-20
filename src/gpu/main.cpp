@@ -29,7 +29,7 @@ int main(int argc, char **argv) {
     std::string scene_name = "default";
     std::string hdr_path; // empty = no float dump
     bool do_denoise = false;
-    double shutter0 = 0, shutter1 = 0, fog_density = 0;
+    double shutter0 = 0, shutter1 = 0, fog_density = 0, het_density = 0;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--spp" && i + 1 < argc)
@@ -43,6 +43,8 @@ int main(int argc, char **argv) {
             shutter1 = std::atof(argv[++i]);
         } else if (a == "--fog" && i + 1 < argc)
             fog_density = std::max(0.0, std::atof(argv[++i]));
+        else if (a == "--het" && i + 1 < argc)
+            het_density = std::max(0.0, std::atof(argv[++i]));
         else if (a == "--width" && i + 1 < argc)
             W = std::max(8, std::atoi(argv[++i]));
         else if (a == "--height" && i + 1 < argc)
@@ -63,7 +65,8 @@ int main(int argc, char **argv) {
     // One construction order with the CPU (scene/scene.h): flatten the
     // same scene to typed arrays + BVH nodes instead of hardcoded data.
     scene_data sdata =
-        build_scene(scene_name, (double)W / (double)H, 0.0, shutter0, shutter1, fog_density);
+        build_scene(scene_name, (double)W / (double)H, 0.0, shutter0, shutter1, fog_density,
+                    het_density);
     flat_scene flat;
     if (!flatten_scene(sdata, flat)) {
         std::cerr << "scene has non-exportable shapes\n";
@@ -129,7 +132,7 @@ int main(int argc, char **argv) {
     // Fog-slot count gates fog RNG draws (static streams bit-exact).
     int nfog = 0;
     for (const auto &s : scene.spheres)
-        if (s.prm[0] == 6)
+        if (s.prm[0] == 6 || s.prm[0] == 8)
             nfog++;
     uint32_t push11[11];
     for (int k = 0; k < 10; ++k)

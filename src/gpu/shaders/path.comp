@@ -33,7 +33,7 @@ layout(push_constant) uniform PC {
     int nlights; // NEE entries in the binding-9 light table
     float sh0;
     float sh1; // shutter span (closed when equal)
-    int nfog; // type-6 slots present (gates fog RNG draws)
+    int nfog; // fog-ish slots present (type 6/8, gates fog RNG draws)
 }
 pc;
 
@@ -219,7 +219,7 @@ float schlick(float cosT, float ri) {
     return r0 + (1.0 - r0) * pow(1.0 - cosT, 5.0);
 }
 
-vec3 Li(vec3 o, vec3 d, float rtime) {
+vec3 Li(vec3 o, vec3 d, float rtime, uint hbase) {
     vec3 throughput = vec3(1.0);
     vec3 L = vec3(0.0);
     vec3 prev = o;
@@ -236,14 +236,26 @@ vec3 Li(vec3 o, vec3 d, float rtime) {
         float fog_t = 1e30;
         vec3 fog_alb = vec3(0.0);
         bool has_fog = false;
-        if (pc.nfog > 0)
-            has_fog = fog_event(o, d, rtime, pc.ns, wrandf(), 1e30, fog_t, fog_alb);
-        if (!trace_solid(o, d, rtime, 1e30, t, n, alb, alb2, emit, params, light_idx,
-                         light_ty, huv)) {
-            vec3 unit = normalize(d);
-            float tt = 0.5 * (unit.y + 1.0);
-            L += throughput * ((1.0 - tt) * vec3(1.0) + tt * vec3(0.5, 0.7, 1.0));
-            break;
+        if (pc.nfog > 0) {
+            // Tracking hashes derive from the sample base (zero wrandf
+            // draws): the u01 draw below stays the legacy fog stream.
+            // Site 0 = primary: shadow probes use site 1 (no cross-talk).
+            has_fog = fog_event(o, d, rtime, pc.ns, wrandf(), 1e30, fog_t, fog_alb,
+                                hbase, bounce, 0);
+        }
+        bool solid =
+            trace_solid(o, d, rtime, 1e30, t, n, alb, alb2, emit, params, light_idx,
+                        light_ty, huv);
+        if (!solid) {
+            if (!has_fog) {
+                vec3 unit = normalize(d);
+                float tt = 0.5 * (unit.y + 1.0);
+                L += throughput * ((1.0 - tt) * vec3(1.0) + tt * vec3(0.5, 0.7, 1.0));
+                break;
+            }
+            // Solid miss inside smoke: the event still scatters (CPU finds
+            // the medium with no surface). Fall through with no solid.
+            t = 1e30;
         }
         if (has_fog && fog_t < t) {
             // Volume event wins: isotropic continue, specular-style MIS.
@@ -367,7 +379,7 @@ vec3 Li(vec3 o, vec3 d, float rtime) {
                 bool blocked;
                 if (pc.nfog > 0) {
                     blocked = shadow_occluded(hitp, wi, rtime, pc.ns, wrandf(),
-                                              dist - 0.001);
+                                              dist - 0.001, hbase, bounce, 1);
                 } else {
                     float tt2;
                     vec3 nn2;
@@ -433,7 +445,7 @@ void main() {
             float rt = (pc.sh1 > pc.sh0)
                            ? pc.sh0 + wrandf() * (pc.sh1 - pc.sh0)
                            : pc.sh0;
-            acc += Li(o, d, rt);
+            acc += Li(o, d, rt, wseed);
             ++n;
         }
     acc /= float(n);

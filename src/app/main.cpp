@@ -37,6 +37,7 @@ int main(int argc, char **argv) {
     std::string scene_name = "default";
     double shutter0 = 0, shutter1 = 0;
     double fog_density = 0;
+    double het_density = 0;
     unsigned seed = 42; // base RNG seed; per-pixel stream = seed + pixel index
     int W = 400, H = -1; // H defaults to 16:9 unless --height given
     std::string hdr_path; // empty = no float dump
@@ -63,6 +64,8 @@ int main(int argc, char **argv) {
             shutter1 = std::atof(argv[++i]);
         } else if (a == "--fog" && i + 1 < argc) {
             fog_density = std::max(0.0, std::atof(argv[++i]));
+        } else if (a == "--het" && i + 1 < argc) {
+            het_density = std::max(0.0, std::atof(argv[++i]));
         }
         else if (a == "--seed" && i + 1 < argc)
             seed = (unsigned)std::max(0, std::atoi(argv[++i]));
@@ -91,7 +94,7 @@ int main(int argc, char **argv) {
 
     // One construction order shared with the GPU uploader (scene/scene.h).
     scene_data scene = build_scene(scene_name, double(W) / double(H), aperture, shutter0,
-                                   shutter1, fog_density);
+                                   shutter1, fog_density, het_density);
     std::vector<std::shared_ptr<hittable>> &objs = scene.objs;
     std::vector<light> &lights = scene.lights;
     camera &cam = scene.cam;
@@ -204,7 +207,7 @@ int main(int argc, char **argv) {
               << " exposure=" << exposure << " scene=" << scene_name
               << " denoise=" << (do_denoise ? "joint" : "off")
               << " shutter=[" << shutter0 << "," << shutter1 << "]"
-              << " fog=" << fog_density << " seed=" << base_seed << "\n";
+              << " fog=" << fog_density << " het=" << het_density << " seed=" << base_seed << "\n";
     std::cout << "render " << secs << "s";
     if (bench) {
         std::cout << " rays=" << rays << " (" << (rays / 1e6 / secs) << " Mrays/s)"

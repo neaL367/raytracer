@@ -129,6 +129,32 @@ inline bool push_prim(flat_scene &out, std::map<const hittable *, std::pair<int,
         gs.spheres.push_back(g);
         return true;
     }
+    // Heterogeneous twin: type-8 slot, modulation freqs ride alb2.
+    if (auto hm = std::dynamic_pointer_cast<heterogeneous_medium>(o)) {
+        auto b = std::dynamic_pointer_cast<sphere>(hm->border_ref());
+        if (!b)
+            return false;
+        GPUSphere g{};
+        vec3 c = b->center_ref();
+        g.c[0] = (float)c.x();
+        g.c[1] = (float)c.y();
+        g.c[2] = (float)c.z();
+        g.c[3] = (float)b->radius_val();
+        hit_record dummy;
+        vec3 alb = hm->phase_ref()->surface_albedo(dummy);
+        g.alb[0] = (float)alb.x();
+        g.alb[1] = (float)alb.y();
+        g.alb[2] = (float)alb.z();
+        vec3 fr = hm->freqs();
+        g.alb2[0] = (float)fr.x();
+        g.alb2[1] = (float)fr.y();
+        g.alb2[2] = (float)fr.z();
+        g.prm[0] = 8;
+        g.prm[1] = (float)hm->density_val();
+        id[o.get()] = {0, (int)gs.spheres.size()};
+        gs.spheres.push_back(g);
+        return true;
+    }
     if (auto s = std::dynamic_pointer_cast<sphere>(o)) {
         GPUSphere g{};
         vec3 c = s->center_ref();
@@ -264,6 +290,9 @@ inline bool flatten_scene(const scene_data &scene, flat_scene &out) {
             continue;
         auto med = std::dynamic_pointer_cast<constant_medium>(o);
         if (med && std::dynamic_pointer_cast<sphere>(med->border_ref()))
+            continue;
+        auto het = std::dynamic_pointer_cast<heterogeneous_medium>(o);
+        if (het && std::dynamic_pointer_cast<sphere>(het->border_ref()))
             continue;
         return false;
     }
