@@ -98,6 +98,96 @@ static void t_obj() {
     EXPECT_TRUE(hr.u >= 0 && hr.u <= 1 && hr.v >= 0 && hr.v <= 1);
 }
 
+static void t_mtl() {
+    test_current = "mtl";
+    auto dir = std::filesystem::temp_directory_path();
+    std::string mtl = (dir / "rt_mtl_test.mtl").string();
+    std::string bmp = (dir / "rt_mtl_test.bmp").string();
+    std::string obj = (dir / "rt_mtl_test.obj").string();
+    { // 2x2 BMP map: bottom red/green, top blue/white (BGR, padded rows).
+        unsigned char hdr[54] = {};
+        hdr[0] = 'B';
+        hdr[1] = 'M';
+        hdr[2] = 70;
+        hdr[10] = 54;
+        hdr[14] = 40;
+        hdr[18] = 2;
+        hdr[22] = 2;
+        hdr[26] = 1;
+        hdr[28] = 24;
+        hdr[34] = 16;
+        unsigned char px[16] = {0, 0, 255, 0, 255, 0, 0, 0,
+                                255, 0, 0, 255, 255, 255, 0, 0};
+        std::ofstream f(bmp, std::ios::binary);
+        f.write((char *)hdr, 54);
+        f.write((char *)px, 16);
+    }
+    {
+        std::ofstream f(mtl);
+        f << "newmtl red\nKd 1 0 0\nillum 2\n";
+        f << "newmtl mirror\nKd 0.2 0.2 0.2\nKs 0.9 0.9 0.9\n";
+        f << "newmtl badmap\nKd 0 1 0\nmap_Kd missing.png\n";
+        f << "newmtl mapped\nKd 1 1 1\nmap_Kd rt_mtl_test.bmp\n";
+    }
+    {
+        std::ofstream f(obj);
+        f << "mtllib rt_mtl_test.mtl\n";
+        f << "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nv 1 0 1\nv 0 1 1\n";
+        f << "v 2 0 0\nv 3 0 0\nv 2 1 0\nv 2 0 1\nv 3 0 1\nv 2 1 1\n";
+        f << "f 1 2 3\n"; // no usemtl yet: caller fallback
+        f << "usemtl red\nf 4 5 6\n";
+        f << "usemtl mirror\nf 7 8 9\n";
+        f << "usemtl badmap\nf 10 11 12\n";
+        f << "usemtl ghost\nf 1 2 3\n"; // unknown name: fallback
+    }
+    auto fallback = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));
+    std::vector<std::shared_ptr<triangle>> tris;
+    EXPECT_TRUE(obj_loader::load_obj(obj, tris, fallback));
+    EXPECT_TRUE((int)tris.size() == 5);
+    EXPECT_TRUE(tris[0]->mat_ptr() == fallback); // pre-usemtl
+    EXPECT_TRUE(tris[4]->mat_ptr() == fallback); // unknown usemtl
+    hit_record dummy;
+    auto alb = [&](int i) { return tris[(size_t)i]->mat_ptr()->surface_albedo(dummy); };
+    EXPECT_NEAR(alb(1).x(), 1); // Kd red
+    EXPECT_TRUE(dynamic_cast<metal *>(tris[2]->mat_ptr().get()) != nullptr); // Ks
+    EXPECT_NEAR(alb(2).x(), 0.9);
+    EXPECT_NEAR(alb(3).y(), 1); // missing map -> Kd green
+    // map_Kd success path: separate mesh (needs vt? no, image needs no UVs
+    // for albedo — but keep faces valid).
+    std::string obj2 = (dir / "rt_mtl_map.obj").string();
+    {
+        std::ofstream f(obj2);
+        f << "mtllib rt_mtl_test.mtl\n";
+        f << "v 0 0 0\nv 1 0 0\nv 0 1 0\n";
+        f << "usemtl mapped\nf 1 2 3\n";
+    }
+    std::vector<std::shared_ptr<triangle>> mtris;
+    EXPECT_TRUE(obj_loader::load_obj(obj2, mtris, fallback));
+    EXPECT_TRUE((int)mtris.size() == 1);
+    auto ml = dynamic_cast<lambertian *>(mtris[0]->mat_ptr().get());
+    EXPECT_TRUE(ml != nullptr);
+    auto mit = std::dynamic_pointer_cast<image_texture>(ml->tex_ref());
+    EXPECT_TRUE(mit != nullptr); // map_Kd wired, not Kd solid
+    EXPECT_TRUE(mit->width() == 2 && mit->height() == 2);
+    // Missing mtllib: whole file falls back, still loads.
+    std::string obj3 = (dir / "rt_mtl_nomtl.obj").string();
+    {
+        std::ofstream f(obj3);
+        f << "mtllib absent.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nusemtl red\nf 1 2 3\n";
+    }
+    std::vector<std::shared_ptr<triangle>> ntris;
+    EXPECT_TRUE(obj_loader::load_obj(obj3, ntris, fallback));
+    EXPECT_TRUE((int)ntris.size() == 1 && ntris[0]->mat_ptr() == fallback);
+    // GPU export: MTL materials flow per-face (solid 0, metal 1, image 5).
+    scene_data ms;
+    for (auto &t : mtris)
+        ms.objs.push_back(t);
+    flat_scene mf;
+    EXPECT_TRUE(flatten_scene(ms, mf));
+    EXPECT_TRUE(mf.gs.tris[0].prm[0] == 5);
+    EXPECT_TRUE((int)mf.images.size() == 1);
+}
+
 static void t_cornell() {
     test_current = "cornell";
     scene_data scene = build_cornell(16.0 / 9.0, 0.0);
@@ -234,6 +324,7 @@ void run_scene_tests() {
     t_camera();
     t_defocus();
     t_obj();
+    t_mtl();
     t_cornell();
     t_flatten();
     t_shutter();

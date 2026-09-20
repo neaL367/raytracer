@@ -2,9 +2,17 @@
 // OBJ: v positions, vn normals, vt uvs, f faces (v, v/vt, v//vn,
 // v/vt/vn). Fan-triangulates polygons, handles relative (-) indices.
 // Winding irrelevant: triangles are double-sided via set_face_normal.
+// MTL: mtllib + usemtl wires per-face materials (Kd / Ks / map_Kd).
+// Faces without usemtl keep the caller fallback. Unknown statements
+// (illum, d, Ns, Ke, ...) warn once per file, never silently.
+// MTL/map paths resolve relative to their own file's directory.
 #include "geometry/triangle.h"
+#include "material/material.h"
+#include "io/stb_loader.h"
 
 #include <fstream>
+#include <iostream>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -12,6 +20,73 @@
 #include <vector>
 
 namespace obj_loader {
+
+inline std::string file_dir(const std::string &path) {
+    size_t p = path.find_last_of("/\\");
+    return (p == std::string::npos) ? "" : path.substr(0, p + 1);
+}
+
+inline vec3 clamp01(const vec3 &c) {
+    return vec3(std::min(std::max(c.x(), 0.0), 1.0), std::min(std::max(c.y(), 0.0), 1.0),
+                std::min(std::max(c.z(), 0.0), 1.0));
+}
+
+struct mtl_entry {
+    vec3 Kd{0.8, 0.8, 0.8};
+    vec3 Ks{0, 0, 0};
+    std::string map_Kd;
+};
+
+inline void load_mtl(const std::string &path, std::map<std::string, mtl_entry> &out) {
+    std::ifstream f(path);
+    if (!f) {
+        std::cerr << "mtl missing: " << path << " (fallback material)\n";
+        return;
+    }
+    std::string cur;
+    std::map<std::string, bool> warned;
+    std::string line;
+    while (std::getline(f, line)) {
+        std::istringstream ls(line);
+        std::string tag;
+        if (!(ls >> tag) || tag[0] == '#')
+            continue;
+        if (tag == "newmtl") {
+            if (ls >> cur)
+                out[cur] = mtl_entry{};
+        } else if (tag == "Kd" && !cur.empty()) {
+            double r, g, b;
+            if (ls >> r >> g >> b)
+                out[cur].Kd = clamp01(vec3(r, g, b));
+        } else if (tag == "Ks" && !cur.empty()) {
+            double r, g, b;
+            if (ls >> r >> g >> b)
+                out[cur].Ks = clamp01(vec3(r, g, b));
+        } else if (tag == "map_Kd" && !cur.empty()) {
+            std::string p;
+            if (ls >> p)
+                out[cur].map_Kd = p;
+        } else if (!warned[tag]) {
+            warned[tag] = true;
+            std::cerr << "mtl ignores '" << tag << "' in " << path << "\n";
+        }
+    }
+}
+
+// Ks present -> metal mirror tint; else lambertian (map_Kd image wins).
+inline std::shared_ptr<material> make_mtl_material(const mtl_entry &e,
+                                                   const std::string &mtl_dir) {
+    if (!e.map_Kd.empty()) {
+        ppm_io::image img;
+        if (stb_loader::load_image(mtl_dir + e.map_Kd, img) && !img.px.empty())
+            return std::make_shared<lambertian>(
+                std::make_shared<image_texture>(img.w, img.h, img.px));
+        std::cerr << "mtl map missing: " << mtl_dir + e.map_Kd << " (Kd fallback)\n";
+    }
+    if (e.Ks.length_squared() > 0)
+        return std::make_shared<metal>(e.Ks, 0.0);
+    return std::make_shared<lambertian>(e.Kd);
+}
 
 inline int fix_index(int idx, size_t n) {
     if (idx > 0)
@@ -56,13 +131,34 @@ inline bool load_obj(const std::string &path, std::vector<std::shared_ptr<triang
         return false;
     std::vector<vec3> verts, normals;
     std::vector<std::pair<double, double>> uvs;
+    std::map<std::string, mtl_entry> mtl;
+    std::map<std::string, std::shared_ptr<material>> mtl_cache;
+    std::string mtl_dir = file_dir(path);
+    std::shared_ptr<material> cur_mtl; // null = caller fallback
     std::string line;
     while (std::getline(f, line)) {
         std::istringstream ls(line);
         std::string tag;
         if (!(ls >> tag) || tag[0] == '#')
             continue;
-        if (tag == "v") {
+        if (tag == "mtllib") {
+            std::string lib;
+            if (ls >> lib)
+                load_mtl(mtl_dir + lib, mtl);
+        } else if (tag == "usemtl") {
+            std::string name;
+            if (!(ls >> name) || !mtl.count(name)) {
+                std::cerr << "mtl unknown usemtl '" << name << "' (fallback)\n";
+                cur_mtl.reset();
+            } else {
+                auto it = mtl_cache.find(name);
+                if (it == mtl_cache.end())
+                    it = mtl_cache
+                             .emplace(name, make_mtl_material(mtl[name], mtl_dir))
+                             .first;
+                cur_mtl = it->second;
+            }
+        } else if (tag == "v") {
             double x, y, z;
             if (ls >> x >> y >> z)
                 verts.emplace_back(x, y, z);
@@ -105,19 +201,19 @@ inline bool load_obj(const std::string &path, std::vector<std::shared_ptr<triang
                         unit_vector(normals[(size_t)b.n]), unit_vector(normals[(size_t)cc.n]),
                         uvs[(size_t)a.t].first, uvs[(size_t)a.t].second,
                         uvs[(size_t)b.t].first, uvs[(size_t)b.t].second,
-                        uvs[(size_t)cc.t].first, uvs[(size_t)cc.t].second, mat));
+                        uvs[(size_t)cc.t].first, uvs[(size_t)cc.t].second, cur_mtl ? cur_mtl : mat));
                 else if (smooth)
                     tris.push_back(std::make_shared<triangle>(
                         pa, pb, pc, unit_vector(normals[(size_t)a.n]),
                         unit_vector(normals[(size_t)b.n]),
-                        unit_vector(normals[(size_t)cc.n]), mat));
+                        unit_vector(normals[(size_t)cc.n]), cur_mtl ? cur_mtl : mat));
                 else if (textured)
                     tris.push_back(std::make_shared<triangle>(
                         pa, pb, pc, uvs[(size_t)a.t].first, uvs[(size_t)a.t].second,
                         uvs[(size_t)b.t].first, uvs[(size_t)b.t].second,
-                        uvs[(size_t)cc.t].first, uvs[(size_t)cc.t].second, mat));
+                        uvs[(size_t)cc.t].first, uvs[(size_t)cc.t].second, cur_mtl ? cur_mtl : mat));
                 else
-                    tris.push_back(std::make_shared<triangle>(pa, pb, pc, mat));
+                    tris.push_back(std::make_shared<triangle>(pa, pb, pc, cur_mtl ? cur_mtl : mat));
             }
         }
     }
