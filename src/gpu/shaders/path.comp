@@ -66,12 +66,8 @@ void wonb(vec3 n, out vec3 u, out vec3 v, out vec3 w) {
     u = cross(v, w);
 }
 
-// Bilinear image sample, same edge math as CPU image_texture.
-vec3 image_sample(vec2 uv, int img_idx) {
-    ivec4 entry = imgTab[img_idx];
-    int off = entry.x, iw = entry.y, ih = entry.z;
-    float u = clamp(uv.x, 0.0, 1.0);
-    float v = clamp(uv.y, 0.0, 1.0);
+// Bilinear sample of one pyramid level, same edge math as CPU.
+vec3 bilin_at(int off, int iw, int ih, float u, float v) {
     float fx = u * float(iw - 1);
     float fy = (1.0 - v) * float(ih - 1);
     int x0 = int(floor(fx));
@@ -86,6 +82,42 @@ vec3 image_sample(vec2 uv, int img_idx) {
     vec3 c11 = imgTex[off + y1 * iw + x1].xyz;
     return c00 * ((1.0 - tx) * (1.0 - ty)) + c10 * (tx * (1.0 - ty)) +
            c01 * ((1.0 - tx) * ty) + c11 * (tx * ty);
+}
+// Distance LOD mirrors CPU mip_select (fp32; level-boundary flips are
+// rare single-level noise, inside statistical parity).
+float mip_lod(float t, int iw, int ih, float span) {
+    float tex = float(max(iw, ih)) / (float(pc.H) * span);
+    return max(log2(max(t, 1e-3) * tex), 0.0);
+}
+// Trilinear image sample over the uploaded pyramid (levels consecutive;
+// table stride is 2 rows: entry, then spanbits row).
+vec3 image_sample(vec2 uv, int img_idx, float t) {
+    ivec4 entry = imgTab[img_idx * 2];
+    float span = uintBitsToFloat(uint(imgTab[img_idx * 2 + 1].x));
+    float lod = mip_lod(t, entry.y, entry.z, span);
+    int maxl = max(entry.w - 1, 0);
+    float lc = clamp(lod, 0.0, float(maxl));
+    int l0 = int(floor(lc));
+    float fr = lc - float(l0);
+    float u = clamp(uv.x, 0.0, 1.0);
+    float v = clamp(uv.y, 0.0, 1.0);
+    int off = entry.x, iw = entry.y, ih = entry.z;
+    for (int l = 0; l < 12; ++l) {
+        if (l >= l0)
+            break;
+        off += iw * ih;
+        iw = max(iw / 2, 1);
+        ih = max(ih / 2, 1);
+    }
+    vec3 a = bilin_at(off, iw, ih, u, v);
+    if (fr <= 0.0 || l0 >= maxl)
+        return a;
+    int ow = iw, oh = ih;
+    iw = max(iw / 2, 1);
+    ih = max(ih / 2, 1);
+    off += ow * oh;
+    vec3 b = bilin_at(off, iw, ih, u, v);
+    return a * (1.0 - fr) + b * fr;
 }
 
 // World-pos checker, same parity rule as CPU (negative % stays odd).
@@ -168,9 +200,13 @@ vec3 Li(vec3 o, vec3 d, float rtime) {
         vec3 hitp0 = o + d * t;
         // Type 4 = checker diffuse: world-pos parity like CPU texture.
         // Type 5 = image diffuse: UV sample like CPU image_texture.
-        vec3 base_alb = (mtype == 4) ? checker_col(hitp0, alb.xyz, alb2.xyz, params.y)
-                        : (mtype == 5) ? image_sample(huv, int(params.y + 0.5))
-                                       : alb.xyz;
+        vec3 base_alb = alb.xyz;
+        if (mtype == 4)
+            base_alb = checker_col(hitp0, alb.xyz, alb2.xyz, params.y);
+        else if (mtype == 5) {
+            int img_idx = int(params.y + 0.5);
+            base_alb = image_sample(huv, img_idx, t);
+        }
         vec3 attenuation;
         vec3 sd;
         bool ok = true;

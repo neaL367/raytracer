@@ -83,6 +83,7 @@ int main(int argc, char **argv) {
         H = static_cast<int>(W / (16.0 / 9.0));
     const int max_depth = 50; // RR handles termination; depth is backstop
     const unsigned base_seed = seed;
+    mip_render_h() = H; // LOD seam: texture minification follows output height
 
     // One construction order shared with the GPU uploader (scene/scene.h).
     scene_data scene = build_scene(scene_name, double(W) / double(H), aperture, shutter0,

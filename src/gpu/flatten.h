@@ -25,6 +25,8 @@ struct GPURef {
 
 struct GPUImage {
     int w = 0, h = 0;
+    int levels = 1; // mipmap count; blob holds L0..Ln consecutively
+    float span = 8.0f; // world units one full texture spans (LOD)
     const void *src = nullptr; // texture identity for dedupe
     std::vector<float> rgba; // top-first rows, linear HDR
 };
@@ -53,12 +55,16 @@ inline bool try_image_export(flat_scene &out, const std::shared_ptr<lambertian> 
         gim.w = it->width();
         gim.h = it->height();
         gim.src = it.get();
-        gim.rgba.reserve((size_t)gim.w * gim.h * 4);
-        for (const vec3 &p : it->texels()) {
-            gim.rgba.push_back((float)p.x());
-            gim.rgba.push_back((float)p.y());
-            gim.rgba.push_back((float)p.z());
-            gim.rgba.push_back(1.0f);
+        gim.span = (float)it->span();
+        gim.levels = (int)it->mip_chain().size();
+        for (const auto &lv : it->mip_chain()) {
+            gim.rgba.reserve(gim.rgba.size() + (size_t)lv.w * lv.h * 4);
+            for (const vec3 &p : lv.px) {
+                gim.rgba.push_back((float)p.x());
+                gim.rgba.push_back((float)p.y());
+                gim.rgba.push_back((float)p.z());
+                gim.rgba.push_back(1.0f);
+            }
         }
         idx = (int)out.images.size();
         out.images.push_back(std::move(gim));

@@ -157,8 +157,23 @@ static void t_flatten() {
     flat_scene ft;
     EXPECT_TRUE(flatten_scene(tiny, ft));
     EXPECT_TRUE((int)ft.images.size() == 1); // shared ptr, one entry
+    EXPECT_TRUE(ft.images[0].levels == 1); // 1x1 has no smaller level
+    EXPECT_TRUE((int)ft.images[0].rgba.size() == 4); // single texel blob
     EXPECT_TRUE(ft.gs.spheres[0].prm[0] == 5 && ft.gs.spheres[1].prm[0] == 5);
     EXPECT_TRUE(fabs(ft.gs.spheres[1].prm[1] - 0.0f) < 1e-6); // same idx
+    // Pyramid blob: 4x2 exports L0+L1+L2 consecutively (8+2+1 texels).
+    ppm_io::image ramp;
+    ramp.w = 4;
+    ramp.h = 2;
+    ramp.px.assign(8, vec3(0.25, 0.5, 1.0));
+    auto ramp_tex = std::make_shared<image_texture>(4, 2, ramp.px);
+    auto ramp_mat = std::make_shared<lambertian>(ramp_tex);
+    scene_data ramp_scene;
+    ramp_scene.objs.push_back(std::make_shared<sphere>(vec3(0, 0, -1), 0.5, ramp_mat));
+    flat_scene fr;
+    EXPECT_TRUE(flatten_scene(ramp_scene, fr));
+    EXPECT_TRUE(fr.images[0].levels == 3);
+    EXPECT_TRUE((int)fr.images[0].rgba.size() == (8 + 2 + 1) * 4);
     // Cornell: 18 quads flat, light first for NEE indexing.
     scene_data cor = build_scene("cornell", 1.0, 0.0);
     flat_scene fc;

@@ -63,6 +63,54 @@ static void t_texture() {
     EXPECT_NEAR(att.z(), 1); // odd cell -> blue
 }
 
+static void t_mipmaps() {
+    test_current = "mipmaps";
+    // 4x2 ramp: chain (4,2) -> (2,1) -> (1,1), L1 = box averages.
+    std::vector<vec3> px;
+    for (int y = 0; y < 2; ++y)
+        for (int x = 0; x < 4; ++x)
+            px.push_back(vec3(x / 3.0, y, 0));
+    image_texture itex(4, 2, px);
+    const auto &chain = itex.mip_chain();
+    EXPECT_TRUE(chain.size() == 3);
+    EXPECT_TRUE(chain[0].w == 4 && chain[0].h == 2);
+    EXPECT_TRUE(chain[1].w == 2 && chain[1].h == 1);
+    EXPECT_TRUE(chain[2].w == 1 && chain[2].h == 1);
+    // L1 texel 0 = avg of x=0,1 rows 0,1: ((0+1/3)/2, 0.5, 0).
+    EXPECT_NEAR(chain[1].px[0].x(), (0.0 + 1.0 / 3.0) / 2.0);
+    EXPECT_NEAR(chain[1].px[0].y(), 0.5);
+    // lod 0 sample is the exact legacy bilinear path.
+    vec3 v0 = itex.value(0.3, 0.7, vec3());
+    vec3 s0 = itex.sample(0.3, 0.7, vec3(), 0.01);
+    EXPECT_TRUE(s0.x() == v0.x() && s0.y() == v0.y() && s0.z() == v0.z());
+    // LOD selector: close stays 0, grows with distance.
+    EXPECT_TRUE(mip_select(0.01, 128, 64, 225, 8.0) == 0);
+    double l1 = mip_select(5.0, 128, 64, 225, 8.0);
+    double l2 = mip_select(50.0, 128, 64, 225, 8.0);
+    EXPECT_TRUE(l1 == 0 && l2 > 1.0 && l2 < 3.0);
+    // Span calibration: huge-span ground never leaves L0, cube face climbs.
+    EXPECT_TRUE(mip_select(200.0, 128, 64, 225, 628.0) == 0);
+    EXPECT_TRUE(mip_select(10.0, 64, 64, 225, 0.7) > 1.0);
+    // Shimmer kill: 4x4 checkerboard collapses to mean gray at distance.
+    std::vector<vec3> cb;
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 4; ++x)
+            cb.push_back(((x + y) % 2 == 0) ? vec3(1, 1, 1) : vec3(0, 0, 0));
+    image_texture checker(4, 4, cb);
+    double lo = 1, hi = 0;
+    for (double u : {0.1, 0.4, 0.7}) {
+        // lod clamps to the 1x1 mean level (4px image needs far t).
+        vec3 far = checker.sample(u, 0.3, vec3(), 5000.0);
+        EXPECT_TRUE(fabs(far.x() - 0.5) < 1e-9); // exact global mean
+        double n = checker.value(u, 0.3, vec3()).x();
+        if (n < lo)
+            lo = n;
+        if (n > hi)
+            hi = n;
+    }
+    EXPECT_TRUE(hi - lo > 0.4); // L0 still aliases across the same uvs
+}
+
 static void t_emissive() {
     test_current = "emissive";
     rng_seed(21);
@@ -277,6 +325,7 @@ static void t_compare() {
 void run_shading_tests() {
     t_materials();
     t_texture();
+    t_mipmaps();
     t_emissive();
     t_ppm();
     t_film();

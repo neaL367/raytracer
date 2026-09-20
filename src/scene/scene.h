@@ -54,7 +54,8 @@ inline scene_data build_default(double aspect, double aperture, double sh0 = 0,
         std::make_shared<checker>(4.0, vec3(0.8, 0.8, 0.8), vec3(0.3, 0.3, 0.3));
     ppm_io::image photo;
     if (stb_loader::load_image("assets/photo_test.jpg", photo))
-        ground_tex = std::make_shared<image_texture>(photo.w, photo.h, photo.px);
+        // Spherical UVs over r=100: u spans 2*PI*100 world units.
+        ground_tex = std::make_shared<image_texture>(photo.w, photo.h, photo.px, 628.0);
     else
         std::cerr << "assets/photo_test.jpg missing: checker ground\n";
     auto ground_mat = std::make_shared<lambertian>(ground_tex);
@@ -63,7 +64,8 @@ inline scene_data build_default(double aspect, double aperture, double sh0 = 0,
         std::make_shared<checker>(3.0, vec3(0.7, 0.3, 0.3), vec3(0.9, 0.9, 0.9));
     ppm_io::image photo2;
     if (stb_loader::load_image("assets/photo2_test.jpg", photo2))
-        cube_tex = std::make_shared<image_texture>(photo2.w, photo2.h, photo2.px);
+        // Corner UVs span one 0.7-unit cube face.
+        cube_tex = std::make_shared<image_texture>(photo2.w, photo2.h, photo2.px, 0.7);
     else
         std::cerr << "assets/photo2_test.jpg missing: checker cube\n";
     auto cube_mat = std::make_shared<lambertian>(cube_tex);

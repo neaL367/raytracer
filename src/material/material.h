@@ -52,7 +52,7 @@ public:
         if (near_zero(dir))
             dir = rec.normal; // degenerate guard
         scattered = ray(rec.point, dir);
-        attenuation = tex->value(rec.u, rec.v, rec.point);
+        attenuation = tex->sample(rec.u, rec.v, rec.point, rec.t);
         return true;
     }
     bool is_diffuse() const override { return true; }

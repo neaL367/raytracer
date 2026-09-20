@@ -64,13 +64,21 @@ int main(int argc, char **argv) {
     }
     gpu_scene &scene = flat.gs;
     scene.cam = build_gpu_camera(W, H, scene_name);
-    // Image table: (offset, w, h, 0) rows over the concatenated blob.
+    // Image table: (offset, w, h, levels) rows over the concatenated blob,
+    // each followed by a (spanbits, 0, 0, 0) row for distance LOD.
     std::vector<int> img_table;
     std::vector<float> img_blob;
     for (const auto &im : flat.images) {
         img_table.push_back((int)img_blob.size() / 4);
         img_table.push_back(im.w);
         img_table.push_back(im.h);
+        img_table.push_back(im.levels);
+        int spanbits = 0;
+        static_assert(sizeof(spanbits) == sizeof(im.span));
+        std::memcpy(&spanbits, &im.span, sizeof spanbits);
+        img_table.push_back(spanbits);
+        img_table.push_back(0);
+        img_table.push_back(0);
         img_table.push_back(0);
         img_blob.insert(img_blob.end(), im.rgba.begin(), im.rgba.end());
     }
