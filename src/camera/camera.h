@@ -37,8 +37,16 @@ public:
     ray get_ray(double s, double t) const {
         vec3 rd = lens_radius * random_in_unit_disk();
         vec3 offset = u * rd.x() + v * rd.y();
+        // Closed shutter draws no RNG: default stream bit-exact.
+        double tm = (shutter1 > shutter0) ? shutter0 + random_double() * (shutter1 - shutter0)
+                                          : shutter0;
         return ray(origin + offset,
-                   lower_left + s * horizontal + t * vertical - origin - offset);
+                   lower_left + s * horizontal + t * vertical - origin - offset, tm);
+    }
+
+    void set_shutter(double t0, double t1) {
+        shutter0 = t0;
+        shutter1 = t1;
     }
 
     vec3 lens_origin() const { return origin; }
@@ -47,4 +55,5 @@ public:
 private:
     vec3 origin, lower_left, horizontal, vertical, u, v, w;
     double lens_radius = 0;
+    double shutter0 = 0, shutter1 = 0;
 };

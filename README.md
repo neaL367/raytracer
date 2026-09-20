@@ -51,4 +51,5 @@ M15 done: bilinear sampling both backends, parity 0.6%.
 M16 done: OBJ smooth normals, zero pixel drift.
 M17 done: multi-image registry, two-photo demo, parity 0.2%.
 M18 done: mesh UV mapping, photo-per-face cube, parity 0.2%.
+M19 done: motion blur via shutter + moving spheres, defaults frozen.
 Next: pick slice.

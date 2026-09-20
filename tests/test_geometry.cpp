@@ -219,6 +219,34 @@ static void t_meshuv() {
     EXPECT_NEAR(hr.u + hr.v, 0.5);
 }
 
+static void t_motion() {
+    test_current = "motion";
+    auto m = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));
+    sphere s(vec3(0, 0, -1), vec3(0, 1, -1), 0.0, 1.0, 0.5, m);
+    // Lerp endpoints exact, midpoint exact.
+    EXPECT_NEAR(s.center(0.0).y(), 0);
+    EXPECT_NEAR(s.center(1.0).y(), 1);
+    EXPECT_NEAR(s.center(0.5).y(), 0.5);
+    EXPECT_NEAR(s.center(9.0).y(), 1);  // clamped past range
+    EXPECT_NEAR(s.center(-9.0).y(), 0); // clamped before range
+    // Hit follows time: t=0 front at z=-0.5, t=1 front at z=-0.5 shifted.
+    hit_record r0, r1;
+    EXPECT_TRUE(s.hit(ray(vec3(0, 0, 0), vec3(0, 0, -1), 0.0), 0.001, 1e30, r0));
+    EXPECT_TRUE(s.hit(ray(vec3(0, 1, 0), vec3(0, 0, -1), 1.0), 0.001, 1e30, r1));
+    EXPECT_NEAR(r0.t, 0.5);
+    EXPECT_NEAR(r1.t, 0.5);
+    // Bounds union both endpoints.
+    aabb b;
+    EXPECT_TRUE(s.bounding_box(b));
+    EXPECT_TRUE(b.minimum.y() <= -0.5 && b.maximum.y() >= 1.5);
+    // Static sphere ignores time (same hit at any tm).
+    sphere st(vec3(0, 0, -1), 0.5, m);
+    hit_record ra, rb;
+    EXPECT_TRUE(st.hit(ray(vec3(0, 0, 0), vec3(0, 0, -1), 0.0), 0.001, 1e30, ra));
+    EXPECT_TRUE(st.hit(ray(vec3(0, 0, 0), vec3(0, 0, -1), 0.7), 0.001, 1e30, rb));
+    EXPECT_NEAR(ra.t, rb.t);
+}
+
 void run_geometry_tests() {
     t_sphere();
     t_list();
@@ -229,4 +257,5 @@ void run_geometry_tests() {
     t_uv();
     t_smooth();
     t_meshuv();
+    t_motion();
 }

@@ -174,10 +174,32 @@ static void t_flatten() {
     EXPECT_TRUE(prm[0] == 1 && fabs(prm[1] - 0.3) < 1e-6);
 }
 
+static void t_shutter() {
+    test_current = "shutter";
+    // Closed shutter draws no RNG: identical rays to pre-shutter code.
+    camera c1;
+    rng_seed(80);
+    ray a = c1.get_ray(0.3, 0.6);
+    rng_seed(80);
+    camera c2;
+    c2.set_shutter(0.0, 1.0);
+    ray b = c2.get_ray(0.3, 0.6);
+    EXPECT_NEAR(a.direction().x(), b.direction().x()); // same direction...
+    EXPECT_NEAR(a.direction().z(), b.direction().z());
+    EXPECT_TRUE(b.time() >= 0.0 && b.time() <= 1.0); // ...but stamped time
+    camera c3;
+    rng_seed(81);
+    ray d1 = c3.get_ray(0.3, 0.6);
+    rng_seed(81);
+    ray d2 = c3.get_ray(0.3, 0.6);
+    EXPECT_NEAR(d1.origin().x(), d2.origin().x()); // deterministic replay
+}
+
 void run_scene_tests() {
     t_camera();
     t_defocus();
     t_obj();
     t_cornell();
     t_flatten();
+    t_shutter();
 }

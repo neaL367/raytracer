@@ -42,8 +42,10 @@ inline void add_box(std::vector<std::shared_ptr<hittable>> &objs, const vec3 &lo
 }
 
 // Moved verbatim from main (M7 scene): checker ground, cube mesh with
-// sphere fallback, metal/glass spheres, ceiling light.
-inline scene_data build_default(double aspect, double aperture) {
+// sphere fallback, metal/glass spheres, ceiling light. Shutter open =>
+// left sphere drifts +0.3y (motion demo); closed => static, hashes frozen.
+inline scene_data build_default(double aspect, double aperture, double sh0 = 0,
+                                double sh1 = 0) {
     scene_data scene;
     // Photo ground (spherical UVs); checker fallback keeps binary alive
     // when the asset is missing.
@@ -78,7 +80,11 @@ inline scene_data build_default(double aspect, double aperture) {
         for (auto &t : mesh)
             scene.objs.push_back(t);
     }
-    scene.objs.push_back(std::make_shared<sphere>(vec3(-1, 0, -1), 0.5, left_mat));
+    if (sh1 > sh0)
+        scene.objs.push_back(std::make_shared<sphere>(vec3(-1, 0, -1), vec3(-1, 0.3, -1),
+                                                      sh0, sh1, 0.5, left_mat));
+    else
+        scene.objs.push_back(std::make_shared<sphere>(vec3(-1, 0, -1), 0.5, left_mat));
     scene.objs.push_back(std::make_shared<sphere>(vec3(1, 0, -1), 0.5, right_mat));
     auto light = std::make_shared<quad>(vec3(-1, 1.9, -2), vec3(2, 0, 0),
                                         vec3(0, 0, 2), light_mat);
@@ -86,6 +92,7 @@ inline scene_data build_default(double aspect, double aperture) {
     scene.lights.push_back(light);
     scene.cam = camera(vec3(0, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0), 90.0, aspect,
                        aperture, 1.0);
+    scene.cam.set_shutter(sh0, sh1);
     return scene;
 }
 
@@ -123,8 +130,9 @@ inline scene_data build_cornell(double aspect, double aperture) {
     return scene;
 }
 
-inline scene_data build_scene(const std::string &name, double aspect, double aperture) {
+inline scene_data build_scene(const std::string &name, double aspect, double aperture,
+                              double sh0 = 0, double sh1 = 0) {
     if (name == "cornell")
         return build_cornell(aspect, aperture);
-    return build_default(aspect, aperture);
+    return build_default(aspect, aperture, sh0, sh1);
 }
