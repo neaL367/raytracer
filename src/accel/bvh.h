@@ -36,6 +36,12 @@ public:
     }
 
     bool is_leaf() const { return !prims.empty(); }
+    // GPU flatten accessors (read-only view of the built tree).
+    const aabb &node_box() const { return box; }
+    const std::shared_ptr<bvh_node> &child(bool to_right) const {
+        return to_right ? right : left;
+    }
+    const std::vector<std::shared_ptr<hittable>> &leaf_prims() const { return prims; }
     size_t count_prims() const {
         if (is_leaf())
             return prims.size();

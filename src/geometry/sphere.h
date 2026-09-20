@@ -47,6 +47,11 @@ public:
         return true;
     }
 
+    // GPU flatten accessors (pure data out, no traversal knowledge).
+    const vec3 &center_ref() const { return center; }
+    double radius_val() const { return radius; }
+    std::shared_ptr<material> mat_ptr() const { return mat; }
+
 private:
     vec3 center;
     double radius = 0;

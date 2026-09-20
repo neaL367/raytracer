@@ -25,6 +25,14 @@ struct GPUTri {
     vec4 emit;
     vec4 params; // mat_type, fuzz, ir, 0
 };
+struct GPUNode {
+    vec4 bmin;
+    vec4 bmax;
+    ivec4 lrsc; // left, right, ref-start, ref-count (-1 = leaf)
+};
+struct GPURef {
+    ivec2 ti; // (type, index): 0 sphere, 1 quad, 2 tri
+};
 struct GPUCam {
     vec4 origin;
     vec4 lower_left;
@@ -83,8 +91,7 @@ bool hit_tri(vec3 o, vec3 d, float tmin, float tmax, GPUTri t_,
 }
 
 bool hit_quad(vec3 o, vec3 d, float tmin, float tmax, GPUQuad q,
-              out float t, out vec3 n) {
-    vec3 nrm = normalize(cross(q.u.xyz, q.v.xyz));
+              out float t, out vec3 n) {    vec3 nrm = normalize(cross(q.u.xyz, q.v.xyz));
     float denom = dot(nrm, d);
     if (abs(denom) < 1e-8)
         return false;
@@ -103,4 +110,95 @@ bool hit_quad(vec3 o, vec3 d, float tmin, float tmax, GPUQuad q,
     t = tt;
     n = (dot(d, nrm) > 0.0) ? -nrm : nrm;
     return true;
+}
+
+// Shared scene buffers (both kernels declare image/UBO/push themselves).
+layout(binding = 2) readonly buffer Spheres {
+    GPUSphere spheres[];
+};
+layout(binding = 3) readonly buffer Quads {
+    GPUQuad quads[];
+};
+layout(binding = 4) readonly buffer Tris {
+    GPUTri tris[];
+};
+layout(binding = 5) readonly buffer Nodes {
+    GPUNode nodes[];
+};
+layout(binding = 6) readonly buffer Refs {
+    GPURef refs[];
+};
+
+bool hit_box(vec3 o, vec3 d, float tmin, float tmax, vec3 bmin, vec3 bmax) {
+    vec3 inv = 1.0 / d;
+    vec3 t0 = (bmin - o) * inv;
+    vec3 t1 = (bmax - o) * inv;
+    vec3 tsm = min(t0, t1);
+    vec3 tbg = max(t0, t1);
+    float mn = max(max(tsm.x, tsm.y), max(tsm.z, tmin));
+    float mx = min(min(tbg.x, tbg.y), min(tbg.z, tmax));
+    return mx > mn;
+}
+
+// Iterative BVH walk, explicit 32-stack, left-first. Same closest-hit
+// contract as the old brute loops (narrowing tmax), so kernels just swap.
+void traverse(vec3 o, vec3 d, float tmax, out float t, out vec3 n, out vec4 alb,
+              out vec4 alb2, out vec4 emit, out vec4 params, out int light_idx,
+              out bool any) {
+    int stack[32];
+    int sp = 0;
+    stack[sp++] = 0;
+    t = tmax;
+    any = false;
+    light_idx = -1;
+    while (sp > 0) {
+        GPUNode nd = nodes[stack[--sp]];
+        if (!hit_box(o, d, 0.001, t, nd.bmin.xyz, nd.bmax.xyz))
+            continue;
+        if (nd.lrsc.x < 0) {
+            for (int k = 0; k < nd.lrsc.w; ++k) {
+                GPURef ref = refs[nd.lrsc.z + k];
+                float tt;
+                vec3 nn;
+                if (ref.ti.x == 0) {
+                    if (!hit_sphere(o, d, 0.001, t, spheres[ref.ti.y], tt, nn))
+                        continue;
+                    GPUSphere s = spheres[ref.ti.y];
+                    t = tt;
+                    n = nn;
+                    alb = s.alb;
+                    alb2 = s.alb2;
+                    emit = s.emit;
+                    params = s.params;
+                    any = true;
+                } else if (ref.ti.x == 1) {
+                    if (!hit_quad(o, d, 0.001, t, quads[ref.ti.y], tt, nn))
+                        continue;
+                    GPUQuad q = quads[ref.ti.y];
+                    t = tt;
+                    n = nn;
+                    alb = q.alb;
+                    alb2 = q.alb2;
+                    emit = q.emit;
+                    params = q.params;
+                    light_idx = (emit.x + emit.y + emit.z > 0.0) ? ref.ti.y : -1;
+                    any = true;
+                } else {
+                    if (!hit_tri(o, d, 0.001, t, tris[ref.ti.y], tt, nn))
+                        continue;
+                    GPUTri tr = tris[ref.ti.y];
+                    t = tt;
+                    n = nn;
+                    alb = tr.alb;
+                    alb2 = tr.alb2;
+                    emit = tr.emit;
+                    params = tr.params;
+                    any = true;
+                }
+            }
+        } else if (sp < 30) {
+            stack[sp++] = nd.lrsc.y; // right
+            stack[sp++] = nd.lrsc.x; // left pops first
+        }
+    }
 }

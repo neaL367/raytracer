@@ -9,15 +9,7 @@ layout(binding = 0, rgba32f) uniform image2D img;
 layout(binding = 1) uniform Cam {
     GPUCam cam;
 };
-layout(binding = 2) readonly buffer Spheres {
-    GPUSphere spheres[];
-};
-layout(binding = 3) readonly buffer Quads {
-    GPUQuad quads[];
-};
-layout(binding = 4) readonly buffer Tris {
-    GPUTri tris[];
-};
+// Scene buffers + traversal live in common.glsl (shared with normal).
 layout(push_constant) uniform PC {
     int W;
     int H;
@@ -63,45 +55,12 @@ void wonb(vec3 n, out vec3 u, out vec3 v, out vec3 w) {
     u = cross(v, w);
 }
 
-// Closest hit across all prims. Returns material of winner.
+// Closest hit: BVH walk from common.glsl (same contract as the old
+// brute loops, now logarithmic). Shadow probes share it.
 bool trace(vec3 o, vec3 d, float tmax, out float t, out vec3 n, out vec4 alb,
            out vec4 alb2, out vec4 emit, out vec4 params, out int light_idx) {
-    t = tmax;
-    bool any = false;
-    float tt;
-    vec3 nn;
-    light_idx = -1;
-    for (int i = 0; i < pc.ns; ++i)
-        if (hit_sphere(o, d, 0.001, t, spheres[i], tt, nn)) {
-            t = tt;
-            n = nn;
-            alb = spheres[i].alb;
-            alb2 = spheres[i].alb2;
-            emit = spheres[i].emit;
-            params = spheres[i].params;
-            any = true;
-        }
-    for (int i = 0; i < pc.nq; ++i)
-        if (hit_quad(o, d, 0.001, t, quads[i], tt, nn)) {
-            t = tt;
-            n = nn;
-            alb = quads[i].alb;
-            alb2 = quads[i].alb2;
-            emit = quads[i].emit;
-            params = quads[i].params;
-            light_idx = (emit.x + emit.y + emit.z > 0.0) ? i : -1;
-            any = true;
-        }
-    for (int i = 0; i < pc.nt; ++i)
-        if (hit_tri(o, d, 0.001, t, tris[i], tt, nn)) {
-            t = tt;
-            n = nn;
-            alb = tris[i].alb;
-            alb2 = tris[i].alb2;
-            emit = tris[i].emit;
-            params = tris[i].params;
-            any = true;
-        }
+    bool any;
+    traverse(o, d, tmax, t, n, alb, alb2, emit, params, light_idx, any);
     return any;
 }
 

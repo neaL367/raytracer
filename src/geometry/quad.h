@@ -57,6 +57,10 @@ public:
     }
     vec3 light_normal() const { return normal; }
     std::shared_ptr<material> mat_ptr() const { return mat; }
+    // GPU flatten accessors.
+    const vec3 &corner() const { return Q; }
+    const vec3 &edge_u() const { return u; }
+    const vec3 &edge_v() const { return v; }
 
 private:
     vec3 Q, u, v, w, normal;

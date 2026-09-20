@@ -25,6 +25,16 @@ public:
         (void)rec;
         return vec3(1, 1, 1);
     }
+    // GPU params export: alb, alb2, emit, prm=(type,fuzz,ir,0).
+    // False = non-exportable (host substitutes loud magenta).
+    virtual bool export_gpu(float alb[4], float alb2[4], float emit[4],
+                            float prm[4]) const {
+        (void)alb;
+        (void)alb2;
+        (void)emit;
+        (void)prm;
+        return false;
+    }
 };
 
 class lambertian : public material {
@@ -47,6 +57,39 @@ public:
     vec3 surface_albedo(const hit_record &rec) const override {
         return tex->value(rec.u, rec.v, rec.point);
     }
+    bool export_gpu(float alb[4], float alb2[4], float emit[4],
+                    float prm[4]) const override {
+        // Solid -> type 0; solid-checker -> type 4 (even/odd/scale).
+        // Nested textures refuse (magenta fallback, loud not silent).
+        if (auto s = dynamic_cast<const solid_color *>(tex.get())) {
+            alb[0] = (float)s->rgb().x();
+            alb[1] = (float)s->rgb().y();
+            alb[2] = (float)s->rgb().z();
+            alb2[0] = alb2[1] = alb2[2] = 0;
+            emit[0] = emit[1] = emit[2] = 0;
+            prm[0] = 0;
+            prm[1] = prm[2] = prm[3] = 0;
+            return true;
+        }
+        if (auto c = dynamic_cast<const checker *>(tex.get())) {
+            auto e = dynamic_cast<const solid_color *>(c->tex_even().get());
+            auto o = dynamic_cast<const solid_color *>(c->tex_odd().get());
+            if (!e || !o)
+                return false;
+            alb[0] = (float)e->rgb().x();
+            alb[1] = (float)e->rgb().y();
+            alb[2] = (float)e->rgb().z();
+            alb2[0] = (float)o->rgb().x();
+            alb2[1] = (float)o->rgb().y();
+            alb2[2] = (float)o->rgb().z();
+            emit[0] = emit[1] = emit[2] = 0;
+            prm[0] = 4;
+            prm[1] = (float)c->tex_scale();
+            prm[2] = prm[3] = 0;
+            return true;
+        }
+        return false;
+    }
 
 private:
     std::shared_ptr<texture> tex;
@@ -63,6 +106,18 @@ public:
         return dot(scattered.direction(), rec.normal) > 0;
     }
     vec3 surface_albedo(const hit_record &) const override { return albedo; }
+    bool export_gpu(float alb[4], float alb2[4], float emit[4],
+                    float prm[4]) const override {
+        alb[0] = (float)albedo.x();
+        alb[1] = (float)albedo.y();
+        alb[2] = (float)albedo.z();
+        alb2[0] = alb2[1] = alb2[2] = 0;
+        emit[0] = emit[1] = emit[2] = 0;
+        prm[0] = 1;
+        prm[1] = (float)fuzz;
+        prm[2] = prm[3] = 0;
+        return true;
+    }
 
 private:
     vec3 albedo;
@@ -86,6 +141,17 @@ public:
         scattered = ray(rec.point, dir);
         return true;
     }
+    bool export_gpu(float alb[4], float alb2[4], float emit[4],
+                    float prm[4]) const override {
+        alb[0] = alb[1] = alb[2] = 0;
+        alb2[0] = alb2[1] = alb2[2] = 0;
+        emit[0] = emit[1] = emit[2] = 0;
+        prm[0] = 2;
+        prm[1] = 0;
+        prm[2] = (float)ir;
+        prm[3] = 0;
+        return true;
+    }
 
 private:
     double ir;
@@ -107,6 +173,17 @@ public:
     }
     vec3 emitted() const override { return emit_color; }
     vec3 surface_albedo(const hit_record &) const override { return emit_color; }
+    bool export_gpu(float alb[4], float alb2[4], float emit[4],
+                    float prm[4]) const override {
+        alb[0] = alb[1] = alb[2] = 0;
+        alb2[0] = alb2[1] = alb2[2] = 0;
+        emit[0] = (float)emit_color.x();
+        emit[1] = (float)emit_color.y();
+        emit[2] = (float)emit_color.z();
+        prm[0] = 3;
+        prm[1] = prm[2] = prm[3] = 0;
+        return true;
+    }
 
 private:
     vec3 emit_color;

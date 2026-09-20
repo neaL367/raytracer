@@ -9,6 +9,7 @@
 #include "material/material.h"
 #include "core/obj_loader.h"
 #include "scene/scene.h"
+#include "gpu/flatten.h"
 
 #include <filesystem>
 #include <fstream>
@@ -87,9 +88,41 @@ static void t_cornell() {
     EXPECT_TRUE((int)def.objs.size() >= 16); // ground+12mesh+2sph+light
 }
 
+static void t_flatten() {
+    test_current = "flatten";
+    scene_data def = build_scene("default", 16.0 / 9.0, 0.0);
+    flat_scene fs;
+    EXPECT_TRUE(flatten_scene(def, fs));
+    // Refs conserve prims; nodes form a real tree (or single leaf).
+    EXPECT_TRUE((int)fs.refs.size() == (int)def.objs.size());
+    EXPECT_TRUE(!fs.nodes.empty());
+    int leaf_prims = 0;
+    for (auto &n : fs.nodes)
+        leaf_prims += (n.left < 0) ? n.count : 0;
+    EXPECT_TRUE(leaf_prims == (int)def.objs.size());
+    // Ground checker exports even/odd + type 4 (float32: loose eps).
+    EXPECT_TRUE(!fs.gs.spheres.empty());
+    EXPECT_TRUE(fs.gs.spheres[0].prm[0] == 4);
+    EXPECT_TRUE(fabs(fs.gs.spheres[0].alb[0] - 0.8) < 1e-6);
+    // Cornell: 18 quads flat, light first for NEE indexing.
+    scene_data cor = build_scene("cornell", 1.0, 0.0);
+    flat_scene fc;
+    EXPECT_TRUE(flatten_scene(cor, fc));
+    EXPECT_TRUE((int)fc.refs.size() == 18);
+    EXPECT_TRUE(fc.nlights == 1);
+    EXPECT_TRUE(fabs(fc.gs.quads[0].emit[0] - 7) < 1e-6); // light leads
+    // Export values exact on a known material.
+    auto m = std::make_shared<metal>(vec3(0.8, 0.8, 0.8), 0.3);
+    float alb[4] = {}, alb2[4] = {}, emit[4] = {}, prm[4] = {};
+    EXPECT_TRUE(m->export_gpu(alb, alb2, emit, prm));
+    EXPECT_TRUE(fabs(alb[0] - 0.8) < 1e-6);
+    EXPECT_TRUE(prm[0] == 1 && fabs(prm[1] - 0.3) < 1e-6);
+}
+
 void run_scene_tests() {
     t_camera();
     t_defocus();
     t_obj();
     t_cornell();
+    t_flatten();
 }

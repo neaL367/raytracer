@@ -45,4 +45,5 @@ M9 done: binned SAH BVH, --split flag, prim tests halved.
 M10 done: HDR bilateral --denoise, 1.25x vs 64spp ref.
 M11 done: Cornell box, scene module, camera focus fix.
 M12 done: guided joint-bilateral denoise, 6.57x vs ref.
+M13 done: GPU BVH traversal, parity 0.11%, brute deleted.
 Next: pick slice.

@@ -39,8 +39,7 @@ public:
         return true;
     }
 
-    bool bounding_box(aabb &box) const override {
-        const double pad = 1e-4; // zero-thickness plane needs slab volume
+    bool bounding_box(aabb &box) const override {        const double pad = 1e-4; // zero-thickness plane needs slab volume
         vec3 lo(fmin(v0.x(), fmin(v1.x(), v2.x())) - pad,
                 fmin(v0.y(), fmin(v1.y(), v2.y())) - pad,
                 fmin(v0.z(), fmin(v1.z(), v2.z())) - pad);
@@ -50,6 +49,10 @@ public:
         box = aabb(lo, hi);
         return true;
     }
+
+    // GPU flatten accessors.
+    const vec3 &vert(int i) const { return (i == 0) ? v0 : ((i == 1) ? v1 : v2); }
+    std::shared_ptr<material> mat_ptr() const { return mat; }
 
 private:
     vec3 v0, v1, v2;

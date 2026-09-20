@@ -16,6 +16,7 @@ class solid_color : public texture {
 public:
     solid_color(const vec3 &c) : color(c) {}
     vec3 value(double, double, const vec3 &) const override { return color; }
+    const vec3 &rgb() const { return color; }
 
 private:
     vec3 color;
@@ -35,6 +36,10 @@ public:
                 (int)std::floor(scale * p.z());
         return (s % 2 == 0) ? even->value(u, v, p) : odd->value(u, v, p);
     }
+    // GPU export accessors (flatten reads the pattern, not the code).
+    double tex_scale() const { return scale; }
+    const std::shared_ptr<texture> &tex_even() const { return even; }
+    const std::shared_ptr<texture> &tex_odd() const { return odd; }
 
 private:
     double scale;

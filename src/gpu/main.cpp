@@ -1,10 +1,13 @@
 // rt_gpu: headless Vulkan compute backend. Thin wiring only:
-// args -> scene bytes -> dispatch -> PPM. Mechanics live in
-// vk_compute.h, scene numbers in host_scene.h.
+// args -> scene_data -> flat BVH -> dispatch -> PPM. Mechanics in
+// vk_compute.h, numbers in scene/scene.h via flatten.h.
 // Usage: rt_gpu [shader.spv] [out.ppm] [--spp N] [--seed S]
+//        [--scene NAME] [--width W] [--height H]
 #include "host_scene.h"
+#include "flatten.h"
 #include "vk_compute.h"
 #include "output/ppm.h"
+#include "scene/scene.h"
 
 #include "core/vec3.h"
 
@@ -42,18 +45,29 @@ int main(int argc, char **argv) {
         H = (W * 9 + 8) / 16; // 16:9 default
     auto t0 = std::chrono::high_resolution_clock::now();
 
-    gpu_scene scene = build_gpu_scene(W, H, scene_name);
+    // One construction order with the CPU (scene/scene.h): flatten the
+    // same scene to typed arrays + BVH nodes instead of hardcoded data.
+    scene_data sdata = build_scene(scene_name, (double)W / (double)H, 0.0);
+    flat_scene flat;
+    if (!flatten_scene(sdata, flat)) {
+        std::cerr << "scene has non-exportable shapes\n";
+        return 1;
+    }
+    gpu_scene &scene = flat.gs;
+    scene.cam = build_gpu_camera(W, H, scene_name);
     GpuContext gpu{};
     gpu_init(gpu, W, H);
-    const void *data[4] = {&scene.cam, scene.spheres.data(), scene.quads.data(),
-                           scene.tris.data()};
-    const size_t bytes[4] = {sizeof scene.cam, scene.spheres.size() * sizeof(GPUSphere),
+    const void *data[6] = {&scene.cam, scene.spheres.data(), scene.quads.data(),
+                           scene.tris.data(), flat.nodes.data(), flat.refs.data()};
+    const size_t bytes[6] = {sizeof scene.cam, scene.spheres.size() * sizeof(GPUSphere),
                              scene.quads.size() * sizeof(GPUQuad),
-                             scene.tris.size() * sizeof(GPUTri)};
+                             scene.tris.size() * sizeof(GPUTri),
+                             flat.nodes.size() * sizeof(GPUNode),
+                             flat.refs.size() * sizeof(GPURef)};
     gpu_set_scene(gpu, data, bytes);
 
     int push8[8] = {W, H, (int)scene.spheres.size(), (int)scene.quads.size(),
-                    (int)scene.tris.size(), spp, seed, 1};
+                    (int)scene.tris.size(), spp, seed, flat.nlights};
     std::vector<float> rgba;
     double dispatch_ms = gpu_run(gpu, shader, push8, rgba);
 
