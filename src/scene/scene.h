@@ -81,8 +81,15 @@ inline scene_data build_default(double aspect, double aperture, double sh0 = 0,
         scene.objs.push_back(std::make_shared<sphere>(
             vec3(0, 0, -1), 0.5, std::make_shared<lambertian>(vec3(0.7, 0.3, 0.3))));
     } else {
-        for (auto &t : mesh)
+        for (auto &t : mesh) {
+            if (sh1 > sh0) {
+                // Cube drifts +0.3y with the open shutter (mesh motion demo).
+                vec3 d(0, 0.3, 0);
+                t->set_motion(t->vert(0) + d, t->vert(1) + d, t->vert(2) + d, sh0,
+                              sh1);
+            }
             scene.objs.push_back(t);
+        }
     }
     if (sh1 > sh0)
         scene.objs.push_back(std::make_shared<sphere>(vec3(-1, 0, -1), vec3(-1, 0.3, -1),

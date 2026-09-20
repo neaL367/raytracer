@@ -198,6 +198,17 @@ inline bool push_prim(flat_scene &out, std::map<const hittable *, std::pair<int,
         fill_material(out, t->mat_ptr(), g.alb, g.alb2, g.emit, g.prm);
         if (t->uv_present())
             g.prm[3] = 1; // corner-UV blend on device
+        for (int k = 0; k < 3; ++k) {
+            vec3 v1 = t->vert1(k);
+            float *m1 = (k == 0) ? g.a1 : ((k == 1) ? g.b1 : g.c1);
+            m1[0] = (float)v1.x();
+            m1[1] = (float)v1.y();
+            m1[2] = (float)v1.z();
+        }
+        double t0 = 0, t1 = 1;
+        t->time_range(t0, t1);
+        g.tm[0] = (float)t0;
+        g.tm[1] = (float)t1;
         id[o.get()] = {2, (int)gs.tris.size()};
         gs.tris.push_back(g);
         if (g.emit[0] + g.emit[1] + g.emit[2] > 0)

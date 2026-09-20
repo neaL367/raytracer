@@ -16,6 +16,7 @@ struct GPUQuad {
 };
 struct GPUTri {
     float a[4], b[4], c[4], n0[4], n1[4], n2[4], tuvA[4], tuvB[4], alb[4], alb2[4], emit[4], prm[4];
+    float a1[4], b1[4], c1[4], tm[4]; // motion endpoints + range (moving when tm.y > tm.x)
 };
 struct GPUCam {
     float o[4], ll[4], h[4], v[4];

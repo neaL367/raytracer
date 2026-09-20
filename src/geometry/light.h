@@ -33,12 +33,15 @@ inline vec3 light_point(const light &lt, double u1, double u2, double time) {
     }
     auto t = std::dynamic_pointer_cast<triangle>(lt.shape);
     // Sqrt-barycentric: uniform over the triangle, fixed draw count.
+    // Moving tris sample lerped verts (mirrors the hit path).
     double su = std::sqrt(u1);
-    return t->vert(0) * (1.0 - su) + t->vert(1) * (su * (1.0 - u2)) +
-           t->vert(2) * (su * u2);
+    return t->vert_at(0, time) * (1.0 - su) + t->vert_at(1, time) * (su * (1.0 - u2)) +
+           t->vert_at(2, time) * (su * u2);
 }
 
 inline vec3 light_normal_at(const light &lt, const vec3 &p, double time) {
+    // Rigid-motion exact (translation preserves normals); deforming tris
+    // approximate with base-pose geometry, like static smooth normals.
     if (auto q = std::dynamic_pointer_cast<quad>(lt.shape))
         return q->light_normal();
     if (auto s = std::dynamic_pointer_cast<sphere>(lt.shape))

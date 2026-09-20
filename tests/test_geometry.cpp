@@ -276,6 +276,31 @@ static void t_volume() {
     EXPECT_TRUE(!fog.hit(ray(vec3(5, 5, 0), vec3(0, 0, -1)), 0.001, 1e30, hr));
 }
 
+static void t_trimotion() {
+    test_current = "trimotion";
+    auto m = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));
+    // Static tri: vert_at ignores time, hit matches legacy endpoints.
+    triangle st(vec3(0, 0, 0), vec3(1, 0, 0), vec3(0, 1, 0), m);
+    EXPECT_TRUE((st.vert_at(0, 0.7) - vec3(0, 0, 0)).length() < 1e-12);
+    hit_record hs;
+    EXPECT_TRUE(st.hit(ray(vec3(0.2, 0.2, 1), vec3(0, 0, -1), 0.7), 0.001, 1e30, hs));
+    EXPECT_NEAR(hs.t, 1.0);
+    // Moving tri: z=0 plane at t=0, z=1 plane at t=1.
+    triangle mt(vec3(0, 0, 0), vec3(1, 0, 0), vec3(0, 1, 0), m);
+    mt.set_motion(vec3(0, 0, 1), vec3(1, 0, 1), vec3(0, 1, 1), 0.0, 1.0);
+    EXPECT_TRUE((mt.vert_at(2, 0.0) - vec3(0, 1, 0)).length() < 1e-12);
+    EXPECT_TRUE((mt.vert_at(2, 1.0) - vec3(0, 1, 1)).length() < 1e-12);
+    EXPECT_TRUE((mt.vert_at(2, 0.5) - vec3(0, 1, 0.5)).length() < 1e-12);
+    hit_record h0, h1;
+    EXPECT_TRUE(mt.hit(ray(vec3(0.2, 0.2, 2), vec3(0, 0, -1), 0.0), 0.001, 1e30, h0));
+    EXPECT_TRUE(mt.hit(ray(vec3(0.2, 0.2, 2), vec3(0, 0, -1), 1.0), 0.001, 1e30, h1));
+    EXPECT_NEAR(h0.t, 2.0); // plane z=0 from z=2
+    EXPECT_NEAR(h1.t, 1.0); // plane z=1 from z=2
+    aabb b;
+    EXPECT_TRUE(mt.bounding_box(b));
+    EXPECT_TRUE(b.minimum.z() <= 0 && b.maximum.z() >= 1);
+}
+
 void run_geometry_tests() {
     t_sphere();
     t_list();
@@ -287,5 +312,6 @@ void run_geometry_tests() {
     t_smooth();
     t_meshuv();
     t_motion();
+    t_trimotion();
     t_volume();
 }

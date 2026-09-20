@@ -31,6 +31,10 @@ struct GPUTri {
     vec4 alb2;
     vec4 emit;
     vec4 params; // mat_type, rough/ir/scale, ir, has_uv
+    vec4 a1;
+    vec4 b1;
+    vec4 c1;
+    vec4 tm; // motion range (moving when tm.y > tm.x)
 };
 struct GPUNode {
     vec4 bmin;
@@ -76,17 +80,23 @@ bool hit_sphere(vec3 o, vec3 d, float rtime, float tmin, float tmax, GPUSphere s
     return true;
 }
 
-bool hit_tri(vec3 o, vec3 d, float tmin, float tmax, GPUTri t_,
+bool hit_tri(vec3 o, vec3 d, float rtime, float tmin, float tmax, GPUTri t_,
              out float t, out vec3 n, out vec2 uv) {
     const float eps = 1e-8;
-    vec3 e1 = t_.b.xyz - t_.a.xyz;
-    vec3 e2 = t_.c.xyz - t_.a.xyz;
+    // Motion lerp mirrors CPU vert_at (clamped); static tris no-op.
+    float f = (t_.tm.y > t_.tm.x)
+                  ? clamp((rtime - t_.tm.x) / (t_.tm.y - t_.tm.x), 0.0, 1.0)
+                  : 0.0;
+    vec3 va = mix(t_.a.xyz, t_.a1.xyz, f);
+    vec3 vb = mix(t_.b.xyz, t_.b1.xyz, f);
+    vec3 vc = mix(t_.c.xyz, t_.c1.xyz, f);
+    vec3 e1 = vb - va, e2 = vc - va;
     vec3 pvec = cross(d, e2);
     float det = dot(e1, pvec);
     if (abs(det) < eps)
         return false;
     float inv = 1.0 / det;
-    vec3 tvec = o - t_.a.xyz;
+    vec3 tvec = o - va.xyz;
     float u = dot(tvec, pvec) * inv;
     if (u < 0.0 || u > 1.0)
         return false;
@@ -245,7 +255,7 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                     light_ty = (emit.x + emit.y + emit.z > 0.0) ? 0 : -1;
                     any = true;
                 } else {
-                    if (!hit_tri(o, d, 0.001, t, tris[ref.ti.y], tt, nn, uv))
+                    if (!hit_tri(o, d, rtime, 0.001, t, tris[ref.ti.y], tt, nn, uv))
                         continue;
                     GPUTri tr = tris[ref.ti.y];
                     t = tt;

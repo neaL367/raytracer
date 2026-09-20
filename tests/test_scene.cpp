@@ -289,6 +289,20 @@ static void t_flatten() {
     EXPECT_TRUE((int)ft.images[0].rgba.size() == 4); // single texel blob
     EXPECT_TRUE(ft.gs.spheres[0].prm[0] == 5 && ft.gs.spheres[1].prm[0] == 5);
     EXPECT_TRUE(fabs(ft.gs.spheres[1].prm[1] - 0.0f) < 1e-6); // same idx
+    // Motion tri uploads B endpoints + range; static tri parks at t=0.
+    auto mv = std::make_shared<triangle>(vec3(0, 0, 0), vec3(1, 0, 0), vec3(0, 1, 0),
+                                         shared_mat);
+    mv->set_motion(vec3(0, 1, 0), vec3(1, 1, 0), vec3(0, 2, 0), 0.0, 2.0);
+    scene_data mot;
+    mot.objs.push_back(mv);
+    mot.objs.push_back(std::make_shared<triangle>(vec3(0, 0, 0), vec3(1, 0, 0),
+                                                  vec3(0, 1, 0), shared_mat));
+    flat_scene mf2;
+    EXPECT_TRUE(flatten_scene(mot, mf2));
+    EXPECT_NEAR(mf2.gs.tris[0].a1[1], 1.0); // B endpoint uploaded
+    EXPECT_NEAR(mf2.gs.tris[0].tm[1], 2.0); // range uploaded
+    EXPECT_NEAR(mf2.gs.tris[1].tm[1], 1.0); // static parks at t=0..1
+    EXPECT_NEAR(mf2.gs.tris[1].a1[1], 0.0);
     // Pyramid blob: 4x2 exports L0+L1+L2 consecutively (8+2+1 texels).
     ppm_io::image ramp;
     ramp.w = 4;
