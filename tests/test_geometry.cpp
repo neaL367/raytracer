@@ -201,6 +201,24 @@ static void t_smooth() {
     EXPECT_TRUE(hr.normal.z() < 0);
 }
 
+static void t_meshuv() {
+    test_current = "meshuv";
+    auto m = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));
+    // Corner UVs (0,0),(1,0),(0,1): center hit must read (0.25,0.25).
+    triangle t(vec3(0, 0, 0), vec3(1, 0, 0), vec3(0, 1, 0), 0.0, 0.0, 1.0, 0.0,
+               0.0, 1.0, m);
+    hit_record hr;
+    EXPECT_TRUE(t.hit(ray(vec3(0.25, 0.25, 1), vec3(0, 0, -1)), 0.001, 1e30, hr));
+    EXPECT_NEAR(hr.u, 0.25);
+    EXPECT_NEAR(hr.v, 0.25);
+    EXPECT_TRUE(t.uv_present());
+    // No-UV tri: barycentric fallback preserved.
+    triangle f(vec3(0, 0, 0), vec3(1, 0, 0), vec3(0, 1, 0), m);
+    EXPECT_TRUE(!f.uv_present());
+    EXPECT_TRUE(f.hit(ray(vec3(0.25, 0.25, 1), vec3(0, 0, -1)), 0.001, 1e30, hr));
+    EXPECT_NEAR(hr.u + hr.v, 0.5);
+}
+
 void run_geometry_tests() {
     t_sphere();
     t_list();
@@ -210,4 +228,5 @@ void run_geometry_tests() {
     t_sah();
     t_uv();
     t_smooth();
+    t_meshuv();
 }

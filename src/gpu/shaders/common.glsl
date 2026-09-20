@@ -23,10 +23,12 @@ struct GPUTri {
     vec4 n0;
     vec4 n1;
     vec4 n2;
+    vec4 tuvA; // (u0,v0,u1,v1) corner UVs
+    vec4 tuvB; // (u2,v2,*,*) corner UVs
     vec4 alb;
     vec4 alb2;
     vec4 emit;
-    vec4 params; // mat_type, fuzz, ir, 0
+    vec4 params; // mat_type, fuzz/ir/scale, ir, has_uv
 };
 struct GPUNode {
     vec4 bmin;
@@ -208,7 +210,11 @@ void traverse(vec3 o, vec3 d, float tmax, out float t, out vec3 n, out vec4 alb,
                     alb2 = tr.alb2;
                     emit = tr.emit;
                     params = tr.params;
-                    huv = uv;
+                    // Corner-UV blend when present, else barycentric fallback.
+                    huv = (tr.params.w > 0.5)
+                              ? tr.tuvA.xy * (1.0 - uv.x - uv.y) + tr.tuvA.zw * uv.x +
+                                    tr.tuvB.xy * uv.y
+                              : uv;
                     any = true;
                 }
             }

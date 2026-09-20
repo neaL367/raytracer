@@ -12,7 +12,20 @@ public:
         : v0(a), v1(b), v2(c), mat(m), smooth(false) {}
     triangle(const vec3 &a, const vec3 &b, const vec3 &c, const vec3 &na,
              const vec3 &nb, const vec3 &nc, std::shared_ptr<material> m)
-        : v0(a), v1(b), v2(c), n0(na), n1(nb), n2(nc), mat(m), smooth(true) {}
+        : v0(a), v1(b), v2(c), n0(na), n1(nb), n2(nc), mat(m), smooth(true),
+          has_uv(false) {}
+    // UV variant: corner UVs interpolate to rec.u/v; combines with smooth.
+    triangle(const vec3 &a, const vec3 &b, const vec3 &c, double uu0, double vv0,
+             double uu1, double vv1, double uu2, double vv2,
+             std::shared_ptr<material> m)
+        : v0(a), v1(b), v2(c), mat(m), smooth(false), has_uv(true), t0(uu0, vv0, 0),
+          t1(uu1, vv1, 0), t2(uu2, vv2, 0) {}
+    // Full variant: smooth normals plus corner UVs.
+    triangle(const vec3 &a, const vec3 &b, const vec3 &c, const vec3 &na,
+             const vec3 &nb, const vec3 &nc, double uu0, double vv0, double uu1,
+             double vv1, double uu2, double vv2, std::shared_ptr<material> m)
+        : v0(a), v1(b), v2(c), n0(na), n1(nb), n2(nc), mat(m), smooth(true),
+          has_uv(true), t0(uu0, vv0, 0), t1(uu1, vv1, 0), t2(uu2, vv2, 0) {}
 
     bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const override {
         const double eps = 1e-8;
@@ -47,8 +60,15 @@ public:
             rec.set_face_normal(r, flat);
         }
         rec.mat = mat;
-        rec.u = u; // barycentric weights as UVs (sum <= 1)
-        rec.v = v;
+        if (has_uv) {
+            // Corner-UV blend (image textures consume it directly).
+            double w0 = 1 - u - v;
+            rec.u = t0.x() * w0 + t1.x() * u + t2.x() * v;
+            rec.v = t0.y() * w0 + t1.y() * u + t2.y() * v;
+        } else {
+            rec.u = u; // barycentric weights as UVs (sum <= 1)
+            rec.v = v;
+        }
         return true;
     }
 
@@ -75,10 +95,14 @@ public:
         return (i == 0) ? n0 : ((i == 1) ? n1 : n2);
     }
     std::shared_ptr<material> mat_ptr() const { return mat; }
+    bool uv_present() const { return has_uv; }
+    vec3 uv_vert(int i) const { return (i == 0) ? t0 : ((i == 1) ? t1 : t2); }
 
 private:
     vec3 v0, v1, v2;
     vec3 n0, n1, n2; // valid only when smooth
     bool smooth = false;
+    vec3 t0, t1, t2; // corner UVs in x/y; valid only when has_uv
+    bool has_uv = false;
     std::shared_ptr<material> mat;
 };

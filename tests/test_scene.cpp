@@ -81,6 +81,21 @@ static void t_obj() {
     vec3 expect = unit_vector(vec3(0.25, 0.25, 0.5));
     EXPECT_NEAR(hr.normal.x(), expect.x());
     EXPECT_NEAR(hr.normal.z(), expect.z());
+    // vt faces: UV flag on, interpolated UVs land inside the quad.
+    std::string uvobj =
+        (std::filesystem::temp_directory_path() / "rt_uv_test.obj").string();
+    {
+        std::ofstream f(uvobj);
+        f << "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n";
+        f << "vt 0 0\nvt 1 0\nvt 1 1\nvt 0 1\n";
+        f << "f 1/1 2/2 3/3 4/4\n";
+    }
+    std::vector<std::shared_ptr<triangle>> uvtris;
+    EXPECT_TRUE(obj_loader::load_obj(uvobj, uvtris, m));
+    EXPECT_TRUE((int)uvtris.size() == 2);
+    EXPECT_TRUE(uvtris[0]->uv_present());
+    EXPECT_TRUE(uvtris[0]->hit(ray(vec3(0.5, 0.5, 1), vec3(0, 0, -1)), 0.001, 1e30, hr));
+    EXPECT_TRUE(hr.u >= 0 && hr.u <= 1 && hr.v >= 0 && hr.v <= 1);
 }
 
 static void t_cornell() {

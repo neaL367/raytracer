@@ -50,4 +50,5 @@ M14 done: stb JPEG/PNG, photo ground, GPU image path.
 M15 done: bilinear sampling both backends, parity 0.6%.
 M16 done: OBJ smooth normals, zero pixel drift.
 M17 done: multi-image registry, two-photo demo, parity 0.2%.
+M18 done: mesh UV mapping, photo-per-face cube, parity 0.2%.
 Next: pick slice.
