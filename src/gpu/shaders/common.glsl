@@ -194,13 +194,14 @@ bool fog_event(vec3 o, vec3 d, float rtime, int ns, float u01, float tmax,
 // contract as the old brute loops (narrowing tmax), so kernels just swap.
 void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
               out vec4 alb, out vec4 alb2, out vec4 emit, out vec4 params,
-              out int light_idx, out vec2 huv, out bool any) {
+              out int light_idx, out int light_ty, out vec2 huv, out bool any) {
     int stack[32];
     int sp = 0;
     stack[sp++] = 0;
     t = tmax;
     any = false;
     light_idx = -1;
+    light_ty = -1;
     huv = vec2(0.0);
     while (sp > 0) {
         GPUNode nd = nodes[stack[--sp]];
@@ -223,6 +224,11 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                     emit = s.emit;
                     params = s.params;
                     huv = uv;
+                    // Fog slot never shades; dark solids clear stale markers.
+                    bool fogslot = params.x > 5.5 && params.x < 6.5;
+                    bool lit = !fogslot && (emit.x + emit.y + emit.z > 0.0);
+                    light_idx = lit ? ref.ti.y : -1;
+                    light_ty = lit ? 1 : -1;
                     any = true;
                 } else if (ref.ti.x == 1) {
                     if (!hit_quad(o, d, 0.001, t, quads[ref.ti.y], tt, nn, uv))
@@ -236,6 +242,7 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                     params = q.params;
                     huv = uv;
                     light_idx = (emit.x + emit.y + emit.z > 0.0) ? ref.ti.y : -1;
+                    light_ty = (emit.x + emit.y + emit.z > 0.0) ? 0 : -1;
                     any = true;
                 } else {
                     if (!hit_tri(o, d, 0.001, t, tris[ref.ti.y], tt, nn, uv))
@@ -252,6 +259,9 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                               ? tr.tuvA.xy * (1.0 - uv.x - uv.y) + tr.tuvA.zw * uv.x +
                                     tr.tuvB.xy * uv.y
                               : uv;
+                    bool trlit = emit.x + emit.y + emit.z > 0.0;
+                    light_idx = trlit ? ref.ti.y : -1;
+                    light_ty = trlit ? 2 : -1;
                     any = true;
                 }
             }
@@ -267,13 +277,13 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
 // absolute from o (travelled distance accumulated across passes).
 bool trace_solid(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                  out vec4 alb, out vec4 alb2, out vec4 emit, out vec4 params,
-                 out int light_idx, out vec2 huv) {
+                 out int light_idx, out int light_ty, out vec2 huv) {
     vec3 oo = o;
     float trav = 0.0;
     for (int k = 0; k < 4; ++k) {
         bool any;
         traverse(oo, d, rtime, tmax - trav, t, n, alb, alb2, emit, params, light_idx,
-                 huv, any);
+                 light_ty, huv, any);
         if (!any)
             return false;
         if (params.x != 6.0) {
@@ -296,8 +306,8 @@ bool shadow_occluded(vec3 o, vec3 wi, float rtime, int ns, float u01, float dist
     float t;
     vec3 n;
     vec4 alb, alb2, emit, params;
-    int light_idx;
+    int light_idx, light_ty;
     vec2 huv;
     return trace_solid(o, wi, rtime, dist - 0.001, t, n, alb, alb2, emit, params,
-                       light_idx, huv);
+                       light_idx, light_ty, huv);
 }

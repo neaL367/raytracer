@@ -95,14 +95,25 @@ int main(int argc, char **argv) {
     static const int empty_tab[4] = {};
     const void *tab_ptr = img_table.empty() ? empty_tab : img_table.data();
     size_t tab_bytes = img_table.empty() ? sizeof empty_tab : img_table.size() * sizeof(int);
-    const void *data[8] = {&scene.cam, scene.spheres.data(), scene.quads.data(),
+    // NEE light table: (type, index) ivec2 rows; empty pad when none.
+    std::vector<int> light_tab;
+    for (const auto &le : flat.light_table) {
+        light_tab.push_back(le.first);
+        light_tab.push_back(le.second);
+    }
+    static const int empty_light[2] = {};
+    const void *light_ptr = light_tab.empty() ? empty_light : light_tab.data();
+    size_t light_bytes =
+        light_tab.empty() ? sizeof empty_light : light_tab.size() * sizeof(int);
+    const void *data[9] = {&scene.cam, scene.spheres.data(), scene.quads.data(),
                            scene.tris.data(), flat.nodes.data(), flat.refs.data(),
-                           img_ptr, tab_ptr};
-    const size_t bytes[8] = {sizeof scene.cam, scene.spheres.size() * sizeof(GPUSphere),
+                           img_ptr, tab_ptr, light_ptr};
+    const size_t bytes[9] = {sizeof scene.cam, scene.spheres.size() * sizeof(GPUSphere),
                              scene.quads.size() * sizeof(GPUQuad),
                              scene.tris.size() * sizeof(GPUTri),
                              flat.nodes.size() * sizeof(GPUNode),
-                             flat.refs.size() * sizeof(GPURef), img_bytes, tab_bytes};
+                             flat.refs.size() * sizeof(GPURef), img_bytes, tab_bytes,
+                             light_bytes};
     gpu_set_scene(gpu, data, bytes);
 
     uint32_t push10[10] = {(uint32_t)W,         (uint32_t)H,

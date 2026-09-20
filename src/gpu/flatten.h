@@ -35,7 +35,8 @@ struct flat_scene {
     gpu_scene gs;
     std::vector<GPUNode> nodes;
     std::vector<GPURef> refs;
-    int nlights = 0; // leading emissive quads (NEE indexes [0, nlights))
+    int nlights = 0; // NEE light count (entries in light_table)
+    std::vector<std::pair<int, int>> light_table; // (type, index): 0 quad, 1 sphere, 2 tri
     std::vector<GPUImage> images; // deduped by texture pointer
 };
 
@@ -149,6 +150,8 @@ inline bool push_prim(flat_scene &out, std::map<const hittable *, std::pair<int,
             g.prm[3] = 1;
         id[o.get()] = {0, (int)gs.spheres.size()};
         gs.spheres.push_back(g);
+        if (g.prm[0] != 6 && g.emit[0] + g.emit[1] + g.emit[2] > 0)
+            out.light_table.push_back({1, (int)gs.spheres.size() - 1});
         return true;
     }
     if (auto q = std::dynamic_pointer_cast<quad>(o)) {
@@ -166,6 +169,8 @@ inline bool push_prim(flat_scene &out, std::map<const hittable *, std::pair<int,
         fill_material(out, q->mat_ptr(), g.alb, g.alb2, g.emit, g.prm);
         id[o.get()] = {1, (int)gs.quads.size()};
         gs.quads.push_back(g);
+        if (g.emit[0] + g.emit[1] + g.emit[2] > 0)
+            out.light_table.push_back({0, (int)gs.quads.size() - 1});
         return true;
     }
     if (auto t = std::dynamic_pointer_cast<triangle>(o)) {
@@ -195,6 +200,8 @@ inline bool push_prim(flat_scene &out, std::map<const hittable *, std::pair<int,
             g.prm[3] = 1; // corner-UV blend on device
         id[o.get()] = {2, (int)gs.tris.size()};
         gs.tris.push_back(g);
+        if (g.emit[0] + g.emit[1] + g.emit[2] > 0)
+            out.light_table.push_back({2, (int)gs.tris.size() - 1});
         return true;
     }
     return false; // unknown shape: fail loudly in flatten_scene
@@ -234,8 +241,8 @@ inline int flatten_node(const bvh_node &n, std::vector<GPUNode> &nodes,
 } // namespace flat_detail
 
 // Build typed arrays + SAH tree + flat nodes from a scene. False on
-// unknown shapes only; lights stay quads in the same arrays.
-// Emissive quads sort first so NEE indexing stays a prefix.
+// unknown shapes only. Emissive prims (any shape) register in the light
+// table; the emissive-first partition is legacy order, kept stable.
 inline bool flatten_scene(const scene_data &scene, flat_scene &out) {
     out = flat_scene{};
     // Reject unknown shapes up front (image textures unlimited now).
@@ -264,9 +271,7 @@ inline bool flatten_scene(const scene_data &scene, flat_scene &out) {
     for (const auto &o : ordered)
         if (!flat_detail::push_prim(out, id, o))
             return false;
-    for (const auto &q : out.gs.quads)
-        if (q.prm[0] == 3)
-            out.nlights++;
+    out.nlights = (int)out.light_table.size();
     std::vector<std::shared_ptr<hittable>> objs = ordered; // ptr copies
     bvh_node root(objs, 0, objs.size(), true);
     flat_detail::flatten_node(root, out.nodes, out.refs, id);

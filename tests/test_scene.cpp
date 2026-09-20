@@ -188,12 +188,49 @@ static void t_mtl() {
     EXPECT_TRUE((int)mf.images.size() == 1);
 }
 
+static void t_lights() {
+    test_current = "lights";
+    auto lamp = std::make_shared<diffuse_light>(vec3(3, 3, 3));
+    // Quad: area 4, point on plane, geometric normal.
+    light ql(std::make_shared<quad>(vec3(0, 0, 0), vec3(2, 0, 0), vec3(0, 2, 0), lamp));
+    EXPECT_NEAR(light_area(ql), 4);
+    vec3 qp = light_point(ql, 0.25, 0.5, 0.0);
+    EXPECT_NEAR(qp.x(), 0.5); EXPECT_NEAR(qp.y(), 1.0); EXPECT_NEAR(qp.z(), 0);
+    EXPECT_NEAR(light_normal_at(ql, qp, 0.0).z(), 1);
+    // Sphere r=2: area 16 PI, points on surface, outward normals.
+    light sl(std::make_shared<sphere>(vec3(1, 2, 3), 2.0, lamp));
+    EXPECT_NEAR(light_area(sl), 16 * 3.1415926535897932385);
+    vec3 sp = light_point(sl, 0.0, 0.0, 0.0); // u1=0 -> north pole
+    EXPECT_TRUE((sp - vec3(1, 2, 3)).length() - 2.0 < 1e-9);
+    EXPECT_NEAR(light_normal_at(sl, sp, 0.0).z(), 1);
+    // Triangle legs 3/4: area 6, point in-plane and inside.
+    auto tri = std::make_shared<triangle>(vec3(0, 0, 0), vec3(3, 0, 0),
+                                          vec3(0, 4, 0), lamp);
+    light tl(tri);
+    EXPECT_NEAR(light_area(tl), 6);
+    vec3 tp = light_point(tl, 0.25, 0.5, 0.0);
+    EXPECT_NEAR(tp.z(), 0);
+    EXPECT_TRUE(tp.x() >= 0 && tp.y() >= 0 && tp.x() / 3 + tp.y() / 4 <= 1 + 1e-9);
+    EXPECT_TRUE((light_normal_at(tl, tp, 0.0) - vec3(0, 0, 1)).length() < 1e-9);
+    EXPECT_TRUE(light_mat(tl) == tri->mat_ptr());
+    // Flatten registers emissive spheres/tris alongside quads.
+    scene_data es;
+    es.objs.push_back(std::make_shared<sphere>(vec3(0, 3, 0), 0.5, lamp));
+    es.objs.push_back(tri);
+    flat_scene ef;
+    EXPECT_TRUE(flatten_scene(es, ef));
+    EXPECT_TRUE((int)ef.light_table.size() == 2);
+    EXPECT_TRUE(ef.light_table[0].first == 1); // sphere type
+    EXPECT_TRUE(ef.light_table[1].first == 2); // tri type
+    EXPECT_TRUE(ef.nlights == 2);
+}
+
 static void t_cornell() {
     test_current = "cornell";
     scene_data scene = build_cornell(16.0 / 9.0, 0.0);
     EXPECT_TRUE((int)scene.objs.size() == 18); // 5 walls + 12 box + 1 light
     EXPECT_TRUE((int)scene.lights.size() == 1);
-    EXPECT_TRUE(scene.lights[0]->mat_ptr()->emitted().x() > 1); // bright
+    EXPECT_TRUE(light_mat(scene.lights[0])->emitted().x() > 1); // bright
     hittable_list world;
     for (auto &o : scene.objs)
         world.add(o);
@@ -204,10 +241,11 @@ static void t_cornell() {
     // Inside tall box looking +x: exits at x=430 wall.
     EXPECT_TRUE(world.hit(ray(vec3(300, 100, 350), vec3(1, 0, 0)), 0.001, 1e30, hr));
     EXPECT_NEAR(hr.point.x(), 430);
-    // Default builder unchanged: ground + mesh/fallback + 2 spheres + light.
+    // Default builder unchanged: ground + mesh/fallback + 2 spheres + quad + orb.
     scene_data def = build_default(16.0 / 9.0, 0.0);
-    EXPECT_TRUE((int)def.lights.size() == 1);
-    EXPECT_TRUE((int)def.objs.size() >= 16); // ground+12mesh+2sph+light
+    EXPECT_TRUE((int)def.lights.size() == 2); // quad + warm orb
+    EXPECT_TRUE(light_mat(def.lights[1])->emitted().z() > 1); // orb glows warm
+    EXPECT_TRUE((int)def.objs.size() >= 17); // ground+12mesh+2sph+quad+orb
 }
 
 static void t_flatten() {
@@ -325,6 +363,7 @@ void run_scene_tests() {
     t_defocus();
     t_obj();
     t_mtl();
+    t_lights();
     t_cornell();
     t_flatten();
     t_shutter();

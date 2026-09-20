@@ -5,6 +5,7 @@
 #include "../core/sampler.h"
 #include "../core/bench_stats.h"
 #include "../geometry/hittable.h"
+#include "../geometry/light.h"
 #include "../geometry/quad.h"
 #include "../material/material.h"
 #include <cmath>
@@ -30,7 +31,7 @@ inline void first_hit_aov(const ray &r, const hittable &world, vec3 &albedo, vec
 class integrator {
 public:
     vec3 Li(const ray &r, const hittable &world,
-            const std::vector<std::shared_ptr<quad>> &lights, int max_depth) const {
+            const std::vector<light> &lights, int max_depth) const {
         count_ray(); // primary
         vec3 throughput(1, 1, 1);
         vec3 L(0, 0, 0);
@@ -60,11 +61,12 @@ public:
                     vec3 wi = to_hit / dist;
                     double pdf_l = 0;
                     for (const auto &lt : lights) {
-                        if (lt->mat_ptr() == rec.mat) {
-                            double cosA = fabs(dot(lt->light_normal(), -wi));
-                            if (cosA > 0 && lt->area() > 0)
+                        if (light_mat(lt) == rec.mat) {
+                            double cosA = fabs(dot(light_normal_at(lt, rec.point, cur.time()), -wi));
+                            double A = light_area(lt);
+                            if (cosA > 0 && A > 0)
                                 pdf_l = dist * dist /
-                                        ((double)lights.size() * lt->area() * cosA);
+                                        ((double)lights.size() * A * cosA);
                             break;
                         }
                     }
@@ -87,26 +89,28 @@ public:
                 if (li >= (int)lights.size())
                     li = (int)lights.size() - 1;
                 const auto &light = lights[(size_t)li];
-                vec3 lp = light->sample_point();
+                vec3 lp = light_point(light, random_double(), random_double(), cur.time());
                 vec3 toL = lp - rec.point;
                 double dist = toL.length();
                 vec3 wi = toL / dist;
+                vec3 ln = light_normal_at(light, lp, cur.time());
                 double cosS = dot(rec.normal, wi);
-                double cosA = fabs(dot(light->light_normal(), -wi));
-                if (cosS > 0 && cosA > 0 && light->area() > 0) {
+                double cosA = fabs(dot(ln, -wi));
+                double area = light_area(light);
+                if (cosS > 0 && cosA > 0 && area > 0) {
                     hit_record tmp;
                     count_ray(); // shadow ray
                     ray shadow(rec.point, wi, cur.time());
                     bool blocked = world.hit(shadow, 0.001, dist - 0.001, tmp);
                     if (!blocked) {
-                        vec3 light_Le = light->mat_ptr()->emitted();
+                        vec3 light_Le = light_mat(light)->emitted();
                         double pdf_l = dist * dist /
-                                       ((double)lights.size() * light->area() * cosA);
+                                       ((double)lights.size() * area * cosA);
                         double pdf_b = cosine_pdf(cosS);
                         double w = pdf_l / (pdf_l + pdf_b);
                         // f*G/pdf_area: rho*Le*cosS*cosA*A*L/(PI*dist^2)
                         L += throughput * attenuation * light_Le *
-                             (cosS * cosA * (double)lights.size() * light->area() /
+                             (cosS * cosA * (double)lights.size() * area /
                               (pi * dist * dist)) * w;
                     }
                 }

@@ -26,11 +26,11 @@ void main() {
     float t;
     vec3 n;
     vec4 alb, alb2, emit, params;
-    int light_idx;
+    int light_idx, light_ty;
     vec2 huv;
     // Solid only: fog boundaries pass through (debug view, no volumes).
     bool any = trace_solid(o, d, 0.0, 1e30, t, n, alb, alb2, emit, params, light_idx,
-                           huv);
+                           light_ty, huv);
     vec3 col = any ? 0.5 * (n + vec3(1.0))
                    : mix(vec3(1.0), vec3(0.5, 0.7, 1.0),
                          0.5 * (normalize(d).y + 1.0));

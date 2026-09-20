@@ -6,6 +6,7 @@
 #include "../core/obj_loader.h"
 #include "../core/texture.h"
 #include "../geometry/hittable.h"
+#include "../geometry/light.h"
 #include "../geometry/quad.h"
 #include "../geometry/sphere.h"
 #include "../geometry/triangle.h"
@@ -20,7 +21,7 @@
 
 struct scene_data {
     std::vector<std::shared_ptr<hittable>> objs;
-    std::vector<std::shared_ptr<quad>> lights;
+    std::vector<light> lights; // NEE-sampled emitters (any shape)
     camera cam;
 };
 
@@ -93,6 +94,11 @@ inline scene_data build_default(double aspect, double aperture, double sh0 = 0,
                                         vec3(0, 0, 2), light_mat);
     scene.objs.push_back(light);
     scene.lights.push_back(light);
+    // Warm orb: second emitter proves multi-shape NEE (sphere sampling).
+    auto orb_mat = std::make_shared<diffuse_light>(vec3(4, 2.2, 1.1));
+    auto orb = std::make_shared<sphere>(vec3(2.2, 1.4, -0.6), 0.25, orb_mat);
+    scene.objs.push_back(orb);
+    scene.lights.push_back(orb);
     if (fog_density > 0) {
         // Smoke ball around the subject: white scatter, no NEE inside.
         auto fog_phase = std::make_shared<isotropic>(vec3(0.9, 0.9, 0.9));

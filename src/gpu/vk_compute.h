@@ -46,7 +46,7 @@ struct GpuContext {
     VkCommandPool cmd_pool = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkQueryPool query_pool = VK_NULL_HANDLE;
-    GpuBuffer scene_bufs[8];
+    GpuBuffer scene_bufs[9];
     bool has_scene = false;
 };
 
@@ -183,12 +183,12 @@ inline void gpu_init(GpuContext &g, int W, int H) {
         VKC_CHECK(vkBindBufferMemory(g.device, g.staging.buf, g.staging.mem, 0));
     }
     {
-        VkDescriptorSetLayoutBinding b[9]{};
+        VkDescriptorSetLayoutBinding b[10]{};
         b[0].binding = 0;
         b[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         b[0].descriptorCount = 1;
         b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        for (uint32_t i = 1; i < 9; ++i) {
+        for (uint32_t i = 1; i < 10; ++i) {
             b[i].binding = i;
             b[i].descriptorCount = 1;
             b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -197,7 +197,7 @@ inline void gpu_init(GpuContext &g, int W, int H) {
         }
         VkDescriptorSetLayoutCreateInfo ci{};
         ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        ci.bindingCount = 9;
+        ci.bindingCount = 10;
         ci.pBindings = b;
         VKC_CHECK(vkCreateDescriptorSetLayout(g.device, &ci, nullptr, &g.layout));
         VkDescriptorPoolSize ps[3]{};
@@ -206,7 +206,7 @@ inline void gpu_init(GpuContext &g, int W, int H) {
         ps[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         ps[1].descriptorCount = 1;
         ps[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        ps[2].descriptorCount = 7;
+        ps[2].descriptorCount = 8;
         VkDescriptorPoolCreateInfo pi{};
         pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         pi.maxSets = 1;
@@ -233,11 +233,11 @@ inline void gpu_init(GpuContext &g, int W, int H) {
     }
 }
 
-// Upload 7 blobs as UBO + 6 SSBOs, wire descriptor set.
+// Upload 8 blobs as UBO + 7 SSBOs, wire descriptor set.
 // bufs[0] = camera UBO, [1..3] = prim SSBOs, [4] = BVH nodes,
-// [5] = leaf refs, [6] = image-texture texels.
-inline void gpu_set_scene(GpuContext &g, const void *data[8], const size_t bytes[8]) {
-    for (int i = 0; i < 8; ++i) {
+// [5] = leaf refs, [6] = image-texture texels, [7] = NEE light table.
+inline void gpu_set_scene(GpuContext &g, const void *data[9], const size_t bytes[9]) {
+    for (int i = 0; i < 9; ++i) {
         size_t n = bytes[i] ? bytes[i] : 16;
         VkBufferCreateInfo ci{};
         ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -273,19 +273,19 @@ inline void gpu_set_scene(GpuContext &g, const void *data[8], const size_t bytes
     VkDescriptorImageInfo ii{};
     ii.imageView = g.view;
     ii.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    VkDescriptorBufferInfo bi[8]{};
-    for (int i = 0; i < 8; ++i) {
+    VkDescriptorBufferInfo bi[9]{};
+    for (int i = 0; i < 9; ++i) {
         bi[i].buffer = g.scene_bufs[i].buf;
         bi[i].range = g.scene_bufs[i].bytes;
     }
-    VkWriteDescriptorSet w[9]{};
+    VkWriteDescriptorSet w[10]{};
     w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     w[0].dstSet = g.set;
     w[0].dstBinding = 0;
     w[0].descriptorCount = 1;
     w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     w[0].pImageInfo = &ii;
-    for (int i = 1; i < 9; ++i) {
+    for (int i = 1; i < 10; ++i) {
         w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         w[i].dstSet = g.set;
         w[i].dstBinding = (uint32_t)i;
@@ -294,7 +294,7 @@ inline void gpu_set_scene(GpuContext &g, const void *data[8], const size_t bytes
                                        : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         w[i].pBufferInfo = &bi[i - 1];
     }
-    vkUpdateDescriptorSets(g.device, 9, w, 0, nullptr);
+    vkUpdateDescriptorSets(g.device, 10, w, 0, nullptr);
     g.has_scene = true;
 }
 

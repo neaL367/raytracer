@@ -93,7 +93,7 @@ int main(int argc, char **argv) {
     scene_data scene = build_scene(scene_name, double(W) / double(H), aperture, shutter0,
                                    shutter1, fog_density);
     std::vector<std::shared_ptr<hittable>> &objs = scene.objs;
-    std::vector<std::shared_ptr<quad>> &lights = scene.lights;
+    std::vector<light> &lights = scene.lights;
     camera &cam = scene.cam;
 
     // BVH over everything incl. light quad: shadow + NEE rays traverse it.
