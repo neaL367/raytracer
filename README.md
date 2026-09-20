@@ -13,10 +13,11 @@ ctest --test-dir build -C Release
 ## Run
 
 ```bat
-build\Release\raytracer.exe
+build\Release\raytracer.exe [--samples 16]
 ```
 
-Renders `out/image.ppm` (400x225, normal-shaded sphere).
+Renders `out/image.ppm` (400x225, 16spp stratified default,
+`--samples 1` reproduces single-sample look).
 
 ## Layout
 
@@ -33,4 +34,6 @@ tests/         dependency-free asserts via ctest
 ## Roadmap
 
 M0/M1 done: toolchain + first sphere image.
-Next: M2 geometry + materials + lights.
+M2 done: geometry + materials + lights.
+M3 done: stratified sampling + AA.
+Next: M4 path tracing + GI.

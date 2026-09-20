@@ -2,6 +2,7 @@
 #include "core/vec3.h"
 #include "core/ray.h"
 #include "core/random.h"
+#include "core/sampler.h"
 #include "camera/camera.h"
 #include "geometry/hittable.h"
 #include "geometry/sphere.h"
@@ -101,9 +102,71 @@ static void t_materials() {
     EXPECT_NEAR(att.x(), 1.0); // no absorption
 }
 
+static void t_sampler() {
+    cur = "sampler";
+    rng_seed(10);
+    auto j = jitter_offsets(50);
+    EXPECT_TRUE((int)j.size() == 50);
+    for (auto [ox, oy] : j)
+        EXPECT_TRUE(ox >= 0 && ox < 1 && oy >= 0 && oy < 1);
+    rng_seed(10);
+    auto s = stratified_offsets(4); // 16 samples, 4x4 cells
+    EXPECT_TRUE((int)s.size() == 16);
+    int cells[4][4] = {};
+    for (auto [ox, oy] : s) {
+        EXPECT_TRUE(ox >= 0 && ox < 1 && oy >= 0 && oy < 1);
+        int cx = (int)(ox * 4), cy = (int)(oy * 4);
+        if (cx > 3) cx = 3;
+        if (cy > 3) cy = 3;
+        cells[cy][cx]++;
+    }
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 4; ++x)
+            EXPECT_TRUE(cells[y][x] == 1); // each cell exactly once
+    auto one = pixel_samples(1);
+    EXPECT_TRUE(one.size() == 1 && near(one[0].first, 0.5) && near(one[0].second, 0.5));
+    EXPECT_TRUE((int)pixel_samples(7).size() == 7); // non-square -> jitter
+}
+
+// Monte Carlo: integrate f(x,y)=x+y over unit square (truth=1.0).
+// 20 seeded trials each; stratified variance must beat jitter.
+static double trial_estimate(bool stratified, unsigned seed) {
+    rng_seed(seed);
+    double sum = 0;
+    if (stratified) {
+        for (auto [ox, oy] : stratified_offsets(4))
+            sum += ox + oy;
+        return sum / 16;
+    }
+    for (auto [ox, oy] : jitter_offsets(16))
+        sum += ox + oy;
+    return sum / 16;
+}
+static void t_montecarlo() {
+    cur = "montecarlo";
+    double ms = 0, mj = 0;
+    double vs = 0, vj = 0;
+    const int T = 20;
+    double es[T], ej[T];
+    for (int t = 0; t < T; ++t) {
+        es[t] = trial_estimate(true, 100 + (unsigned)t);
+        ej[t] = trial_estimate(false, 200 + (unsigned)t);
+        ms += es[t]; mj += ej[t];
+    }
+    ms /= T; mj /= T;
+    for (int t = 0; t < T; ++t) {
+        vs += (es[t] - ms) * (es[t] - ms);
+        vj += (ej[t] - mj) * (ej[t] - mj);
+    }
+    vs /= T; vj /= T;
+    EXPECT_TRUE(fabs(ms - 1.0) < 0.05); // converges to truth
+    EXPECT_TRUE(fabs(mj - 1.0) < 0.15);
+    EXPECT_TRUE(vs < vj); // strata win on variance
+}
+
 int main() {
     t_vec3(); t_ray(); t_camera(); t_sphere(); t_list(); t_triangle_quad();
-    t_materials();
+    t_materials(); t_sampler(); t_montecarlo();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
