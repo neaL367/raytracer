@@ -55,6 +55,21 @@ inline vec3 cross(const vec3 &u, const vec3 &v) {
 }
 inline vec3 unit_vector(const vec3 &v) { return v / v.length(); }
 
+// reflect: v mirrored about n. Metal needs exact mirror, fuzz added later.
+inline vec3 reflect(const vec3 &v, const vec3 &n) { return v - 2 * dot(v, n) * n; }
+// refract per Snell. eta = n1/n2. TIR handled by caller via discriminant.
+inline vec3 refract(const vec3 &uv, const vec3 &n, double eta) {
+    double cos_theta = fmin(dot(-uv, n), 1.0);
+    vec3 r_out_perp = eta * (uv + cos_theta * n);
+    vec3 r_out_parallel = -std::sqrt(fabs(1.0 - r_out_perp.length_squared())) * n;
+    return r_out_perp + r_out_parallel;
+}
+// Degenerate scatter guard: random fallback avoids NaN normals.
+inline bool near_zero(const vec3 &v) {
+    const double s = 1e-8;
+    return fabs(v.e[0]) < s && fabs(v.e[1]) < s && fabs(v.e[2]) < s;
+}
+
 inline std::ostream &operator<<(std::ostream &out, const vec3 &v) {
     return out << v.e[0] << ' ' << v.e[1] << ' ' << v.e[2];
 }

@@ -1,21 +1,15 @@
 #pragma once
-#include "../core/vec3.h"
-#include "../core/ray.h"
+#include "hittable.h"
+#include <memory>
 
-struct hit_record {
-    double t = 0;
-    vec3 point;
-    vec3 normal; // always outward for M1 (single sphere, no inside case yet)
-};
-
-// Sphere analytic hit. half_b form used (b=-2h): fewer ops, stable.
-// Interval [t_min,t_max] culls self-hit acne and far occluders.
-class sphere {
+// Sphere now a hittable carrying material. hit_record shared, no dup.
+class sphere : public hittable {
 public:
     sphere() {}
-    sphere(const vec3 &c, double r) : center(c), radius(r) {}
+    sphere(const vec3 &c, double r, std::shared_ptr<material> m)
+        : center(c), radius(r), mat(m) {}
 
-    bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const {
+    bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const override {
         vec3 oc = r.origin() - center;
         double a = dot(r.direction(), r.direction());
         double half_b = dot(oc, r.direction());
@@ -25,7 +19,7 @@ public:
             return false;
         double sqrtd = std::sqrt(discriminant);
 
-        double root = (-half_b - sqrtd) / a; // nearest first
+        double root = (-half_b - sqrtd) / a;
         if (root < t_min || root > t_max) {
             root = (-half_b + sqrtd) / a;
             if (root < t_min || root > t_max)
@@ -33,11 +27,14 @@ public:
         }
         rec.t = root;
         rec.point = r.at(root);
-        rec.normal = (rec.point - center) / radius;
+        vec3 outward = (rec.point - center) / radius;
+        rec.set_face_normal(r, outward);
+        rec.mat = mat;
         return true;
     }
 
 private:
     vec3 center;
     double radius = 0;
+    std::shared_ptr<material> mat;
 };
