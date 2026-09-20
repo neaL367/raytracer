@@ -3,6 +3,7 @@
 #include "../core/ray.h"
 #include "../core/random.h"
 #include "../core/onb.h"
+#include "../core/texture.h"
 #include "../geometry/hittable.h"
 #include <memory>
 
@@ -21,7 +22,8 @@ public:
 
 class lambertian : public material {
 public:
-    lambertian(const vec3 &a) : albedo(a) {}
+    lambertian(const vec3 &a) : tex(std::make_shared<solid_color>(a)) {}
+    lambertian(std::shared_ptr<texture> t) : tex(t) {}
     bool scatter(const ray &, const hit_record &rec,
                  vec3 &attenuation, ray &scattered) const override {
         // Cosine-weighted: pdf cos/PI cancels f*cos term, throughput *= albedo exact.
@@ -31,13 +33,13 @@ public:
         if (near_zero(dir))
             dir = rec.normal; // degenerate guard
         scattered = ray(rec.point, dir);
-        attenuation = albedo;
+        attenuation = tex->value(rec.u, rec.v, rec.point);
         return true;
     }
     bool is_diffuse() const override { return true; }
 
 private:
-    vec3 albedo;
+    std::shared_ptr<texture> tex;
 };
 
 class metal : public material {

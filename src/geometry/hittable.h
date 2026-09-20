@@ -13,6 +13,7 @@ struct hit_record {
     vec3 normal;
     bool front_face = true;
     std::shared_ptr<material> mat;
+    double u = 0, v = 0; // shape UVs for textures (sphere/quad/tri fill)
 
     // Outward vs inward decided by ray dir. Glass needs true normal side.
     inline void set_face_normal(const ray &r, const vec3 &outward) {

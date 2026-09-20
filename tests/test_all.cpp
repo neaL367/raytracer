@@ -5,6 +5,9 @@
 #include "core/sampler.h"
 #include "core/onb.h"
 #include "core/aabb.h"
+#include "core/texture.h"
+#include "core/obj_loader.h"
+#include "io/ppm_image.h"
 #include "accel/bvh.h"
 #include "integrator/integrator.h"
 #include "camera/camera.h"
@@ -16,7 +19,11 @@
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <memory>
+#include <string>
+#include <vector>
 
 static int checks = 0, failures = 0;
 static const char *cur = "";
@@ -286,10 +293,86 @@ static void t_bvh() {
     EXPECT_TRUE(agree > 50); // scene actually hit, not all misses
 }
 
+static void t_texture_uv() {
+    cur = "texture";
+    solid_color solid(vec3(0.2, 0.4, 0.6));
+    EXPECT_NEAR(solid.value(0.1, 0.9, vec3(5, 5, 5)).y(), 0.4);
+    checker cb(1.0, vec3(1, 1, 1), vec3(0, 0, 0));
+    EXPECT_NEAR(cb.value(0, 0, vec3(0.2, 0.2, 0.2)).x(), 1); // even cell
+    EXPECT_NEAR(cb.value(0, 0, vec3(1.2, 0.2, 0.2)).x(), 0); // odd cell
+    // Lambertian samples texture with hit UVs.
+    rng_seed(40);
+    lambertian lamb(std::make_shared<checker>(1.0, vec3(1, 0, 0), vec3(0, 0, 1)));
+    hit_record rec;
+    rec.point = vec3(0.2, 0, 0);
+    rec.normal = vec3(0, 1, 0);
+    rec.front_face = true;
+    vec3 att;
+    ray sc;
+    EXPECT_TRUE(lamb.scatter(ray(vec3(0, 1, 0), vec3(0, -1, 0)), rec, att, sc));
+    EXPECT_NEAR(att.x(), 1); // even cell -> red
+    rec.point = vec3(1.2, 0, 0);
+    EXPECT_TRUE(lamb.scatter(ray(vec3(1.2, 1, 0), vec3(0, -1, 0)), rec, att, sc));
+    EXPECT_NEAR(att.z(), 1); // odd cell -> blue
+
+    cur = "uv";
+    auto m = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));
+    sphere s(vec3(0, 0, 0), 1.0, m);
+    hit_record hr;
+    EXPECT_TRUE(s.hit(ray(vec3(2, 0, 0), vec3(-1, 0, 0)), 0.001, 1e30, hr));
+    EXPECT_NEAR(hr.u, 0.5); // equator point (1,0,0)
+    EXPECT_NEAR(hr.v, 0.5);
+    quad q(vec3(0, 0, 0), vec3(1, 0, 0), vec3(0, 1, 0), m);
+    EXPECT_TRUE(q.hit(ray(vec3(0.25, 0.75, 1), vec3(0, 0, -1)), 0.001, 1e30, hr));
+    EXPECT_NEAR(hr.u, 0.25);
+    EXPECT_NEAR(hr.v, 0.75);
+    triangle t(vec3(0, 0, 0), vec3(1, 0, 0), vec3(0, 1, 0), m);
+    EXPECT_TRUE(t.hit(ray(vec3(0.2, 0.2, 1), vec3(0, 0, -1)), 0.001, 1e30, hr));
+    EXPECT_NEAR(hr.u + hr.v, 0.4); // barycentric weights preserved
+}
+static void t_ppm_obj() {
+    cur = "ppm";
+    // 2x2 P3 round-trip through temp dir (no committed asset needed).
+    std::string tmp = (std::filesystem::temp_directory_path() / "rt_tex_test.ppm").string();
+    {
+        std::ofstream f(tmp);
+        f << "P3\n2 2\n255\n255 0 0 0 255 0 0 0 255 255 255 255\n";
+    }
+    ppm_io::image img;
+    EXPECT_TRUE(ppm_io::read_ppm(tmp, img));
+    EXPECT_TRUE(img.w == 2 && img.h == 2);
+    EXPECT_NEAR(img.px[0].x(), 1); // top-left red
+    EXPECT_NEAR(img.px[3].x(), 1); // bottom-right white
+    EXPECT_NEAR(img.px[3].y(), 1);
+    image_texture itex(img.w, img.h, img.px);
+    EXPECT_NEAR(itex.value(0.25, 0.75, vec3()).x(), 1); // uv->top-left red
+    EXPECT_TRUE(!ppm_io::read_ppm(tmp + ".missing", img));
+
+    cur = "obj";
+    std::string cube = (std::filesystem::temp_directory_path() / "rt_cube_test.obj").string();
+    {
+        std::ofstream f(cube);
+        f << "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n";
+        f << "v 0 0 1\nv 1 0 1\nv 1 1 1\nv 0 1 1\n";
+        f << "f 1 2 3 4\nf 5 8 7 6\nf 1 5 6 2\nf 2 6 7 3\nf 3 7 8 4\nf 5 1 4 8\n";
+    }
+    auto m = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));
+    std::vector<std::shared_ptr<triangle>> tris;
+    EXPECT_TRUE(obj_loader::load_obj(cube, tris, m));
+    EXPECT_TRUE((int)tris.size() == 12); // 6 quads fan-split
+    EXPECT_TRUE(!obj_loader::load_obj(cube + ".missing", tris, m));
+    // Loaded mesh actually intersects.
+    hittable_list w;
+    for (auto &t : tris)
+        w.add(t);
+    hit_record hr;
+    EXPECT_TRUE(w.hit(ray(vec3(0.5, 0.5, 3), vec3(0, 0, -1)), 0.001, 1e30, hr));
+}
+
 int main() {
     t_vec3(); t_ray(); t_camera(); t_sphere(); t_list(); t_triangle_quad();
     t_materials(); t_sampler(); t_montecarlo(); t_onb_cosine(); t_emissive();
-    t_defocus(); t_rr(); t_aabb(); t_bvh();
+    t_defocus(); t_rr(); t_aabb(); t_bvh(); t_texture_uv(); t_ppm_obj();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

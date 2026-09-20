@@ -6,13 +6,17 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_executable(raytracer src/app/main.cpp)
 target_include_directories(raytracer PRIVATE src)
-
 if(MSVC)
     target_compile_options(raytracer PRIVATE /W4)
 else()
     target_compile_options(raytracer PRIVATE -Wall -Wextra)
 endif()
 
+# Mesh/texture assets next to the binary (main also tries CWD root).
+add_custom_command(TARGET raytracer POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:raytracer>/assets
+)
 enable_testing()
 add_executable(raytracer_tests tests/test_all.cpp)
 target_include_directories(raytracer_tests PRIVATE src)

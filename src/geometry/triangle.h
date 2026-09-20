@@ -34,6 +34,8 @@ public:
         vec3 outward = unit_vector(cross(e1, e2));
         rec.set_face_normal(r, outward);
         rec.mat = mat;
+        rec.u = u; // barycentric weights as UVs (sum <= 1)
+        rec.v = v;
         return true;
     }
 

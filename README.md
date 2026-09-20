@@ -38,4 +38,6 @@ M2 done: geometry + materials + lights.
 M3 done: stratified sampling + AA.
 M4 done: NEE + MIS path tracing, RR, defocus.
 M5 done: median BVH, tile thread pool, bench counters.
-Next: M6 GPU compute port.
+M6 done: headless Vulkan compute backend (rt_gpu), CPU parity.
+M7 done: textures + OBJ meshes, checker demo, GPU parity.
+Next: M8 film pipeline or CI.

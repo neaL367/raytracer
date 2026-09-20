@@ -3,6 +3,8 @@
 #include "core/random.h"
 #include "core/sampler.h"
 #include "core/bench_stats.h"
+#include "core/texture.h"
+#include "core/obj_loader.h"
 #include "camera/camera.h"
 #include "geometry/hittable.h"
 #include "geometry/sphere.h"
@@ -58,18 +60,31 @@ int main(int argc, char **argv) {
 
     std::vector<std::shared_ptr<hittable>> objs;
     std::vector<std::shared_ptr<quad>> lights;
-    auto ground_mat = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));
-    auto center_mat = std::make_shared<lambertian>(vec3(0.7, 0.3, 0.3));
+    // Checker ground (world-pos parity) + cube mesh replaces center sphere.
+    auto ground_mat =
+        std::make_shared<lambertian>(std::make_shared<checker>(4.0, vec3(0.8, 0.8, 0.8),
+                                                               vec3(0.3, 0.3, 0.3)));
+    auto cube_mat =
+        std::make_shared<lambertian>(std::make_shared<checker>(3.0, vec3(0.7, 0.3, 0.3),
+                                                               vec3(0.9, 0.9, 0.9)));
     auto left_mat = std::make_shared<metal>(vec3(0.8, 0.8, 0.8), 0.3);
     auto right_mat = std::make_shared<dielectric>(1.5);
     auto light_mat = std::make_shared<diffuse_light>(vec3(4, 4, 4));
 
     objs.push_back(std::make_shared<sphere>(vec3(0, -100.5, -1), 100, ground_mat));
-    objs.push_back(std::make_shared<sphere>(vec3(0, 0, -1), 0.5, center_mat));
+    std::vector<std::shared_ptr<triangle>> mesh;
+    if (!obj_loader::load_obj("assets/cube.obj", mesh, cube_mat)) {
+        // No asset (pared checkout): center sphere keeps binary working.
+        std::cerr << "assets/cube.obj missing: falling back to sphere\n";
+        objs.push_back(std::make_shared<sphere>(
+            vec3(0, 0, -1), 0.5,
+            std::make_shared<lambertian>(vec3(0.7, 0.3, 0.3))));
+    } else {
+        for (auto &t : mesh)
+            objs.push_back(t);
+    }
     objs.push_back(std::make_shared<sphere>(vec3(-1, 0, -1), 0.5, left_mat));
     objs.push_back(std::make_shared<sphere>(vec3(1, 0, -1), 0.5, right_mat));
-    objs.push_back(std::make_shared<triangle>(vec3(-0.3, -0.35, -0.6), vec3(0.3, -0.35, -0.6),
-                                              vec3(0, 0.1, -0.6), center_mat));
     auto light = std::make_shared<quad>(vec3(-1, 1.9, -2), vec3(2, 0, 0),
                                         vec3(0, 0, 2), light_mat);
     objs.push_back(light);

@@ -65,7 +65,7 @@ void wonb(vec3 n, out vec3 u, out vec3 v, out vec3 w) {
 
 // Closest hit across all prims. Returns material of winner.
 bool trace(vec3 o, vec3 d, float tmax, out float t, out vec3 n, out vec4 alb,
-           out vec4 emit, out vec4 params, out int light_idx) {
+           out vec4 alb2, out vec4 emit, out vec4 params, out int light_idx) {
     t = tmax;
     bool any = false;
     float tt;
@@ -76,6 +76,7 @@ bool trace(vec3 o, vec3 d, float tmax, out float t, out vec3 n, out vec4 alb,
             t = tt;
             n = nn;
             alb = spheres[i].alb;
+            alb2 = spheres[i].alb2;
             emit = spheres[i].emit;
             params = spheres[i].params;
             any = true;
@@ -85,6 +86,7 @@ bool trace(vec3 o, vec3 d, float tmax, out float t, out vec3 n, out vec4 alb,
             t = tt;
             n = nn;
             alb = quads[i].alb;
+            alb2 = quads[i].alb2;
             emit = quads[i].emit;
             params = quads[i].params;
             light_idx = (emit.x + emit.y + emit.z > 0.0) ? i : -1;
@@ -95,11 +97,18 @@ bool trace(vec3 o, vec3 d, float tmax, out float t, out vec3 n, out vec4 alb,
             t = tt;
             n = nn;
             alb = tris[i].alb;
+            alb2 = tris[i].alb2;
             emit = tris[i].emit;
             params = tris[i].params;
             any = true;
         }
     return any;
+}
+
+// World-pos checker, same parity rule as CPU (negative % stays odd).
+vec3 checker_col(vec3 p, vec3 even, vec3 odd, float scale) {
+    int s = int(floor(scale * p.x)) + int(floor(scale * p.y)) + int(floor(scale * p.z));
+    return (s % 2 == 0) ? even : odd;
 }
 
 float schlick(float cosT, float ri) {
@@ -117,9 +126,9 @@ vec3 Li(vec3 o, vec3 d) {
     for (int bounce = 0; bounce < 50; ++bounce) {
         float t;
         vec3 n;
-        vec4 alb, emit, params;
+        vec4 alb, alb2, emit, params;
         int light_idx;
-        if (!trace(o, d, 1e30, t, n, alb, emit, params, light_idx)) {
+        if (!trace(o, d, 1e30, t, n, alb, alb2, emit, params, light_idx)) {
             vec3 unit = normalize(d);
             float tt = 0.5 * (unit.y + 1.0);
             L += throughput * ((1.0 - tt) * vec3(1.0) + tt * vec3(0.5, 0.7, 1.0));
@@ -147,16 +156,20 @@ vec3 Li(vec3 o, vec3 d) {
             break;
         }
         int mtype = int(params.x + 0.5);
+        vec3 hitp0 = o + d * t;
+        // Type 4 = checker diffuse: world-pos parity like CPU texture.
+        vec3 base_alb = (mtype == 4) ? checker_col(hitp0, alb.xyz, alb2.xyz, params.y)
+                                     : alb.xyz;
         vec3 attenuation;
         vec3 sd;
         bool ok = true;
         bool diffuse = false;
-        if (mtype == 0) {
+        if (mtype == 0 || mtype == 4) {
             vec3 u, v, w;
             wonb(n, u, v, w);
             vec3 cd = wcosine_dir();
             sd = u * cd.x + v * cd.y + w * cd.z;
-            attenuation = alb.xyz;
+            attenuation = base_alb;
             diffuse = true;
         } else if (mtype == 1) {
             vec3 refl = reflect(normalize(d), n);
@@ -194,10 +207,10 @@ vec3 Li(vec3 o, vec3 d) {
             if (cosS > 0.0 && cosA > 0.0 && area > 0.0) {
                 float tt2;
                 vec3 nn2;
-                vec4 a2, e2, p2;
+                vec4 a2, ab2, e2, p2;
                 int lx2;
                 // Shadow probe: any hit before the light blocks.
-                bool blocked = trace(hitp, wi, dist - 0.001, tt2, nn2, a2, e2, p2, lx2);
+                bool blocked = trace(hitp, wi, dist - 0.001, tt2, nn2, a2, ab2, e2, p2, lx2);
                 // trace() tmin is 0.001 inside; but it also returns the
                 // light itself at ~dist: blocked only if something nearer.
                 blocked = blocked && tt2 < dist - 0.002;

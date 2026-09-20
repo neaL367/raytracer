@@ -32,6 +32,8 @@ public:
         rec.point = p;
         rec.set_face_normal(r, normal);
         rec.mat = mat;
+        rec.u = alpha; // parametric coords double as UVs
+        rec.v = beta;
         return true;
     }
 

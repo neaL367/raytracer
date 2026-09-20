@@ -30,6 +30,14 @@ public:
         vec3 outward = (rec.point - center) / radius;
         rec.set_face_normal(r, outward);
         rec.mat = mat;
+        // Spherical UVs: azimuth -> u, polar -> v. Seam at -x, poles pinch.
+        {
+            vec3 op = (rec.point - center) / radius;
+            double theta = std::acos(op.y() < -1 ? -1 : (op.y() > 1 ? 1 : op.y()));
+            double phi = std::atan2(-op.z(), op.x()) + 3.1415926535897932385;
+            rec.u = phi / (2 * 3.1415926535897932385);
+            rec.v = theta / 3.1415926535897932385;
+        }
         return true;
     }
 

@@ -3,6 +3,7 @@
 struct GPUSphere {
     vec4 c_r;
     vec4 alb;
+    vec4 alb2;
     vec4 emit;
     vec4 params; // mat_type, fuzz, ir, 0
 };
@@ -11,6 +12,7 @@ struct GPUQuad {
     vec4 u;
     vec4 v;
     vec4 alb;
+    vec4 alb2;
     vec4 emit;
     vec4 params; // mat_type, fuzz, ir, 0
 };
@@ -19,6 +21,7 @@ struct GPUTri {
     vec4 b;
     vec4 c;
     vec4 alb;
+    vec4 alb2;
     vec4 emit;
     vec4 params; // mat_type, fuzz, ir, 0
 };
