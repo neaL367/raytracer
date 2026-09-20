@@ -1,0 +1,41 @@
+#version 450
+// HDR bilateral denoise post-pass: mirrors CPU bilateral_denoise exactly
+// (R=2, sigma_s=1.5, sigma_r=0.15*(lc+0.1), luminance range weights,
+// out-of-bounds skipped, single iteration). Linear HDR in, linear HDR out.
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(binding = 0, rgba32f) readonly uniform image2D srcImg;
+layout(binding = 1, rgba32f) uniform image2D dstImg;
+layout(push_constant) uniform PC {
+    int W;
+    int H;
+}
+pc;
+
+float lum(vec3 c) {
+    return 0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z;
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= pc.W || p.y >= pc.H)
+        return;
+    vec3 c = imageLoad(srcImg, p).xyz;
+    float lc = lum(c);
+    float sr = 0.15 * (lc + 0.1);
+    float norm = 2.0 * sr * sr;
+    vec3 acc = vec3(0.0);
+    float wsum = 0.0;
+    for (int dy = -2; dy <= 2; ++dy) {
+        for (int dx = -2; dx <= 2; ++dx) {
+            ivec2 q = p + ivec2(dx, dy);
+            if (q.x < 0 || q.y < 0 || q.x >= pc.W || q.y >= pc.H)
+                continue;
+            vec3 n = imageLoad(srcImg, q).xyz;
+            float dl = lum(n) - lc;
+            float w = exp(-float(dx * dx + dy * dy) / 4.5) * exp(-(dl * dl) / norm);
+            acc += w * n;
+            wsum += w;
+        }
+    }
+    imageStore(dstImg, p, vec4(acc / wsum, 1.0));
+}

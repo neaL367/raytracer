@@ -2,7 +2,7 @@
 // args -> scene_data -> flat BVH -> dispatch -> PPM. Mechanics in
 // vk_compute.h, numbers in scene/scene.h via flatten.h.
 // Usage: rt_gpu [shader.spv] [out.ppm] [--spp N] [--seed S]
-//        [--scene NAME] [--width W] [--height H] [--hdr float.pfm]
+//        [--scene NAME] [--width W] [--height H] [--hdr float.pfm] [--denoise]
 #include "host_scene.h"
 #include "flatten.h"
 #include "vk_compute.h"
@@ -28,6 +28,7 @@ int main(int argc, char **argv) {
     int spp = 16, seed = 42;
     std::string scene_name = "default";
     std::string hdr_path; // empty = no float dump
+    bool do_denoise = false;
     double shutter0 = 0, shutter1 = 0, fog_density = 0;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -48,6 +49,8 @@ int main(int argc, char **argv) {
             H = std::max(8, std::atoi(argv[++i]));
         else if (a == "--hdr" && i + 1 < argc)
             hdr_path = argv[++i];
+        else if (a == "--denoise")
+            do_denoise = true;
         else if (a.ends_with(".spv"))
             shader = a;
         else if (a.ends_with(".ppm"))
@@ -134,6 +137,15 @@ int main(int argc, char **argv) {
     push11[10] = (uint32_t)nfog;
     std::vector<float> rgba;
     double dispatch_ms = gpu_run(gpu, shader, push11, rgba);
+    double denoise_ms = 0;
+    if (do_denoise) {
+        // Bilateral post-pass on device (linear HDR); needs the denoise
+        // shader next to the path shader (same SHADER_DIR).
+        std::string dsh = shader.substr(0, shader.find_last_of("/\\") + 1) + "denoise.spv";
+        std::vector<float> smooth;
+        denoise_ms = gpu_denoise(gpu, dsh, rgba, smooth);
+        rgba = std::move(smooth);
+    }
 
     // Image rows top-first -> flip for PPM writer (bottom-first).
     std::vector<vec3> fb((size_t)W * H);
@@ -156,6 +168,9 @@ int main(int argc, char **argv) {
     auto t1 = std::chrono::high_resolution_clock::now();
     std::cout << "wrote " << out_path << " spp=" << spp
               << " dispatch=" << dispatch_ms << "ms wall="
-              << std::chrono::duration<double>(t1 - t0).count() << "s\n";
+              << std::chrono::duration<double>(t1 - t0).count() << "s";
+    if (do_denoise)
+        std::cout << " denoise=" << denoise_ms << "ms";
+    std::cout << "\n";
     return 0;
 }
