@@ -62,10 +62,18 @@ public:
             v = 0;
         if (v > 1)
             v = 1;
-        // v=0 is bottom; image row 0 is top.
-        int x = (int)(u * (W - 1) + 0.5);
-        int y = (int)((1 - v) * (H - 1) + 0.5);
-        return pixels[(size_t)y * W + x];
+        // Bilinear, v=0 bottom vs row 0 top. Edges clamp (x1/y1 pinned).
+        double fx = u * (W - 1), fy = (1 - v) * (H - 1);
+        int x0 = (int)fx, y0 = (int)fy;
+        int x1 = x0 + 1 < W ? x0 + 1 : x0;
+        int y1 = y0 + 1 < H ? y0 + 1 : y0;
+        double tx = fx - x0, ty = fy - y0;
+        const vec3 &c00 = pixels[(size_t)y0 * W + x0];
+        const vec3 &c10 = pixels[(size_t)y0 * W + x1];
+        const vec3 &c01 = pixels[(size_t)y1 * W + x0];
+        const vec3 &c11 = pixels[(size_t)y1 * W + x1];
+        return c00 * ((1 - tx) * (1 - ty)) + c10 * (tx * (1 - ty)) +
+               c01 * ((1 - tx) * ty) + c11 * (tx * ty);
     }
     int width() const { return W; }
     int height() const { return H; }

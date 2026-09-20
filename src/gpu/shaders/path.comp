@@ -71,13 +71,24 @@ bool trace(vec3 o, vec3 d, float tmax, out float t, out vec3 n, out vec4 alb,
     return any;
 }
 
-// Nearest image sample, same convention as CPU image_texture.
+// Bilinear image sample, same edge math as CPU image_texture.
 vec3 image_sample(vec2 uv) {
     float u = clamp(uv.x, 0.0, 1.0);
     float v = clamp(uv.y, 0.0, 1.0);
-    int x = int(u * float(pc.imgW - 1) + 0.5);
-    int y = int((1.0 - v) * float(pc.imgH - 1) + 0.5);
-    return imgTex[y * pc.imgW + x].xyz;
+    float fx = u * float(pc.imgW - 1);
+    float fy = (1.0 - v) * float(pc.imgH - 1);
+    int x0 = int(floor(fx));
+    int y0 = int(floor(fy));
+    int x1 = min(x0 + 1, pc.imgW - 1);
+    int y1 = min(y0 + 1, pc.imgH - 1);
+    float tx = fx - float(x0);
+    float ty = fy - float(y0);
+    vec3 c00 = imgTex[y0 * pc.imgW + x0].xyz;
+    vec3 c10 = imgTex[y0 * pc.imgW + x1].xyz;
+    vec3 c01 = imgTex[y1 * pc.imgW + x0].xyz;
+    vec3 c11 = imgTex[y1 * pc.imgW + x1].xyz;
+    return c00 * ((1.0 - tx) * (1.0 - ty)) + c10 * (tx * (1.0 - ty)) +
+           c01 * ((1.0 - tx) * ty) + c11 * (tx * ty);
 }
 
 // World-pos checker, same parity rule as CPU (negative % stays odd).

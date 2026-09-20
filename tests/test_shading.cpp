@@ -93,7 +93,11 @@ static void t_ppm() {
     EXPECT_NEAR(img.px[3].x(), 1); // bottom-right white
     EXPECT_NEAR(img.px[3].y(), 1);
     image_texture itex(img.w, img.h, img.px);
-    EXPECT_NEAR(itex.value(0.25, 0.75, vec3()).x(), 1); // uv->top-left red
+    // Bilinear: corners exact, center blends to gray.
+    EXPECT_NEAR(itex.value(0.0, 1.0, vec3()).x(), 1); // top-left red
+    vec3 mid = itex.value(0.5, 0.5, vec3());
+    EXPECT_TRUE(fabs(mid.x() - 0.5) < 1e-9 && fabs(mid.y() - 0.5) < 1e-9 &&
+                fabs(mid.z() - 0.5) < 1e-9);
     EXPECT_TRUE(!ppm_io::read_ppm(tmp + ".missing", img));
 }
 
