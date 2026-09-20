@@ -53,4 +53,5 @@ M17 done: multi-image registry, two-photo demo, parity 0.2%.
 M18 done: mesh UV mapping, photo-per-face cube, parity 0.2%.
 M19 done: motion blur via shutter + moving spheres, defaults frozen.
 M20 done: constant-density fog volumes, opt-in glow.
+M21 done: GPU motion + fog parity, path-time inheritance.
 Next: pick slice.

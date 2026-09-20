@@ -65,6 +65,11 @@ public:
     // GPU flatten accessors (pure data out, no traversal knowledge).
     // Static-scene upload uses t=tm0 endpoint (motion mirror flagged).
     const vec3 &center_ref() const { return c0; }
+    const vec3 &center1_ref() const { return c1; }
+    void time_range(double &t0, double &t1) const {
+        t0 = tm0;
+        t1 = tm1;
+    }
     double radius_val() const { return radius; }
     std::shared_ptr<material> mat_ptr() const { return mat; }
 

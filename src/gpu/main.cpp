@@ -12,7 +12,9 @@
 #include "core/vec3.h"
 
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -24,6 +26,7 @@ int main(int argc, char **argv) {
     std::string out_path = "out/gpu_grad.ppm";
     int spp = 16, seed = 42;
     std::string scene_name = "default";
+    double shutter0 = 0, shutter1 = 0, fog_density = 0;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--spp" && i + 1 < argc)
@@ -32,6 +35,11 @@ int main(int argc, char **argv) {
             seed = std::atoi(argv[++i]);
         else if (a == "--scene" && i + 1 < argc)
             scene_name = argv[++i];
+        else if (a == "--shutter" && i + 2 < argc) {
+            shutter0 = std::atof(argv[++i]);
+            shutter1 = std::atof(argv[++i]);
+        } else if (a == "--fog" && i + 1 < argc)
+            fog_density = std::max(0.0, std::atof(argv[++i]));
         else if (a == "--width" && i + 1 < argc)
             W = std::max(8, std::atoi(argv[++i]));
         else if (a == "--height" && i + 1 < argc)
@@ -47,7 +55,8 @@ int main(int argc, char **argv) {
 
     // One construction order with the CPU (scene/scene.h): flatten the
     // same scene to typed arrays + BVH nodes instead of hardcoded data.
-    scene_data sdata = build_scene(scene_name, (double)W / (double)H, 0.0);
+    scene_data sdata =
+        build_scene(scene_name, (double)W / (double)H, 0.0, shutter0, shutter1, fog_density);
     flat_scene flat;
     if (!flatten_scene(sdata, flat)) {
         std::cerr << "scene has non-exportable shapes\n";
@@ -84,10 +93,24 @@ int main(int argc, char **argv) {
                              flat.refs.size() * sizeof(GPURef), img_bytes, tab_bytes};
     gpu_set_scene(gpu, data, bytes);
 
-    int push8[8] = {W, H, (int)scene.spheres.size(), (int)scene.quads.size(),
-                    (int)scene.tris.size(), spp, seed, flat.nlights};
+    uint32_t push10[10] = {(uint32_t)W,         (uint32_t)H,
+                           (uint32_t)scene.spheres.size(),
+                           (uint32_t)scene.quads.size(), (uint32_t)scene.tris.size(),
+                           (uint32_t)spp,                (uint32_t)seed,
+                           (uint32_t)flat.nlights,       0, 0};
+    float shf[2] = {(float)shutter0, (float)shutter1};
+    std::memcpy(&push10[8], shf, sizeof shf);
+    // Fog-slot count gates fog RNG draws (static streams bit-exact).
+    int nfog = 0;
+    for (const auto &s : scene.spheres)
+        if (s.prm[0] == 6)
+            nfog++;
+    uint32_t push11[11];
+    for (int k = 0; k < 10; ++k)
+        push11[k] = push10[k];
+    push11[10] = (uint32_t)nfog;
     std::vector<float> rgba;
-    double dispatch_ms = gpu_run(gpu, shader, push8, rgba);
+    double dispatch_ms = gpu_run(gpu, shader, push11, rgba);
 
     // Image rows top-first -> flip for PPM writer (bottom-first).
     std::vector<vec3> fb((size_t)W * H);

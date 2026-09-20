@@ -46,6 +46,11 @@ public:
 
     bool bounding_box(aabb &box) const override { return border->bounding_box(box); }
 
+    // GPU flatten accessors (fog uploads as a type-6 sphere slot).
+    const std::shared_ptr<hittable> &border_ref() const { return border; }
+    double density_val() const { return -1.0 / neg_inv_density; }
+    std::shared_ptr<material> phase_ref() const { return mat; }
+
 private:
     std::shared_ptr<hittable> border;
     double neg_inv_density;

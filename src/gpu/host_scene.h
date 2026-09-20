@@ -7,7 +7,9 @@
 #include <vector>
 
 struct GPUSphere {
-    float c[4], alb[4], alb2[4], emit[4], prm[4]; // c.w=radius; prm=(type,fuzz,ir,0)
+    float c[4], c1[4], tm[4], alb[4], alb2[4], emit[4], prm[4]; // c.w=radius
+    // prm=(type,fuzz,ir,motionflag); tm=(t0,t1,0,0); type 6 = fog volume
+    // (boundary in c, density in prm.y, albedo in alb)
 };
 struct GPUQuad {
     float Q[4], u[4], v[4], alb[4], alb2[4], emit[4], prm[4];

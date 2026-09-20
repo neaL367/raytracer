@@ -96,8 +96,8 @@ public:
                 if (cosS > 0 && cosA > 0 && light->area() > 0) {
                     hit_record tmp;
                     count_ray(); // shadow ray
-                    bool blocked = world.hit(ray(rec.point, wi), 0.001,
-                                             dist - 0.001, tmp);
+                    ray shadow(rec.point, wi, cur.time());
+                    bool blocked = world.hit(shadow, 0.001, dist - 0.001, tmp);
                     if (!blocked) {
                         vec3 light_Le = light->mat_ptr()->emitted();
                         double pdf_l = dist * dist /
@@ -123,6 +123,7 @@ public:
                 specular = true; // delta bounce: light hits count full
             }
             prev_point = rec.point;
+            scattered.set_time(cur.time()); // path shares primary time
             cur = scattered;
             count_ray(); // bounce ray
 

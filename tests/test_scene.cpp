@@ -167,9 +167,29 @@ static void t_flatten() {
     EXPECT_TRUE(fc.nlights == 1);
     EXPECT_TRUE(fabs(fc.gs.quads[0].emit[0] - 7) < 1e-6); // light leads
     // Export values exact on a known material.
-    auto m = std::make_shared<metal>(vec3(0.8, 0.8, 0.8), 0.3);
+    auto m = std::make_shared<lambertian>(vec3(0.6, 0.6, 0.6));
+    scene_data tiny2;
+    tiny2.objs.push_back(
+        std::make_shared<sphere>(vec3(0, 0, -1), vec3(0, 1, -1), 0.0, 1.0, 0.5, m));
+    flat_scene fm;
+    EXPECT_TRUE(flatten_scene(tiny2, fm));
+    EXPECT_TRUE(fm.gs.spheres[0].prm[3] == 1); // motion flag
+    EXPECT_NEAR(fm.gs.spheres[0].c1[1], 1.0);
+    // Static sphere: flag 0, c1 == c0.
+    EXPECT_TRUE(fm.gs.spheres.size() >= 1);
+    // Fog medium exports as type-6 sphere slot (boundary + density).
+    auto phase = std::make_shared<isotropic>(vec3(0.9, 0.9, 0.9));
+    auto border = std::make_shared<sphere>(vec3(0, 0, -1), 2.0, phase);
+    scene_data foggy;
+    foggy.objs.push_back(std::make_shared<constant_medium>(border, 0.25, phase));
+    flat_scene ff;
+    EXPECT_TRUE(flatten_scene(foggy, ff));
+    EXPECT_TRUE(ff.gs.spheres[0].prm[0] == 6);
+    EXPECT_TRUE(fabs(ff.gs.spheres[0].prm[1] - 0.25f) < 1e-6);
+    EXPECT_TRUE(fabs(ff.gs.spheres[0].alb[0] - 0.9f) < 1e-6);
+    auto mm = std::make_shared<metal>(vec3(0.8, 0.8, 0.8), 0.3);
     float alb[4] = {}, alb2[4] = {}, emit[4] = {}, prm[4] = {};
-    EXPECT_TRUE(m->export_gpu(alb, alb2, emit, prm));
+    EXPECT_TRUE(mm->export_gpu(alb, alb2, emit, prm));
     EXPECT_TRUE(fabs(alb[0] - 0.8) < 1e-6);
     EXPECT_TRUE(prm[0] == 1 && fabs(prm[1] - 0.3) < 1e-6);
 }

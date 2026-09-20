@@ -2,10 +2,12 @@
 // Brute-force list (6 prims); GPU BVH flagged later like CPU M2->M5.
 struct GPUSphere {
     vec4 c_r;
+    vec4 c1;
+    vec4 tm; // (t0, t1, *, *) motion range; c0==c1 when static
     vec4 alb;
     vec4 alb2;
     vec4 emit;
-    vec4 params; // mat_type, fuzz, ir, 0
+    vec4 params; // mat_type, fuzz, ir, motionflag (fog: type 6, density)
 };
 struct GPUQuad {
     vec4 Q;
@@ -45,9 +47,13 @@ struct GPUCam {
     vec4 vert;
 };
 
-bool hit_sphere(vec3 o, vec3 d, float tmin, float tmax, GPUSphere s,
+bool hit_sphere(vec3 o, vec3 d, float rtime, float tmin, float tmax, GPUSphere s,
                 out float t, out vec3 n, out vec2 uv) {
-    vec3 oc = o - s.c_r.xyz;
+    // Motion lerp mirrors CPU (clamped); static spheres no-op (c0==c1).
+    float f = (s.tm.y > s.tm.x) ? clamp((rtime - s.tm.x) / (s.tm.y - s.tm.x), 0.0, 1.0)
+                                : 0.0;
+    vec3 cen = mix(s.c_r.xyz, s.c1.xyz, f);
+    vec3 oc = o - cen;
     float a = dot(d, d);
     float hb = dot(oc, d);
     float c = dot(oc, oc) - s.c_r.w * s.c_r.w;
@@ -62,9 +68,9 @@ bool hit_sphere(vec3 o, vec3 d, float tmin, float tmax, GPUSphere s,
             return false;
     }
     t = root;
-    n = (o + d * root - s.c_r.xyz) / s.c_r.w;
+    n = (o + d * root - cen) / s.c_r.w;
     // Spherical UVs mirror the CPU (azimuth u, polar v).
-    vec3 op = (o + d * root - s.c_r.xyz) / s.c_r.w;
+    vec3 op = (o + d * root - cen) / s.c_r.w;
     uv = vec2((atan(-op.z, op.x) + 3.14159265) / 6.2831853,
               acos(clamp(op.y, -1.0, 1.0)) / 3.14159265);
     return true;
@@ -154,10 +160,41 @@ bool hit_box(vec3 o, vec3 d, float tmin, float tmax, vec3 bmin, vec3 bmax) {
 }
 
 // Iterative BVH walk, explicit 32-stack, left-first. Same closest-hit
+// contract as brute force (narrowing tmax); fog slots pass through
+// here (volume events come from fog_event, mirroring the CPU where
+// the boundary never shades).
+//
+// Nearest fog event (type-6 slots) along the ray: boundary chord vs
+// exponential sample with caller RNG. Mirrors CPU constant_medium:
+// entry clamps to tmin (rays born inside still scatter), then exit.
+bool fog_event(vec3 o, vec3 d, float rtime, int ns, float u01, float tmax,
+               out float tevent, out vec3 talb) {
+    tevent = 1e30;
+    bool any = false;
+    for (int i = 0; i < ns; ++i) {
+        if (spheres[i].params.x != 6.0)
+            continue;
+        float te, tx;
+        vec3 dn;
+        vec2 duv;
+        if (!hit_sphere(o, d, rtime, -1e30, tmax, spheres[i], te, dn, duv))
+            continue;
+        te = max(te, 0.001);
+        if (!hit_sphere(o, d, rtime, te + 0.01, tmax, spheres[i], tx, dn, duv))
+            continue;
+        float s = -log(max(u01, 1e-7)) / max(spheres[i].params.y, 1e-7);
+        if (s < tx - te && te + s < tevent) {
+            tevent = te + s;
+            talb = spheres[i].alb.xyz;
+            any = true;
+        }
+    }
+    return any;
+}
 // contract as the old brute loops (narrowing tmax), so kernels just swap.
-void traverse(vec3 o, vec3 d, float tmax, out float t, out vec3 n, out vec4 alb,
-              out vec4 alb2, out vec4 emit, out vec4 params, out int light_idx,
-              out vec2 huv, out bool any) {
+void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
+              out vec4 alb, out vec4 alb2, out vec4 emit, out vec4 params,
+              out int light_idx, out vec2 huv, out bool any) {
     int stack[32];
     int sp = 0;
     stack[sp++] = 0;
@@ -176,7 +213,7 @@ void traverse(vec3 o, vec3 d, float tmax, out float t, out vec3 n, out vec4 alb,
                 vec3 nn;
                 vec2 uv;
                 if (ref.ti.x == 0) {
-                    if (!hit_sphere(o, d, 0.001, t, spheres[ref.ti.y], tt, nn, uv))
+                    if (!hit_sphere(o, d, rtime, 0.001, t, spheres[ref.ti.y], tt, nn, uv))
                         continue;
                     GPUSphere s = spheres[ref.ti.y];
                     t = tt;
@@ -223,4 +260,44 @@ void traverse(vec3 o, vec3 d, float tmax, out float t, out vec3 n, out vec4 alb,
             stack[sp++] = nd.lrsc.x; // left pops first
         }
     }
+}
+
+// Solid-surface trace: fog slots pass through (up to 4 boundaries).
+// Mirrors CPU where the medium boundary never shades. Returned t is
+// absolute from o (travelled distance accumulated across passes).
+bool trace_solid(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
+                 out vec4 alb, out vec4 alb2, out vec4 emit, out vec4 params,
+                 out int light_idx, out vec2 huv) {
+    vec3 oo = o;
+    float trav = 0.0;
+    for (int k = 0; k < 4; ++k) {
+        bool any;
+        traverse(oo, d, rtime, tmax - trav, t, n, alb, alb2, emit, params, light_idx,
+                 huv, any);
+        if (!any)
+            return false;
+        if (params.x != 6.0) {
+            t = trav + t;
+            return true;
+        }
+        trav += t + 0.01;
+        oo = o + d * trav;
+    }
+    return false;
+}
+
+// Shadow probe mirrors CPU: blocked by fog events OR solid surfaces
+// before the light (medium competes by t on the CPU too).
+bool shadow_occluded(vec3 o, vec3 wi, float rtime, int ns, float u01, float dist) {
+    float fev;
+    vec3 fa;
+    if (fog_event(o, wi, rtime, ns, u01, dist - 0.001, fev, fa))
+        return true;
+    float t;
+    vec3 n;
+    vec4 alb, alb2, emit, params;
+    int light_idx;
+    vec2 huv;
+    return trace_solid(o, wi, rtime, dist - 0.001, t, n, alb, alb2, emit, params,
+                       light_idx, huv);
 }

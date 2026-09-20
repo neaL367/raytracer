@@ -99,6 +99,29 @@ inline void fill_material(flat_scene &out, const std::shared_ptr<material> &m, f
 inline bool push_prim(flat_scene &out, std::map<const hittable *, std::pair<int, int>> &id,
                       const std::shared_ptr<hittable> &o) {
     gpu_scene &gs = out.gs;
+    // Fog volumes upload as type-6 sphere slots (boundary + density).
+    // Non-sphere borders fail loudly (demo uses spheres).
+    if (auto m = std::dynamic_pointer_cast<constant_medium>(o)) {
+        auto b = std::dynamic_pointer_cast<sphere>(m->border_ref());
+        if (!b)
+            return false;
+        GPUSphere g{};
+        vec3 c = b->center_ref();
+        g.c[0] = (float)c.x();
+        g.c[1] = (float)c.y();
+        g.c[2] = (float)c.z();
+        g.c[3] = (float)b->radius_val();
+        hit_record dummy;
+        vec3 alb = m->phase_ref()->surface_albedo(dummy);
+        g.alb[0] = (float)alb.x();
+        g.alb[1] = (float)alb.y();
+        g.alb[2] = (float)alb.z();
+        g.prm[0] = 6;
+        g.prm[1] = (float)m->density_val();
+        id[o.get()] = {0, (int)gs.spheres.size()};
+        gs.spheres.push_back(g);
+        return true;
+    }
     if (auto s = std::dynamic_pointer_cast<sphere>(o)) {
         GPUSphere g{};
         vec3 c = s->center_ref();
@@ -106,7 +129,18 @@ inline bool push_prim(flat_scene &out, std::map<const hittable *, std::pair<int,
         g.c[1] = (float)c.y();
         g.c[2] = (float)c.z();
         g.c[3] = (float)s->radius_val();
+        vec3 c1 = s->center1_ref();
+        g.c1[0] = (float)c1.x();
+        g.c1[1] = (float)c1.y();
+        g.c1[2] = (float)c1.z();
+        double t0 = 0, t1 = 1;
+        s->time_range(t0, t1);
+        g.tm[0] = (float)t0;
+        g.tm[1] = (float)t1;
         fill_material(out, s->mat_ptr(), g.alb, g.alb2, g.emit, g.prm);
+        // Motion flag: centers differ (static spheres keep c0, flag 0).
+        if (c.x() != c1.x() || c.y() != c1.y() || c.z() != c1.z())
+            g.prm[3] = 1;
         id[o.get()] = {0, (int)gs.spheres.size()};
         gs.spheres.push_back(g);
         return true;
@@ -199,10 +233,16 @@ inline int flatten_node(const bvh_node &n, std::vector<GPUNode> &nodes,
 inline bool flatten_scene(const scene_data &scene, flat_scene &out) {
     out = flat_scene{};
     // Reject unknown shapes up front (image textures unlimited now).
-    for (const auto &o : scene.objs)
-        if (!std::dynamic_pointer_cast<sphere>(o) && !std::dynamic_pointer_cast<quad>(o) &&
-            !std::dynamic_pointer_cast<triangle>(o))
-            return false;
+    // Fog media allowed only over sphere borders (demo scope).
+    for (const auto &o : scene.objs) {
+        if (std::dynamic_pointer_cast<sphere>(o) || std::dynamic_pointer_cast<quad>(o) ||
+            std::dynamic_pointer_cast<triangle>(o))
+            continue;
+        auto med = std::dynamic_pointer_cast<constant_medium>(o);
+        if (med && std::dynamic_pointer_cast<sphere>(med->border_ref()))
+            continue;
+        return false;
+    }
     std::vector<std::shared_ptr<hittable>> ordered = scene.objs;
     std::stable_partition(
         ordered.begin(), ordered.end(), [](const std::shared_ptr<hittable> &o) {

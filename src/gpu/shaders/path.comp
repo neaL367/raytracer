@@ -27,6 +27,9 @@ layout(push_constant) uniform PC {
     int spp;
     int seed;
     int nlights; // leading quads are emissive
+    float sh0;
+    float sh1; // shutter span (closed when equal)
+    int nfog; // type-6 slots present (gates fog RNG draws)
 }
 pc;
 
@@ -63,16 +66,6 @@ void wonb(vec3 n, out vec3 u, out vec3 v, out vec3 w) {
     u = cross(v, w);
 }
 
-// Closest hit: BVH walk from common.glsl (same contract as the old
-// brute loops, now logarithmic). Shadow probes share it.
-bool trace(vec3 o, vec3 d, float tmax, out float t, out vec3 n, out vec4 alb,
-           out vec4 alb2, out vec4 emit, out vec4 params, out int light_idx,
-           out vec2 huv) {
-    bool any;
-    traverse(o, d, tmax, t, n, alb, alb2, emit, params, light_idx, huv, any);
-    return any;
-}
-
 // Bilinear image sample, same edge math as CPU image_texture.
 vec3 image_sample(vec2 uv, int img_idx) {
     ivec4 entry = imgTab[img_idx];
@@ -107,7 +100,7 @@ float schlick(float cosT, float ri) {
     return r0 + (1.0 - r0) * pow(1.0 - cosT, 5.0);
 }
 
-vec3 Li(vec3 o, vec3 d) {
+vec3 Li(vec3 o, vec3 d, float rtime) {
     vec3 throughput = vec3(1.0);
     vec3 L = vec3(0.0);
     vec3 prev = o;
@@ -119,11 +112,43 @@ vec3 Li(vec3 o, vec3 d) {
         vec4 alb, alb2, emit, params;
         int light_idx;
         vec2 huv;
-        if (!trace(o, d, 1e30, t, n, alb, alb2, emit, params, light_idx, huv)) {
+        // Fog event (shared helper) vs solid surface: nearest wins.
+        // RNG drawn only when fog exists: static streams bit-exact.
+        float fog_t = 1e30;
+        vec3 fog_alb = vec3(0.0);
+        bool has_fog = false;
+        if (pc.nfog > 0)
+            has_fog = fog_event(o, d, rtime, pc.ns, wrandf(), 1e30, fog_t, fog_alb);
+        if (!trace_solid(o, d, rtime, 1e30, t, n, alb, alb2, emit, params, light_idx,
+                         huv)) {
             vec3 unit = normalize(d);
             float tt = 0.5 * (unit.y + 1.0);
             L += throughput * ((1.0 - tt) * vec3(1.0) + tt * vec3(0.5, 0.7, 1.0));
             break;
+        }
+        if (!trace_solid(o, d, rtime, 1e30, t, n, alb, alb2, emit, params, light_idx,
+                         huv)) {
+            vec3 unit = normalize(d);
+            float tt = 0.5 * (unit.y + 1.0);
+            L += throughput * ((1.0 - tt) * vec3(1.0) + tt * vec3(0.5, 0.7, 1.0));
+            break;
+        }
+        if (has_fog && fog_t < t) {
+            // Volume event wins: isotropic continue, specular-style MIS.
+            // wrand_in_sphere never returns 0 (unit fallback), so normalize
+            // is safe directly.
+            throughput *= fog_alb;
+            o = o + d * fog_t;
+            prev = o;
+            d = normalize(wrand_in_sphere());
+            specular = true;
+            if (bounce >= 3) {
+                float q = min(max(max(throughput.x, throughput.y), throughput.z), 0.95);
+                if (q <= 0.0 || wrandf() > q)
+                    break;
+                throughput /= q;
+            }
+            continue;
         }
         if (emit.x + emit.y + emit.z > 0.0) {
             if (specular) {
@@ -198,16 +223,23 @@ vec3 Li(vec3 o, vec3 d) {
             float cosA = abs(dot(ln, -wi));
             float area = length(cross(lq.u.xyz, lq.v.xyz));
             if (cosS > 0.0 && cosA > 0.0 && area > 0.0) {
-                float tt2;
-                vec3 nn2;
-                vec4 a2, ab2, e2, p2;
-                vec2 huv2;
-                int lx2;
-                // Shadow probe: any hit before the light blocks.
-                bool blocked = trace(hitp, wi, dist - 0.001, tt2, nn2, a2, ab2, e2, p2, lx2, huv2);
-                // trace() tmin is 0.001 inside; but it also returns the
-                // light itself at ~dist: blocked only if something nearer.
-                blocked = blocked && tt2 < dist - 0.002;
+                // Shadow probe mirrors CPU: fog events or solid surfaces
+                // before the light block (medium competes by t there too).
+                // The light itself at ~dist never blocks (range excludes it).
+                // Fog RNG gated: static streams stay bit-exact.
+                bool blocked;
+                if (pc.nfog > 0) {
+                    blocked = shadow_occluded(hitp, wi, rtime, pc.ns, wrandf(),
+                                              dist - 0.001);
+                } else {
+                    float tt2;
+                    vec3 nn2;
+                    vec4 a2, ab2, e2, p2;
+                    vec2 huv2;
+                    int lx2;
+                    blocked = trace_solid(hitp, wi, rtime, dist - 0.001, tt2, nn2, a2,
+                                          ab2, e2, p2, lx2, huv2);
+                }
                 if (!blocked) {
                     float pdf_l = dist * dist / (float(pc.nlights) * area * cosA);
                     float pdf_b = cosS / 3.14159265;
@@ -260,7 +292,11 @@ void main() {
             float v = 1.0 - (float(p.y) + oy) / float(pc.H);
             vec3 o = cam.origin.xyz;
             vec3 d = cam.lower_left.xyz + u * cam.horiz.xyz + v * cam.vert.xyz - o;
-            acc += Li(o, d);
+            // Shutter sample mirrors CPU (drawn last, stream order kept).
+            float rt = (pc.sh1 > pc.sh0)
+                           ? pc.sh0 + wrandf() * (pc.sh1 - pc.sh0)
+                           : pc.sh0;
+            acc += Li(o, d, rt);
             ++n;
         }
     acc /= float(n);

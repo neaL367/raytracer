@@ -13,6 +13,9 @@ public:
     vec3 direction() const { return dir; }
     vec3 at(double t) const { return orig + t * dir; }
     double time() const { return tm; }
+    // Path time inheritance: scattered/shadow rays keep the primary's
+    // time (motion consistency down the whole path, not just primaries).
+    void set_time(double t) { tm = t; }
 
 private:
     vec3 orig;
