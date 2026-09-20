@@ -15,6 +15,18 @@
 // Loop (not recursion): throughput accumulates, L sums weighted emission.
 // Specular (delta) bounces skip NEE and count light hits full; diffuse
 // BSDF hits weight by MIS. Camera-ray light hits count full.
+// First-hit AOV query: albedo + world normal, no bounce, no RNG.
+// Guide draws never perturb the beauty stream (pure function of ray).
+inline void first_hit_aov(const ray &r, const hittable &world, vec3 &albedo, vec3 &normal,
+                          bool &hit) {
+    hit_record rec;
+    hit = world.hit(r, 0.001, 1e30, rec);
+    if (!hit)
+        return;
+    albedo = rec.mat->surface_albedo(rec);
+    normal = rec.normal;
+}
+
 class integrator {
 public:
     vec3 Li(const ray &r, const hittable &world,

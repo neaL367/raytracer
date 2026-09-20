@@ -7,6 +7,8 @@
 #include "geometry/hittable.h"
 #include "geometry/quad.h"
 #include "material/material.h"
+#include "geometry/sphere.h"
+#include "integrator/integrator.h"
 #include "io/ppm_image.h"
 #include "io/denoise.h"
 #include "output/film.h"
@@ -149,6 +151,57 @@ static void t_denoise() {
     EXPECT_TRUE(den_res < raw_res); // noise energy falls
 }
 
+static void t_aov() {
+    test_current = "aov";
+    rng_seed(70);
+    auto m = std::make_shared<lambertian>(
+        std::make_shared<checker>(1.0, vec3(1, 0, 0), vec3(0, 0, 1)));
+    hittable_list w;
+    w.add(std::make_shared<sphere>(vec3(0, 0, -1), 0.5, m));
+    vec3 alb, nrm;
+    bool hit = false;
+    // Ray at sphere front (0,0,-0.5): floor(-0.5)=-1 -> odd cell -> blue.
+    first_hit_aov(ray(vec3(0, 0, 0), vec3(0, 0, -1)), w, alb, nrm, hit);
+    EXPECT_TRUE(hit);
+    EXPECT_NEAR(alb.z(), 1);
+    EXPECT_NEAR(nrm.z(), 1); // outward front normal
+    // Miss: flag false, buffers stay zero.
+    first_hit_aov(ray(vec3(0, 0, 0), vec3(0, 1, 0)), w, alb, nrm, hit);
+    EXPECT_TRUE(!hit);
+}
+
+static void t_joint() {
+    test_current = "joint";
+    // Textured step: albedo edge red|blue, beauty = albedo*0.6 + noise.
+    // Plain bilateral blurs the edge; joint must keep it and win residual.
+    const int S = 16;
+    rng_seed(71);
+    std::vector<vec3> alb(S * S), nrm(S * S), truth(S * S), noisy(S * S);
+    for (int y = 0; y < S; ++y)
+        for (int x = 0; x < S; ++x) {
+            vec3 a = (x < S / 2) ? vec3(1, 0, 0) : vec3(0, 0, 1);
+            alb[(size_t)y * S + x] = a;
+            nrm[(size_t)y * S + x] = vec3(0, 1, 0);
+            truth[(size_t)y * S + x] = a * 0.6;
+            double n = (random_double() - 0.5) * 0.3;
+            noisy[(size_t)y * S + x] = a * 0.6 + vec3(n, n, n);
+        }
+    auto plain = bilateral_denoise(noisy, S, S);
+    auto joint = joint_bilateral_denoise(noisy, alb, nrm, S, S);
+    auto res = [&](const std::vector<vec3> &v) {
+        double s = 0;
+        for (size_t i = 0; i < v.size(); ++i) {
+            vec3 d = v[i] - truth[i];
+            s += d.length_squared();
+        }
+        return s / v.size();
+    };
+    EXPECT_TRUE(res(joint) < res(plain)); // guides beat blind
+    // Edge pixels stay on their own side (no cross-bleed past middle).
+    EXPECT_TRUE(joint[(size_t)8 * S + 7].x() > joint[(size_t)8 * S + 7].z());
+    EXPECT_TRUE(joint[(size_t)8 * S + 8].z() > joint[(size_t)8 * S + 8].x());
+}
+
 void run_shading_tests() {
     t_materials();
     t_texture();
@@ -156,4 +209,6 @@ void run_shading_tests() {
     t_ppm();
     t_film();
     t_denoise();
+    t_aov();
+    t_joint();
 }

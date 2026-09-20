@@ -44,4 +44,5 @@ M8 done: exposure + ACES + sRGB film, shared CPU/GPU writer.
 M9 done: binned SAH BVH, --split flag, prim tests halved.
 M10 done: HDR bilateral --denoise, 1.25x vs 64spp ref.
 M11 done: Cornell box, scene module, camera focus fix.
-Next: non-CI slice.
+M12 done: guided joint-bilateral denoise, 6.57x vs ref.
+Next: pick slice.

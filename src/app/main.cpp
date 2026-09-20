@@ -83,26 +83,59 @@ int main(int argc, char **argv) {
     bvh_node world(objs, 0, objs.size(), use_sah);
 
     integrator tracer;
-    std::vector<vec3> fb(W * H);
+    std::vector<vec3> fb((size_t)W * H);
+    // Guide buffers only under --denoise: default pixels byte-exact.
+    std::vector<vec3> albedo_fb((size_t)W * H), normal_fb((size_t)W * H);
     bench_enabled_flag().store(bench, std::memory_order_relaxed);
 
     auto render_pixel = [&](int i, int j) {
-        vec3 acc(0, 0, 0);
+        vec3 acc(0, 0, 0), alb(0, 0, 0), nrm(0, 0, 0);
         if (legacy) {
             double u = double(i) / (W - 1);
             double v = double(j) / (H - 1);
-            acc = tracer.Li(cam.get_ray(u, v), world, lights, max_depth);
+            ray primary = cam.get_ray(u, v);
+            acc = tracer.Li(primary, world, lights, max_depth);
+            if (do_denoise) {
+                vec3 a, n;
+                bool hit = false;
+                first_hit_aov(primary, world, a, n, hit);
+                if (hit) {
+                    alb = a;
+                    nrm = n;
+                }
+            }
         } else {
             rng_seed(base_seed + (unsigned)(j * W + i));
             auto offs = pixel_samples(spp);
             for (auto [ox, oy] : offs) {
                 double u = (i + ox) / W;
                 double v = (j + oy) / H;
-                acc += tracer.Li(cam.get_ray(u, v), world, lights, max_depth);
+                ray primary = cam.get_ray(u, v);
+                acc += tracer.Li(primary, world, lights, max_depth);
+                // Guides appended after beauty: deterministic order, and
+                // AOV uses no RNG so the beauty stream never shifts.
+                if (do_denoise) {
+                    vec3 a, n;
+                    bool hit = false;
+                    first_hit_aov(primary, world, a, n, hit);
+                    if (hit) {
+                        alb += a;
+                        nrm += n;
+                    }
+                }
             }
             acc /= (double)offs.size();
+            if (do_denoise) {
+                alb /= (double)offs.size();
+                if (nrm.length_squared() > 0) // all-miss pixels keep zero guide
+                    nrm = unit_vector(nrm);
+            }
         }
         fb[(size_t)j * W + i] = acc;
+        if (do_denoise) {
+            albedo_fb[(size_t)j * W + i] = alb;
+            normal_fb[(size_t)j * W + i] = nrm;
+        }
     };
 
     auto t_start = std::chrono::high_resolution_clock::now();
@@ -132,7 +165,8 @@ int main(int argc, char **argv) {
 
     if (do_denoise) {
         auto d0 = std::chrono::high_resolution_clock::now();
-        fb = bilateral_denoise(fb, W, H);
+        // Joint bilateral on guides; plain filter kept for no-guide use.
+        fb = joint_bilateral_denoise(fb, albedo_fb, normal_fb, W, H);
         secs += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - d0)
                     .count();
     }
@@ -146,7 +180,8 @@ int main(int argc, char **argv) {
     std::cout << "wrote out/image.ppm " << W << "x" << H << " spp=" << spp
               << " threads=" << num_threads << " tile=" << tile_rows
               << " split=" << (use_sah ? "sah" : "median")
-              << " exposure=" << exposure << " scene=" << scene_name << "\n";
+              << " exposure=" << exposure << " scene=" << scene_name
+              << " denoise=" << (do_denoise ? "joint" : "off") << "\n";
     std::cout << "render " << secs << "s";
     if (bench) {
         std::cout << " rays=" << rays << " (" << (rays / 1e6 / secs) << " Mrays/s)"

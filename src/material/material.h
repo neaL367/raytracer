@@ -19,6 +19,12 @@ public:
     virtual vec3 emitted() const { return vec3(0, 0, 0); }
     // NEE applies to diffuse only; specular paths skip explicit lights.
     virtual bool is_diffuse() const { return false; }
+    // First-hit albedo for AOV guides. Speculars report neutral
+    // (weak guidance there: flagged limit, not wrong pixels).
+    virtual vec3 surface_albedo(const hit_record &rec) const {
+        (void)rec;
+        return vec3(1, 1, 1);
+    }
 };
 
 class lambertian : public material {
@@ -38,6 +44,9 @@ public:
         return true;
     }
     bool is_diffuse() const override { return true; }
+    vec3 surface_albedo(const hit_record &rec) const override {
+        return tex->value(rec.u, rec.v, rec.point);
+    }
 
 private:
     std::shared_ptr<texture> tex;
@@ -53,6 +62,7 @@ public:
         attenuation = albedo;
         return dot(scattered.direction(), rec.normal) > 0;
     }
+    vec3 surface_albedo(const hit_record &) const override { return albedo; }
 
 private:
     vec3 albedo;
@@ -96,6 +106,7 @@ public:
         return false;
     }
     vec3 emitted() const override { return emit_color; }
+    vec3 surface_albedo(const hit_record &) const override { return emit_color; }
 
 private:
     vec3 emit_color;
