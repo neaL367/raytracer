@@ -296,7 +296,7 @@ static void t_flatten() {
     float alb[4] = {}, alb2[4] = {}, emit[4] = {}, prm[4] = {};
     EXPECT_TRUE(mm->export_gpu(alb, alb2, emit, prm));
     EXPECT_TRUE(fabs(alb[0] - 0.8) < 1e-6);
-    EXPECT_TRUE(prm[0] == 1 && fabs(prm[1] - 0.3) < 1e-6);
+    EXPECT_TRUE(prm[0] == 7 && fabs(prm[1] - 0.3) < 1e-6);
 }
 
 static void t_shutter() {

@@ -55,7 +55,7 @@ inline vec3 cross(const vec3 &u, const vec3 &v) {
 }
 inline vec3 unit_vector(const vec3 &v) { return v / v.length(); }
 
-// reflect: v mirrored about n. Metal needs exact mirror, fuzz added later.
+// reflect: v mirrored about n. Roughness-0 conductors use it exact.
 inline vec3 reflect(const vec3 &v, const vec3 &n) { return v - 2 * dot(v, n) * n; }
 // refract per Snell. eta = n1/n2. TIR handled by caller via discriminant.
 inline vec3 refract(const vec3 &uv, const vec3 &n, double eta) {

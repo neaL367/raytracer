@@ -7,7 +7,7 @@ struct GPUSphere {
     vec4 alb;
     vec4 alb2;
     vec4 emit;
-    vec4 params; // mat_type, fuzz, ir, motionflag (fog: type 6, density)
+    vec4 params; // mat_type, rough, ir, motionflag (fog: type 6, density)
 };
 struct GPUQuad {
     vec4 Q;
@@ -16,7 +16,7 @@ struct GPUQuad {
     vec4 alb;
     vec4 alb2;
     vec4 emit;
-    vec4 params; // mat_type, fuzz, ir, 0
+    vec4 params; // mat_type, rough, ir, 0
 };
 struct GPUTri {
     vec4 a;
@@ -30,7 +30,7 @@ struct GPUTri {
     vec4 alb;
     vec4 alb2;
     vec4 emit;
-    vec4 params; // mat_type, fuzz/ir/scale, ir, has_uv
+    vec4 params; // mat_type, rough/ir/scale, ir, has_uv
 };
 struct GPUNode {
     vec4 bmin;

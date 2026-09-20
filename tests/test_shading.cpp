@@ -4,6 +4,7 @@
 #include "core/ray.h"
 #include "core/random.h"
 #include "core/texture.h"
+#include "core/ggx.h"
 #include "geometry/hittable.h"
 #include "geometry/quad.h"
 #include "material/material.h"
@@ -110,6 +111,51 @@ static void t_mipmaps() {
             hi = n;
     }
     EXPECT_TRUE(hi - lo > 0.4); // L0 still aliases across the same uvs
+}
+
+static void t_ggx() {
+    test_current = "ggx";
+    const double pi = 3.1415926535897932385;
+    // NDF at normal incidence: 1/(PI a^2).
+    EXPECT_NEAR(ggx::D(0.5, 1.0), 1.0 / (pi * 0.25));
+    EXPECT_NEAR(ggx::lambda(0.5, 1.0), 0.0); // no shadowing overhead
+    EXPECT_NEAR(ggx::lambda(0.0, 0.5), 0.0); // delta: G = 1
+    EXPECT_NEAR(ggx::alpha_of(0.5), 0.25); // perceptual square
+    // Roughness 0: H collapses to +z, L is the exact mirror.
+    vec3 V(0.3, -0.4, 0.8660254);
+    V = unit_vector(V);
+    vec3 H;
+    vec3 L = ggx::vndf_sample(0.0, V, 0.13, 0.71, H);
+    EXPECT_NEAR(H.x(), 0); EXPECT_NEAR(H.y(), 0); EXPECT_NEAR(H.z(), 1);
+    vec3 R = vec3(0, 0, 1) * (2.0 * V.z()) - V; // reflect incident about +z
+    EXPECT_TRUE((L - R).length() < 1e-9);
+    // White furnace: F0=1, r=0.5, V=+z. Absorbed draws count 0.
+    rng_seed(99);
+    double sum = 0;
+    const int N = 20000;
+    vec3 Vz(0, 0, 1);
+    for (int i = 0; i < N; ++i) {
+        vec3 Li = ggx::vndf_sample(0.25, Vz, random_double(), random_double(), H);
+        if (Li.z() <= 0)
+            continue;
+        double F = 1.0; // F0=1 -> Schlick is 1
+        sum += F * ggx::weight_ratio(0.25, 1.0, Li.z());
+    }
+    double alb = sum / N;
+    EXPECT_TRUE(alb > 0.8 && alb <= 1.0); // energy conserved, none created
+    // Metal scatter at roughness 0: exact mirror, albedo attenuation.
+    metal chrome(vec3(0.8, 0.8, 0.8), 0.0);
+    hit_record rec;
+    rec.point = vec3(0, 0, 0);
+    rec.normal = vec3(0, 0, 1);
+    vec3 att;
+    ray sc;
+    rng_seed(7);
+    EXPECT_TRUE(chrome.scatter(ray(vec3(0, 0, 1), vec3(0.2, 0, -1)), rec, att, sc));
+    vec3 dir = unit_vector(vec3(0.2, 0, -1));
+    vec3 refl = dir - vec3(0, 0, 1) * (2.0 * dir.z());
+    EXPECT_TRUE((unit_vector(sc.direction()) - refl).length() < 1e-9);
+    EXPECT_NEAR(att.x(), 0.8); // F0 at near-normal incidence
 }
 
 static void t_emissive() {
@@ -348,6 +394,7 @@ void run_shading_tests() {
     t_materials();
     t_texture();
     t_mipmaps();
+    t_ggx();
     t_emissive();
     t_ppm();
     t_pfm();

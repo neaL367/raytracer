@@ -4,6 +4,7 @@
 #include "../core/random.h"
 #include "../core/sampler.h"
 #include "../core/onb.h"
+#include "../core/ggx.h"
 #include "../core/texture.h"
 #include "../geometry/hittable.h"
 #include <memory>
@@ -25,7 +26,7 @@ public:
         (void)rec;
         return vec3(1, 1, 1);
     }
-    // GPU params export: alb, alb2, emit, prm=(type,fuzz,ir,0).
+    // GPU params export: alb, alb2, emit, prm=(type,rough,ir,0).
     // False = non-exportable (host substitutes loud magenta).
     virtual bool export_gpu(float alb[4], float alb2[4], float emit[4],
                             float prm[4]) const {
@@ -99,13 +100,25 @@ private:
 
 class metal : public material {
 public:
-    metal(const vec3 &a, double f) : albedo(a), fuzz(f < 1 ? f : 1) {}
+    // GGX conductor: F0 = albedo, perceptual roughness (alpha = r^2).
+    // Roughness 0 = delta mirror. VNDF sampling, weight F*G2/G1(V).
+    metal(const vec3 &a, double r) : albedo(a), roughness(r < 0 ? 0 : (r > 1 ? 1 : r)) {}
     bool scatter(const ray &in, const hit_record &rec,
                  vec3 &attenuation, ray &scattered) const override {
-        vec3 refl = reflect(unit_vector(in.direction()), rec.normal);
-        scattered = ray(rec.point, refl + fuzz * random_in_unit_sphere());
-        attenuation = albedo;
-        return dot(scattered.direction(), rec.normal) > 0;
+        onb frame;
+        frame.build_from_w(rec.normal);
+        vec3 V = unit_vector(-in.direction());
+        vec3 Vl(dot(V, frame.u), dot(V, frame.v), dot(V, frame.w));
+        double alpha = ggx::alpha_of(roughness);
+        vec3 H;
+        vec3 Ll = ggx::vndf_sample(alpha, Vl, random_double(), random_double(), H);
+        if (Ll.z() <= 0)
+            return false; // below-surface lobe: absorbed (as before)
+        double cos_vh = std::max(dot(Vl, H), 0.0);
+        double ratio = ggx::weight_ratio(alpha, Vl.z(), Ll.z());
+        attenuation = ggx::fresnel_schlick(albedo, cos_vh) * ratio;
+        scattered = ray(rec.point, frame.local(Ll));
+        return true;
     }
     vec3 surface_albedo(const hit_record &) const override { return albedo; }
     bool export_gpu(float alb[4], float alb2[4], float emit[4],
@@ -115,15 +128,15 @@ public:
         alb[2] = (float)albedo.z();
         alb2[0] = alb2[1] = alb2[2] = 0;
         emit[0] = emit[1] = emit[2] = 0;
-        prm[0] = 1;
-        prm[1] = (float)fuzz;
+        prm[0] = 7; // GGX conductor (fuzz-era type 1 deleted)
+        prm[1] = (float)roughness;
         prm[2] = prm[3] = 0;
         return true;
     }
 
 private:
     vec3 albedo;
-    double fuzz;
+    double roughness;
 };
 
 class dielectric : public material {
