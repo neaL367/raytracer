@@ -13,22 +13,51 @@ ctest --test-dir build -C Release
 ## Run
 
 ```bat
-build\Release\raytracer.exe [--samples 16] [--threads N] [--bench]
+build\Release\raytracer.exe [--samples 16] [--threads N] [--tile 8]
+  [--split sah|median] [--exposure 1] [--denoise] [--scene default|cornell]
+  [--shutter T0 T1] [--fog D] [--aperture A] [--width W] [--height H]
+  [--seed 42] [--hdr float.pfm] [--bench]
 ```
 
 Renders `out/image.ppm` (400x225, 16spp stratified default,
-`--samples 1` reproduces single-sample look).
+`--samples 1` reproduces single-sample look). `--hdr` dumps linear
+pre-exposure float (PFM) for post-workflows alongside the PPM.
+
+```bat
+build\Release\rt_gpu.exe [path.spv] [out.ppm] [--spp N] [--seed S]
+  [--scene NAME] [--shutter T0 T1] [--fog D] [--width W] [--height H]
+  [--hdr float.pfm]
+```
+
+Headless Vulkan compute backend (discrete NVIDIA pick). Statistical CPU
+parity by design (wang-hash vs mt19937 RNGs); fog parity is judged against
+the same-backend different-seed floor, never an absolute threshold.
+
+```bat
+build\Release\rt_view.exe [image.ppm] [--diff other.ppm] [--scale N] [--stats]
+```
+
+SDL3 preview: pixel inspector, diff heatmap (`D`), watcher reload (`R`).
+`--stats` prints headless diff numbers (mean/max/over8%).
 
 ## Layout
 
 ```text
-src/core/      vec3, ray (value types, hot loop)
-src/camera/    pinhole ray generation
-src/geometry/  sphere hit interface
-src/output/    PPM writer (linear film, gamma at write)
-src/app/       wiring, render loop
-tests/         dependency-free asserts via ctest
-.scratch/      specs + tickets (local, gitignored)
+src/core/      vec3, ray, RNG, sampler, ONB, AABB, textures (+mipmaps),
+               OBJ/MTL loader
+src/camera/    pinhole + thin-lens defocus + shutter timing
+src/geometry/  sphere/triangle/quad, hittable list, constant-density fog
+src/material/  lambertian/metal/dielectric/isotropic/diffuse_light
+src/integrator/ NEE + MIS path integrator, first-hit AOV guides
+src/accel/     median + binned-SAH BVH, flatten accessors
+src/scene/     default + cornell builders (shared CPU/GPU construction order)
+src/gpu/       Vulkan compute host, flatten, shaders (grad/normal/path)
+src/output/    PPM writer, ACES film, PFM float dump
+src/io/        denoise (bilateral + joint), compare/heatmap, PPM + stb images
+src/app/       CPU wiring, tile thread pool, bench counters
+src/view/      SDL3 preview + inspector
+tests/         dependency-free asserts via ctest (seeded, deterministic)
+.scratch/      specs + tickets + roadmap (local, gitignored)
 ```
 
 ## Roadmap
@@ -55,4 +84,9 @@ M19 done: motion blur via shutter + moving spheres, defaults frozen.
 M20 done: constant-density fog volumes, opt-in glow.
 M21 done: GPU motion + fog parity, path-time inheritance.
 M22 done: SDL3 preview + pixel inspector + diff mode.
-Next: `.scratch/roadmap.md` (M23 fog probe → M24 mipmaps → M25 MTL → M26 HDR+docs).
+M23 done: CPU `--seed`, fog parity verdict (statistical, floor rule).
+M24 done: mipmapped textures with distance LOD + per-texture span.
+M25 done: MTL materials (Kd/Ks/map_Kd) per-face in OBJ loader.
+M26 done: PFM float dump (`--hdr`) on both backends + doc refresh.
+Next: `.scratch/roadmap.md` backlog (microfacet, heterogeneous volumes,
+mesh motion, NEE mesh lights, Linux/macOS port, GPU denoise, QBVH/SIMD).

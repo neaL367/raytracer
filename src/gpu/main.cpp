@@ -2,11 +2,12 @@
 // args -> scene_data -> flat BVH -> dispatch -> PPM. Mechanics in
 // vk_compute.h, numbers in scene/scene.h via flatten.h.
 // Usage: rt_gpu [shader.spv] [out.ppm] [--spp N] [--seed S]
-//        [--scene NAME] [--width W] [--height H]
+//        [--scene NAME] [--width W] [--height H] [--hdr float.pfm]
 #include "host_scene.h"
 #include "flatten.h"
 #include "vk_compute.h"
 #include "output/ppm.h"
+#include "output/pfm.h"
 #include "scene/scene.h"
 
 #include "core/vec3.h"
@@ -26,6 +27,7 @@ int main(int argc, char **argv) {
     std::string out_path = "out/gpu_grad.ppm";
     int spp = 16, seed = 42;
     std::string scene_name = "default";
+    std::string hdr_path; // empty = no float dump
     double shutter0 = 0, shutter1 = 0, fog_density = 0;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -44,6 +46,8 @@ int main(int argc, char **argv) {
             W = std::max(8, std::atoi(argv[++i]));
         else if (a == "--height" && i + 1 < argc)
             H = std::max(8, std::atoi(argv[++i]));
+        else if (a == "--hdr" && i + 1 < argc)
+            hdr_path = argv[++i];
         else if (a.ends_with(".spv"))
             shader = a;
         else if (a.ends_with(".ppm"))
@@ -132,6 +136,10 @@ int main(int argc, char **argv) {
     std::filesystem::create_directories("out");
     if (!write_ppm(out_path.c_str(), fb, W, H)) {
         std::cerr << "write failed\n";
+        return 1;
+    }
+    if (!hdr_path.empty() && !write_pfm(hdr_path.c_str(), fb, W, H)) {
+        std::cerr << "hdr dump failed\n";
         return 1;
     }
     auto t1 = std::chrono::high_resolution_clock::now();

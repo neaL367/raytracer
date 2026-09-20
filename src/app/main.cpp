@@ -11,6 +11,7 @@
 #include "scene/scene.h"
 #include "io/denoise.h"
 #include "output/ppm.h"
+#include "output/pfm.h"
 
 #include <atomic>
 #include <chrono>
@@ -38,6 +39,7 @@ int main(int argc, char **argv) {
     double fog_density = 0;
     unsigned seed = 42; // base RNG seed; per-pixel stream = seed + pixel index
     int W = 400, H = -1; // H defaults to 16:9 unless --height given
+    std::string hdr_path; // empty = no float dump
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--samples" && i + 1 < argc)
@@ -70,6 +72,8 @@ int main(int argc, char **argv) {
             H = std::max(8, std::atoi(argv[++i]));
         else if (a == "--bench")
             bench = true;
+        else if (a == "--hdr" && i + 1 < argc)
+            hdr_path = argv[++i];
     }
     // Legacy M2 stream needs one global RNG in pixel order: single thread.
     bool legacy = (spp == 1);
@@ -187,6 +191,10 @@ int main(int argc, char **argv) {
     std::filesystem::create_directories("out");
     if (!write_ppm("out/image.ppm", fb, W, H, exposure)) {
         std::cerr << "write failed\n";
+        return 1;
+    }
+    if (!hdr_path.empty() && !write_pfm(hdr_path.c_str(), fb, W, H)) {
+        std::cerr << "hdr dump failed\n";
         return 1;
     }
     std::uint64_t rays = bench_rays().load();

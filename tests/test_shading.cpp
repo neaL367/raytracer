@@ -14,6 +14,7 @@
 #include "io/compare.h"
 #include "io/denoise.h"
 #include "output/film.h"
+#include "output/pfm.h"
 
 #include <filesystem>
 #include <fstream>
@@ -299,6 +300,27 @@ static void t_stb() {
     EXPECT_TRUE(!stb_loader::load_image(bmp + ".missing", photo));
 }
 
+static void t_pfm() {
+    test_current = "pfm";
+    // 2x1 film: bottom-left HDR (4, 0.5, 0.125), top-right LDR gray.
+    std::vector<vec3> fb = {vec3(4, 0.5, 0.125), vec3(0, 0, 0), vec3(0.5, 0.5, 0.5),
+                            vec3(0, 0, 0)};
+    std::string pfm = (std::filesystem::temp_directory_path() / "rt_hdr.pfm").string();
+    EXPECT_TRUE(write_pfm(pfm.c_str(), fb, 2, 2));
+    EXPECT_TRUE(!write_pfm(pfm.c_str(), fb, 3, 2)); // size mismatch refuses
+    std::ifstream f(pfm, std::ios::binary);
+    std::string magic;
+    int w = 0, h = 0;
+    double scale = 0;
+    f >> magic >> w >> h >> scale;
+    EXPECT_TRUE(magic == "PF" && w == 2 && h == 2 && scale < 0); // little-endian
+    f.get(); // single newline after scale
+    float rgb[3] = {};
+    f.read((char *)rgb, sizeof rgb); // first triple = bottom-left, raw linear
+    EXPECT_TRUE(fabs(rgb[0] - 4.0f) < 1e-6 && fabs(rgb[1] - 0.5f) < 1e-6 &&
+                fabs(rgb[2] - 0.125f) < 1e-6);
+}
+
 static void t_compare() {
     test_current = "compare";
     // Identical -> zeros.
@@ -328,6 +350,7 @@ void run_shading_tests() {
     t_mipmaps();
     t_emissive();
     t_ppm();
+    t_pfm();
     t_film();
     t_denoise();
     t_aov();
