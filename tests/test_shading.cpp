@@ -11,6 +11,7 @@
 #include "integrator/integrator.h"
 #include "io/ppm_image.h"
 #include "io/stb_loader.h"
+#include "io/compare.h"
 #include "io/denoise.h"
 #include "output/film.h"
 
@@ -250,6 +251,29 @@ static void t_stb() {
     EXPECT_TRUE(!stb_loader::load_image(bmp + ".missing", photo));
 }
 
+static void t_compare() {
+    test_current = "compare";
+    // Identical -> zeros.
+    std::vector<uint8_t> a = {10, 20, 30, 40, 50, 60};
+    diff_stats s0 = compare_images(a, a, 2, 1);
+    EXPECT_NEAR(s0.mean_abs, 0);
+    EXPECT_NEAR(s0.max_abs, 0);
+    EXPECT_NEAR(s0.frac_over, 0);
+    // One byte +9 over 6: mean 1.5, max 9, over8 = 1/6.
+    std::vector<uint8_t> b = {10, 20, 30, 40, 50, 69};
+    diff_stats s1 = compare_images(a, b, 2, 1);
+    EXPECT_NEAR(s1.mean_abs, 1.5);
+    EXPECT_NEAR(s1.max_abs, 9);
+    EXPECT_TRUE(fabs(s1.frac_over - 1.0 / 6) < 1e-9);
+    // Heatmap: per-pixel mean diff x gain (9/3*4=12 on changed pixel).
+    auto heat = diff_heatmap(a, b, 2, 1);
+    EXPECT_TRUE(heat[0] == 0 && heat[1] == 0 && heat[2] == 0);
+    EXPECT_TRUE(heat[3] == 12 && heat[4] == 12 && heat[5] == 12);
+    // Size mismatch: safe zeros, no crash.
+    diff_stats s2 = compare_images(a, {1, 2}, 2, 1);
+    EXPECT_NEAR(s2.mean_abs, 0);
+}
+
 void run_shading_tests() {
     t_materials();
     t_texture();
@@ -260,4 +284,5 @@ void run_shading_tests() {
     t_aov();
     t_joint();
     t_stb();
+    t_compare();
 }

@@ -51,3 +51,22 @@ add_dependencies(rt_gpu gpu_shaders)
 if(MSVC)
     target_compile_options(rt_gpu PRIVATE /W4)
 endif()
+
+# Preview viewer: SDL3 via FetchContent (static, no system install).
+# Offline configure skips the target with a notice instead of failing.
+option(RAYTRACER_VIEWER "Build the SDL3 rt_view preview window" ON)
+if(RAYTRACER_VIEWER)
+    include(FetchContent)
+    set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+    set(SDL_STATIC ON CACHE BOOL "" FORCE)
+    set(SDL_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(SDL3 GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+                         GIT_TAG release-3.4.16 GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(SDL3)
+    add_executable(rt_view src/view/main.cpp)
+    target_include_directories(rt_view PRIVATE src)
+    target_link_libraries(rt_view PRIVATE SDL3::SDL3)
+    if(MSVC)
+        target_compile_options(rt_view PRIVATE /W4)
+    endif()
+endif()
