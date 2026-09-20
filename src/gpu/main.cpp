@@ -55,28 +55,39 @@ int main(int argc, char **argv) {
     }
     gpu_scene &scene = flat.gs;
     scene.cam = build_gpu_camera(W, H, scene_name);
+    // Image table: (offset, w, h, 0) rows over the concatenated blob.
+    std::vector<int> img_table;
+    std::vector<float> img_blob;
+    for (const auto &im : flat.images) {
+        img_table.push_back((int)img_blob.size() / 4);
+        img_table.push_back(im.w);
+        img_table.push_back(im.h);
+        img_table.push_back(0);
+        img_blob.insert(img_blob.end(), im.rgba.begin(), im.rgba.end());
+    }
     GpuContext gpu{};
     gpu_init(gpu, W, H);
     // Image texture blob: empty (16B pad) when the scene has none.
     static const float empty_blob[4] = {};
-    const void *img_ptr = flat.img_rgba.empty() ? empty_blob : flat.img_rgba.data();
-    size_t img_bytes = flat.img_rgba.empty() ? sizeof empty_blob
-                                             : flat.img_rgba.size() * sizeof(float);
-    const void *data[7] = {&scene.cam, scene.spheres.data(), scene.quads.data(),
+    const void *img_ptr = img_blob.empty() ? empty_blob : img_blob.data();
+    size_t img_bytes = img_blob.empty() ? sizeof empty_blob : img_blob.size() * sizeof(float);
+    static const int empty_tab[4] = {};
+    const void *tab_ptr = img_table.empty() ? empty_tab : img_table.data();
+    size_t tab_bytes = img_table.empty() ? sizeof empty_tab : img_table.size() * sizeof(int);
+    const void *data[8] = {&scene.cam, scene.spheres.data(), scene.quads.data(),
                            scene.tris.data(), flat.nodes.data(), flat.refs.data(),
-                           img_ptr};
-    const size_t bytes[7] = {sizeof scene.cam, scene.spheres.size() * sizeof(GPUSphere),
+                           img_ptr, tab_ptr};
+    const size_t bytes[8] = {sizeof scene.cam, scene.spheres.size() * sizeof(GPUSphere),
                              scene.quads.size() * sizeof(GPUQuad),
                              scene.tris.size() * sizeof(GPUTri),
                              flat.nodes.size() * sizeof(GPUNode),
-                             flat.refs.size() * sizeof(GPURef), img_bytes};
+                             flat.refs.size() * sizeof(GPURef), img_bytes, tab_bytes};
     gpu_set_scene(gpu, data, bytes);
 
-    int push10[10] = {W, H, (int)scene.spheres.size(), (int)scene.quads.size(),
-                      (int)scene.tris.size(), spp, seed, flat.nlights, flat.img_w,
-                      flat.img_h};
+    int push8[8] = {W, H, (int)scene.spheres.size(), (int)scene.quads.size(),
+                    (int)scene.tris.size(), spp, seed, flat.nlights};
     std::vector<float> rgba;
-    double dispatch_ms = gpu_run(gpu, shader, push10, rgba);
+    double dispatch_ms = gpu_run(gpu, shader, push8, rgba);
 
     // Image rows top-first -> flip for PPM writer (bottom-first).
     std::vector<vec3> fb((size_t)W * H);

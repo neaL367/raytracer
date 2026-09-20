@@ -10,9 +10,13 @@ layout(binding = 1) uniform Cam {
     GPUCam cam;
 };
 // Scene buffers + traversal live in common.glsl (shared with normal).
-// Binding 7: image-texture texels (linear, top-first rows).
+// Binding 7: concatenated image texels (linear, top-first rows).
+// Binding 8: per-image (offset, w, h, 0) lookup table.
 layout(binding = 7) readonly buffer ImgTex {
     vec4 imgTex[];
+};
+layout(binding = 8) readonly buffer ImgTable {
+    ivec4 imgTab[];
 };
 layout(push_constant) uniform PC {
     int W;
@@ -23,8 +27,6 @@ layout(push_constant) uniform PC {
     int spp;
     int seed;
     int nlights; // leading quads are emissive
-    int imgW;
-    int imgH;
 }
 pc;
 
@@ -72,21 +74,23 @@ bool trace(vec3 o, vec3 d, float tmax, out float t, out vec3 n, out vec4 alb,
 }
 
 // Bilinear image sample, same edge math as CPU image_texture.
-vec3 image_sample(vec2 uv) {
+vec3 image_sample(vec2 uv, int img_idx) {
+    ivec4 entry = imgTab[img_idx];
+    int off = entry.x, iw = entry.y, ih = entry.z;
     float u = clamp(uv.x, 0.0, 1.0);
     float v = clamp(uv.y, 0.0, 1.0);
-    float fx = u * float(pc.imgW - 1);
-    float fy = (1.0 - v) * float(pc.imgH - 1);
+    float fx = u * float(iw - 1);
+    float fy = (1.0 - v) * float(ih - 1);
     int x0 = int(floor(fx));
     int y0 = int(floor(fy));
-    int x1 = min(x0 + 1, pc.imgW - 1);
-    int y1 = min(y0 + 1, pc.imgH - 1);
+    int x1 = min(x0 + 1, iw - 1);
+    int y1 = min(y0 + 1, ih - 1);
     float tx = fx - float(x0);
     float ty = fy - float(y0);
-    vec3 c00 = imgTex[y0 * pc.imgW + x0].xyz;
-    vec3 c10 = imgTex[y0 * pc.imgW + x1].xyz;
-    vec3 c01 = imgTex[y1 * pc.imgW + x0].xyz;
-    vec3 c11 = imgTex[y1 * pc.imgW + x1].xyz;
+    vec3 c00 = imgTex[off + y0 * iw + x0].xyz;
+    vec3 c10 = imgTex[off + y0 * iw + x1].xyz;
+    vec3 c01 = imgTex[off + y1 * iw + x0].xyz;
+    vec3 c11 = imgTex[off + y1 * iw + x1].xyz;
     return c00 * ((1.0 - tx) * (1.0 - ty)) + c10 * (tx * (1.0 - ty)) +
            c01 * ((1.0 - tx) * ty) + c11 * (tx * ty);
 }
@@ -147,7 +151,7 @@ vec3 Li(vec3 o, vec3 d) {
         // Type 4 = checker diffuse: world-pos parity like CPU texture.
         // Type 5 = image diffuse: UV sample like CPU image_texture.
         vec3 base_alb = (mtype == 4) ? checker_col(hitp0, alb.xyz, alb2.xyz, params.y)
-                        : (mtype == 5) ? image_sample(huv)
+                        : (mtype == 5) ? image_sample(huv, int(params.y + 0.5))
                                        : alb.xyz;
         vec3 attenuation;
         vec3 sd;

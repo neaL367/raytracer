@@ -55,9 +55,15 @@ inline scene_data build_default(double aspect, double aperture) {
     else
         std::cerr << "assets/photo_test.jpg missing: checker ground\n";
     auto ground_mat = std::make_shared<lambertian>(ground_tex);
-    auto cube_mat =
-        std::make_shared<lambertian>(std::make_shared<checker>(3.0, vec3(0.7, 0.3, 0.3),
-                                                               vec3(0.9, 0.9, 0.9)));
+    // Cube takes the second photo (barycentric UVs); checker fallback.
+    std::shared_ptr<texture> cube_tex =
+        std::make_shared<checker>(3.0, vec3(0.7, 0.3, 0.3), vec3(0.9, 0.9, 0.9));
+    ppm_io::image photo2;
+    if (stb_loader::load_image("assets/photo2_test.jpg", photo2))
+        cube_tex = std::make_shared<image_texture>(photo2.w, photo2.h, photo2.px);
+    else
+        std::cerr << "assets/photo2_test.jpg missing: checker cube\n";
+    auto cube_mat = std::make_shared<lambertian>(cube_tex);
     auto left_mat = std::make_shared<metal>(vec3(0.8, 0.8, 0.8), 0.3);
     auto right_mat = std::make_shared<dielectric>(1.5);
     auto light_mat = std::make_shared<diffuse_light>(vec3(4, 4, 4));

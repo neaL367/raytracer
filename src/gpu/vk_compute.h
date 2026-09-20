@@ -46,7 +46,7 @@ struct GpuContext {
     VkCommandPool cmd_pool = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkQueryPool query_pool = VK_NULL_HANDLE;
-    GpuBuffer scene_bufs[7];
+    GpuBuffer scene_bufs[8];
     bool has_scene = false;
 };
 
@@ -236,8 +236,8 @@ inline void gpu_init(GpuContext &g, int W, int H) {
 // Upload 7 blobs as UBO + 6 SSBOs, wire descriptor set.
 // bufs[0] = camera UBO, [1..3] = prim SSBOs, [4] = BVH nodes,
 // [5] = leaf refs, [6] = image-texture texels.
-inline void gpu_set_scene(GpuContext &g, const void *data[7], const size_t bytes[7]) {
-    for (int i = 0; i < 7; ++i) {
+inline void gpu_set_scene(GpuContext &g, const void *data[8], const size_t bytes[8]) {
+    for (int i = 0; i < 8; ++i) {
         size_t n = bytes[i] ? bytes[i] : 16;
         VkBufferCreateInfo ci{};
         ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -273,8 +273,8 @@ inline void gpu_set_scene(GpuContext &g, const void *data[7], const size_t bytes
     VkDescriptorImageInfo ii{};
     ii.imageView = g.view;
     ii.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    VkDescriptorBufferInfo bi[7]{};
-    for (int i = 0; i < 7; ++i) {
+    VkDescriptorBufferInfo bi[8]{};
+    for (int i = 0; i < 8; ++i) {
         bi[i].buffer = g.scene_bufs[i].buf;
         bi[i].range = g.scene_bufs[i].bytes;
     }
@@ -300,7 +300,7 @@ inline void gpu_set_scene(GpuContext &g, const void *data[7], const size_t bytes
 
 // Dispatch spv with 32B push block, copy image to host, report device ms.
 // out_rgba receives W*H*4 floats, top-first rows.
-inline double gpu_run(GpuContext &g, const std::string &spv_path, const int push10[10],
+inline double gpu_run(GpuContext &g, const std::string &spv_path, const int push8[8],
                       std::vector<float> &out_rgba) {
     std::ifstream f(spv_path, std::ios::binary | std::ios::ate);
     if (!f) {
@@ -323,7 +323,7 @@ inline double gpu_run(GpuContext &g, const std::string &spv_path, const int push
     {
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        pc.size = 40;
+        pc.size = 32;
         VkPipelineLayoutCreateInfo li{};
         li.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         li.setLayoutCount = 1;
@@ -360,7 +360,7 @@ inline double gpu_run(GpuContext &g, const std::string &spv_path, const int push
         vkCmdBindPipeline(g.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g.pipe);
         vkCmdBindDescriptorSets(g.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g.pipe_layout, 0,
                                 1, &g.set, 0, nullptr);
-        vkCmdPushConstants(g.cmd, g.pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 40, push10);
+        vkCmdPushConstants(g.cmd, g.pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 32, push8);
         vkCmdWriteTimestamp(g.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.query_pool, 0);
         vkCmdDispatch(g.cmd, (g.W + 15) / 16, (g.H + 15) / 16, 1);
         vkCmdWriteTimestamp(g.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.query_pool, 1);

@@ -23,41 +23,52 @@ struct GPURef {
     int index = -1;
 };
 
+struct GPUImage {
+    int w = 0, h = 0;
+    const void *src = nullptr; // texture identity for dedupe
+    std::vector<float> rgba; // top-first rows, linear HDR
+};
+
 struct flat_scene {
     gpu_scene gs;
     std::vector<GPUNode> nodes;
     std::vector<GPURef> refs;
     int nlights = 0; // leading emissive quads (NEE indexes [0, nlights))
-    // Single image texture blob (multi-image flagged for later).
-    int img_w = 0, img_h = 0;
-    std::vector<float> img_rgba; // top-first rows, linear HDR
+    std::vector<GPUImage> images; // deduped by texture pointer
 };
 
-// Image-backed lambertian: collect pixels once, emit type-5 params.
-// Second distinct image fails loudly (single-texture scope for now).
-// NOTE: caller must pass alb/alb2/emit arrays too (cleared here: the
-// magenta fallback runs first and must not leak into type-5 prims).
+// Image-backed lambertian: registry assign, emit type-5 params.
+// Same texture reuses its index (dedupe, not duplication).
 inline bool try_image_export(flat_scene &out, const std::shared_ptr<lambertian> &lamb,
                              float alb[4], float alb2[4], float emit[4], float prm[4]) {
     auto it = std::dynamic_pointer_cast<image_texture>(lamb->tex_ref());
     if (!it)
         return false;
-    if (!out.img_rgba.empty())
-        return false;
-    out.img_w = it->width();
-    out.img_h = it->height();
-    out.img_rgba.reserve((size_t)out.img_w * out.img_h * 4);
-    for (const vec3 &p : it->texels()) {
-        out.img_rgba.push_back((float)p.x());
-        out.img_rgba.push_back((float)p.y());
-        out.img_rgba.push_back((float)p.z());
-        out.img_rgba.push_back(1.0f);
+    int idx = -1;
+    for (size_t k = 0; k < out.images.size(); ++k)
+        if (out.images[k].src == it.get())
+            idx = (int)k;
+    if (idx < 0) {
+        GPUImage gim;
+        gim.w = it->width();
+        gim.h = it->height();
+        gim.src = it.get();
+        gim.rgba.reserve((size_t)gim.w * gim.h * 4);
+        for (const vec3 &p : it->texels()) {
+            gim.rgba.push_back((float)p.x());
+            gim.rgba.push_back((float)p.y());
+            gim.rgba.push_back((float)p.z());
+            gim.rgba.push_back(1.0f);
+        }
+        idx = (int)out.images.size();
+        out.images.push_back(std::move(gim));
     }
     alb[0] = alb[1] = alb[2] = alb[3] = 0;
     alb2[0] = alb2[1] = alb2[2] = alb2[3] = 0;
     emit[0] = emit[1] = emit[2] = emit[3] = 0;
     prm[0] = 5;
-    prm[1] = prm[2] = prm[3] = 0;
+    prm[1] = (float)idx;
+    prm[2] = prm[3] = 0;
     return true;
 }
 
@@ -177,33 +188,11 @@ inline int flatten_node(const bvh_node &n, std::vector<GPUNode> &nodes,
 // Emissive quads sort first so NEE indexing stays a prefix.
 inline bool flatten_scene(const scene_data &scene, flat_scene &out) {
     out = flat_scene{};
-    // Single-image scope: count distinct image textures up front.
-    {
-        std::vector<const void *> seen;
-        for (const auto &o : scene.objs) {
-            std::shared_ptr<material> m;
-            if (auto s = std::dynamic_pointer_cast<sphere>(o))
-                m = s->mat_ptr();
-            else if (auto q = std::dynamic_pointer_cast<quad>(o))
-                m = q->mat_ptr();
-            else if (auto t = std::dynamic_pointer_cast<triangle>(o))
-                m = t->mat_ptr();
-            else
-                return false;
-            auto l = std::dynamic_pointer_cast<lambertian>(m);
-            if (l && std::dynamic_pointer_cast<image_texture>(l->tex_ref())) {
-                const void *p = l->tex_ref().get();
-                bool known = false;
-                for (auto k : seen)
-                    if (k == p)
-                        known = true;
-                if (!known)
-                    seen.push_back(p);
-            }
-        }
-        if (seen.size() > 1)
-            return false; // multi-image flagged for later
-    }
+    // Reject unknown shapes up front (image textures unlimited now).
+    for (const auto &o : scene.objs)
+        if (!std::dynamic_pointer_cast<sphere>(o) && !std::dynamic_pointer_cast<quad>(o) &&
+            !std::dynamic_pointer_cast<triangle>(o))
+            return false;
     std::vector<std::shared_ptr<hittable>> ordered = scene.objs;
     std::stable_partition(
         ordered.begin(), ordered.end(), [](const std::shared_ptr<hittable> &o) {

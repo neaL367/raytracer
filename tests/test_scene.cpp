@@ -117,18 +117,33 @@ static void t_flatten() {
     for (auto &n : fs.nodes)
         leaf_prims += (n.left < 0) ? n.count : 0;
     EXPECT_TRUE(leaf_prims == (int)def.objs.size());
-    // Ground is image-textured (type 5) with collected pixels.
+    // Ground photo is image 0; cube photo2 is image 1 (registry).
     EXPECT_TRUE(!fs.gs.spheres.empty());
     EXPECT_TRUE(fs.gs.spheres[0].prm[0] == 5);
-    EXPECT_TRUE(fs.img_w == 128 && fs.img_h == 64);
-    EXPECT_TRUE((int)fs.img_rgba.size() == 128 * 64 * 4);
-    // Cube checker survives: type 4, scale 3, red even.
-    bool found_checker = false;
+    EXPECT_TRUE(fabs(fs.gs.spheres[0].prm[1] - 0.0f) < 1e-6);
+    EXPECT_TRUE((int)fs.images.size() == 2);
+    EXPECT_TRUE(fs.images[0].w == 128 && fs.images[0].h == 64);
+    EXPECT_TRUE(fs.images[1].w == 64 && fs.images[1].h == 64);
+    bool cube_photo = false;
     for (auto &t : fs.gs.tris)
-        if (t.prm[0] == 4 && fabs(t.prm[1] - 3.0f) < 1e-6 &&
-            fabs(t.alb[0] - 0.7f) < 1e-6)
-            found_checker = true;
-    EXPECT_TRUE(found_checker);
+        if (t.prm[0] == 5 && fabs(t.prm[1] - 1.0f) < 1e-6)
+            cube_photo = true;
+    EXPECT_TRUE(cube_photo);
+    // Dedupe: one texture on two spheres registers a single image.
+    ppm_io::image tiny_px;
+    tiny_px.w = 1;
+    tiny_px.h = 1;
+    tiny_px.px = {vec3(0.5, 0.5, 0.5)};
+    auto shared_tex = std::make_shared<image_texture>(1, 1, tiny_px.px);
+    auto shared_mat = std::make_shared<lambertian>(shared_tex);
+    scene_data tiny;
+    tiny.objs.push_back(std::make_shared<sphere>(vec3(0, 0, -1), 0.5, shared_mat));
+    tiny.objs.push_back(std::make_shared<sphere>(vec3(2, 0, -1), 0.5, shared_mat));
+    flat_scene ft;
+    EXPECT_TRUE(flatten_scene(tiny, ft));
+    EXPECT_TRUE((int)ft.images.size() == 1); // shared ptr, one entry
+    EXPECT_TRUE(ft.gs.spheres[0].prm[0] == 5 && ft.gs.spheres[1].prm[0] == 5);
+    EXPECT_TRUE(fabs(ft.gs.spheres[1].prm[1] - 0.0f) < 1e-6); // same idx
     // Cornell: 18 quads flat, light first for NEE indexing.
     scene_data cor = build_scene("cornell", 1.0, 0.0);
     flat_scene fc;
