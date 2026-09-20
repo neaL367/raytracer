@@ -165,6 +165,23 @@ private:
     }
 };
 
+// Isotropic volume scatter: uniform sphere direction, albedo attenuates.
+// Not diffuse (no NEE into volumes: direct sampling of media flagged).
+class isotropic : public material {
+public:
+    isotropic(const vec3 &a) : albedo(a) {}
+    bool scatter(const ray &, const hit_record &rec,
+                 vec3 &attenuation, ray &scattered) const override {
+        scattered = ray(rec.point, random_unit_vector());
+        attenuation = albedo;
+        return true;
+    }
+    vec3 surface_albedo(const hit_record &) const override { return albedo; }
+
+private:
+    vec3 albedo;
+};
+
 // Pure emitter: never scatters, integrator reads emitted() on hit.
 class diffuse_light : public material {
 public:

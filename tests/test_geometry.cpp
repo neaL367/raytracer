@@ -8,6 +8,7 @@
 #include "geometry/sphere.h"
 #include "geometry/triangle.h"
 #include "geometry/quad.h"
+#include "geometry/volume.h"
 #include "accel/bvh.h"
 #include "material/material.h"
 
@@ -247,6 +248,34 @@ static void t_motion() {
     EXPECT_NEAR(ra.t, rb.t);
 }
 
+static void t_volume() {
+    test_current = "volume";
+    rng_seed(90);
+    auto phase = std::make_shared<isotropic>(vec3(0.9, 0.9, 0.9));
+    auto border = std::make_shared<sphere>(vec3(0, 0, -1), 1.0, phase);
+    constant_medium fog(border, 0.5, phase);
+    // Through center: chord 2.0, scatter must land inside.
+    hit_record hr;
+    EXPECT_TRUE(fog.hit(ray(vec3(0, 0, 0), vec3(0, 0, -1)), 0.001, 1e30, hr));
+    EXPECT_TRUE(hr.t > 0 && hr.t < 2.0);
+    EXPECT_TRUE(hr.mat == phase);
+    // Bounds == boundary bounds.
+    aabb b;
+    EXPECT_TRUE(fog.bounding_box(b));
+    EXPECT_NEAR(b.minimum.z(), -2.0);
+    EXPECT_NEAR(b.maximum.z(), 0.0);
+    // Isotropic: unit direction, albedo passthrough.
+    hit_record rec;
+    rec.point = vec3(0, 0, 0);
+    vec3 att;
+    ray sc;
+    EXPECT_TRUE(phase->scatter(ray(vec3(0, 0, 0), vec3(0, 0, -1)), rec, att, sc));
+    EXPECT_NEAR(sc.direction().length(), 1);
+    EXPECT_NEAR(att.x(), 0.9);
+    // Thin ray missing the ball: no scatter.
+    EXPECT_TRUE(!fog.hit(ray(vec3(5, 5, 0), vec3(0, 0, -1)), 0.001, 1e30, hr));
+}
+
 void run_geometry_tests() {
     t_sphere();
     t_list();
@@ -258,4 +287,5 @@ void run_geometry_tests() {
     t_smooth();
     t_meshuv();
     t_motion();
+    t_volume();
 }
