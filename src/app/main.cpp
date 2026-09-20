@@ -7,6 +7,7 @@
 #include "geometry/hittable.h"
 #include "geometry/quad.h"
 #include "accel/bvh.h"
+#include "accel/qbvh.h"
 #include "integrator/integrator.h"
 #include "scene/scene.h"
 #include "io/denoise.h"
@@ -100,7 +101,8 @@ int main(int argc, char **argv) {
     camera &cam = scene.cam;
 
     // BVH over everything incl. light quad: shadow + NEE rays traverse it.
-    bvh_node world(objs, 0, objs.size(), use_sah);
+    // QBVH over the SAH tree: 4-wide SSE slabs, bit-identical traversal.
+    qbvh_node world(objs, 0, objs.size(), use_sah);
 
     integrator tracer;
     std::vector<vec3> fb((size_t)W * H);

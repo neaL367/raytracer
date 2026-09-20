@@ -10,6 +10,7 @@
 #include "geometry/quad.h"
 #include "geometry/volume.h"
 #include "accel/bvh.h"
+#include "accel/qbvh.h"
 #include "material/material.h"
 
 #include <memory>
@@ -402,12 +403,59 @@ static void t_hetprec() {
     EXPECT_TRUE(fabs((double)ev / T - theory) < 0.01); // fp32 tracking sound
 }
 
+static void t_qbvh() {
+    test_current = "qbvh";
+    rng_seed(31);
+    auto m = std::make_shared<lambertian>(vec3(0.6, 0.6, 0.6));
+    std::vector<std::shared_ptr<hittable>> objs;
+    objs.push_back(std::make_shared<sphere>(vec3(0, -100.5, -1), 100, m));
+    objs.push_back(std::make_shared<sphere>(vec3(0, 0, -1), 0.5, m));
+    objs.push_back(std::make_shared<sphere>(vec3(-1, 0, -1), 0.5, m));
+    objs.push_back(std::make_shared<sphere>(vec3(1, 0.5, -2), 0.3, m));
+    objs.push_back(std::make_shared<sphere>(vec3(0.5, -0.5, -1.5), 0.4, m));
+    objs.push_back(std::make_shared<triangle>(vec3(-1, -1, -2), vec3(1, -1, -2),
+                                              vec3(0, 1, -2), m));
+    objs.push_back(std::make_shared<triangle>(vec3(0, 0, -3), vec3(1, 0, -3),
+                                              vec3(0, 1, -3), m));
+    objs.push_back(std::make_shared<quad>(vec3(-1, -1, -3), vec3(2, 0, 0),
+                                          vec3(0, 2, 0), m));
+    hittable_list list;
+    for (auto &o : objs)
+        list.add(o);
+    bvh_node ref(objs, 0, objs.size());
+    qbvh_node tree(ref); // same DFS order: bit-exact twin expected
+    // Root box covers the scene.
+    aabb b;
+    EXPECT_TRUE(tree.bounding_box(b));
+    EXPECT_TRUE(b.minimum.y() <= -100.5 && b.maximum.y() >= 1.0);
+    int agree = 0;
+    for (int k = 0; k < 400; ++k) {
+        vec3 o(random_double(-2, 2), random_double(-2, 2), random_double(-1, 1));
+        ray r(o, random_unit_vector());
+        hit_record rl, rq, rb;
+        bool hl = list.hit(r, 0.001, 1e30, rl);
+        bool hb = ref.hit(r, 0.001, 1e30, rb);
+        bool hq = tree.hit(r, 0.001, 1e30, rq);
+        EXPECT_TRUE(hl == hb && hb == hq);
+        if (hl && hb && hq) {
+            EXPECT_TRUE(fabs(rl.t - rb.t) < 1e-9); // list agrees loosely
+            // Bit-exact vs the binary twin: order, narrowing, ties.
+            EXPECT_TRUE(rb.t == rq.t);
+            EXPECT_TRUE(rb.mat == rq.mat);
+            EXPECT_TRUE((rb.point - rq.point).length() == 0);
+            ++agree;
+        }
+    }
+    EXPECT_TRUE(agree > 100); // scene actually hit, not all misses
+}
+
 void run_geometry_tests() {
     t_sphere();
     t_list();
     t_triangle_quad();
     t_aabb();
     t_bvh();
+    t_qbvh();
     t_sah();
     t_uv();
     t_smooth();

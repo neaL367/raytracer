@@ -49,7 +49,7 @@ src/camera/    pinhole + thin-lens defocus + shutter timing
 src/geometry/  sphere/triangle/quad, hittable list, constant-density fog
 src/material/  lambertian/metal/dielectric/isotropic/diffuse_light
 src/integrator/ NEE + MIS path integrator, first-hit AOV guides
-src/accel/     median + binned-SAH BVH, flatten accessors
+src/accel/     median + binned-SAH BVH, QBVH-4 collapse (SSE2 slabs), flatten accessors
 src/scene/     default + cornell builders (shared CPU/GPU construction order)
 src/gpu/       Vulkan compute host, flatten, shaders (grad/normal/path)
 src/output/    PPM writer, ACES film, PFM float dump
@@ -88,5 +88,10 @@ M23 done: CPU `--seed`, fog parity verdict (statistical, floor rule).
 M24 done: mipmapped textures with distance LOD + per-texture span.
 M25 done: MTL materials (Kd/Ks/map_Kd) per-face in OBJ loader.
 M26 done: PFM float dump (`--hdr`) on both backends + doc refresh.
-Next: `.scratch/roadmap.md` backlog (microfacet, heterogeneous volumes,
-mesh motion, NEE mesh lights, Linux/macOS port, GPU denoise, QBVH/SIMD).
+M27 done: GGX conductors with VNDF sampling (fuzz replaced, mtype 7).
+M28 done: NEE for sphere + mesh lights, warm orb demo light.
+M29 done: per-vertex mesh motion blur, cube drifts with shutter.
+M30 done: GPU bilateral denoise post-pass (`rt_gpu --denoise`).
+M31 done: heterogeneous volumes with delta tracking (two GPU volume bugs fixed).
+M32 done: CPU QBVH-4 collapse with SSE2 slabs, bit-exact traversal.
+Next: `.scratch/roadmap.md` backlog (Linux/macOS port).
