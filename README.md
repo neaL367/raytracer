@@ -43,4 +43,5 @@ M7 done: textures + OBJ meshes, checker demo, GPU parity.
 M8 done: exposure + ACES + sRGB film, shared CPU/GPU writer.
 M9 done: binned SAH BVH, --split flag, prim tests halved.
 M10 done: HDR bilateral --denoise, 1.25x vs 64spp ref.
-Next: CI or done.
+M11 done: Cornell box, scene module, camera focus fix.
+Next: non-CI slice.

@@ -8,6 +8,7 @@
 #include "geometry/triangle.h"
 #include "material/material.h"
 #include "core/obj_loader.h"
+#include "scene/scene.h"
 
 #include <filesystem>
 #include <fstream>
@@ -64,8 +65,31 @@ static void t_obj() {
     EXPECT_TRUE(w.hit(ray(vec3(0.5, 0.5, 3), vec3(0, 0, -1)), 0.001, 1e30, hr));
 }
 
+static void t_cornell() {
+    test_current = "cornell";
+    scene_data scene = build_cornell(16.0 / 9.0, 0.0);
+    EXPECT_TRUE((int)scene.objs.size() == 18); // 5 walls + 12 box + 1 light
+    EXPECT_TRUE((int)scene.lights.size() == 1);
+    EXPECT_TRUE(scene.lights[0]->mat_ptr()->emitted().x() > 1); // bright
+    hittable_list world;
+    for (auto &o : scene.objs)
+        world.add(o);
+    hit_record hr;
+    // Center ray: through (278,278) hits tall box front (z=295) first.
+    EXPECT_TRUE(world.hit(scene.cam.get_ray(0.5, 0.5), 0.001, 1e30, hr));
+    EXPECT_TRUE(hr.point.z() > 290 && hr.point.z() < 300);
+    // Inside tall box looking +x: exits at x=430 wall.
+    EXPECT_TRUE(world.hit(ray(vec3(300, 100, 350), vec3(1, 0, 0)), 0.001, 1e30, hr));
+    EXPECT_NEAR(hr.point.x(), 430);
+    // Default builder unchanged: ground + mesh/fallback + 2 spheres + light.
+    scene_data def = build_default(16.0 / 9.0, 0.0);
+    EXPECT_TRUE((int)def.lights.size() == 1);
+    EXPECT_TRUE((int)def.objs.size() >= 16); // ground+12mesh+2sph+light
+}
+
 void run_scene_tests() {
     t_camera();
     t_defocus();
     t_obj();
+    t_cornell();
 }

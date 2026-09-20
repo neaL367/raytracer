@@ -21,7 +21,7 @@ enable_testing()
 add_executable(raytracer_tests tests/test_all.cpp tests/test_core.cpp tests/test_geometry.cpp
                tests/test_shading.cpp tests/test_scene.cpp)
 target_include_directories(raytracer_tests PRIVATE src tests)
-add_test(NAME unit_tests COMMAND raytracer_tests)
+add_test(NAME unit_tests COMMAND raytracer_tests WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # GPU backend: headless Vulkan compute. CPU binary untouched.
 find_package(Vulkan REQUIRED)

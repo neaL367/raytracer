@@ -1,7 +1,9 @@
 #pragma once
 // Host-side scene: std430 mirrors of common.glsl structs + builder.
 // Pure data, zero Vulkan: the seam is bytes in, bytes out.
+#include <cmath>
 #include <cstring>
+#include <string>
 #include <vector>
 
 struct GPUSphere {
@@ -26,7 +28,76 @@ struct gpu_scene {
     std::vector<GPUTri> tris;
 };
 
-inline gpu_scene build_gpu_scene(int W, int H) {
+inline gpu_scene build_gpu_cornell(int W, int H);
+inline gpu_scene build_gpu_default(int W, int H);
+
+inline gpu_scene build_gpu_scene(int W, int H, const std::string &name = "default") {
+    if (name == "cornell")
+        return build_gpu_cornell(W, H);
+    return build_gpu_default(W, H);
+}
+// Cornell numbers mirror scene/scene.h (CPU) exactly: walls, boxes,
+// ceiling light first (NEE indexes leading emissive quads).
+inline gpu_scene build_gpu_cornell(int W, int H) {
+    gpu_scene s;
+    const float aspect = (float)((double)W / (double)H);
+    // Camera (278,278,-800) vfov 40: u=(-1,0,0), v=(0,1,0), w=(0,0,-1).
+    const float th = 40.0f * 3.14159265f / 180.0f;
+    const float hh = 2.0f * tanf(th * 0.5f) * 800.0f;
+    const float ww = hh * aspect;
+    GPUCam cam = {{278, 278, -800, 0},
+                  {278 + ww * 0.5f, 278 - hh * 0.5f, 0, 0},
+                  {-ww, 0, 0, 0},
+                  {0, hh, 0, 0}};
+    s.cam = cam;
+    auto quad = [](float qx, float qy, float qz, float ux, float uy, float uz, float vx,
+                   float vy, float vz, float ar, float ag, float ab, float er, float eg,
+                   float eb, float type) {
+        GPUQuad q{};
+        q.Q[0] = qx;
+        q.Q[1] = qy;
+        q.Q[2] = qz;
+        q.u[0] = ux;
+        q.u[1] = uy;
+        q.u[2] = uz;
+        q.v[0] = vx;
+        q.v[1] = vy;
+        q.v[2] = vz;
+        q.alb[0] = ar;
+        q.alb[1] = ag;
+        q.alb[2] = ab;
+        q.emit[0] = er;
+        q.emit[1] = eg;
+        q.emit[2] = eb;
+        q.prm[0] = type;
+        return q;
+    };
+    // Light FIRST (NEE), then shell + boxes. Red x=555 (image-left).
+    s.quads.push_back(quad(213, 554, 227, 130, 0, 0, 0, 0, 105, 0, 0, 0, 7, 7, 7, 3));
+    const float R[3] = {0.63f, 0.065f, 0.05f}, G[3] = {0.14f, 0.45f, 0.15f},
+                Wt[3] = {0.725f, 0.71f, 0.68f};
+    s.quads.push_back(quad(0, 0, 0, 555, 0, 0, 0, 0, 555, Wt[0], Wt[1], Wt[2], 0, 0, 0, 0));
+    s.quads.push_back(quad(0, 555, 0, 555, 0, 0, 0, 0, 555, Wt[0], Wt[1], Wt[2], 0, 0, 0, 0));
+    s.quads.push_back(quad(0, 0, 555, 555, 0, 0, 0, 555, 0, Wt[0], Wt[1], Wt[2], 0, 0, 0, 0));
+    s.quads.push_back(
+        quad(555, 0, 0, 0, 0, 555, 0, 555, 0, R[0], R[1], R[2], 0, 0, 0, 0));
+    s.quads.push_back(
+        quad(0, 0, 0, 0, 0, 555, 0, 555, 0, G[0], G[1], G[2], 0, 0, 0, 0));
+    auto box = [&](float x0, float y0, float z0, float x1, float y1, float z1) {
+        float dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
+        s.quads.push_back(quad(x0, y0, z0, dx, 0, 0, 0, 0, dz, Wt[0], Wt[1], Wt[2], 0, 0, 0, 0));
+        s.quads.push_back(quad(x0, y1, z0, dx, 0, 0, 0, 0, dz, Wt[0], Wt[1], Wt[2], 0, 0, 0, 0));
+        s.quads.push_back(quad(x0, y0, z0, 0, 0, dz, 0, dy, 0, Wt[0], Wt[1], Wt[2], 0, 0, 0, 0));
+        s.quads.push_back(quad(x1, y0, z0, 0, 0, dz, 0, dy, 0, Wt[0], Wt[1], Wt[2], 0, 0, 0, 0));
+        s.quads.push_back(quad(x0, y0, z1, dx, 0, 0, 0, dy, 0, Wt[0], Wt[1], Wt[2], 0, 0, 0, 0));
+        s.quads.push_back(quad(x0, y0, z0, dx, 0, 0, 0, dy, 0, Wt[0], Wt[1], Wt[2], 0, 0, 0, 0));
+    };
+    box(265, 0, 295, 430, 330, 460);
+    box(130, 0, 65, 295, 165, 230);
+    return s;
+}
+
+inline gpu_scene build_gpu_default(int W, int H) {
     gpu_scene s;
     const float aspect = (float)((double)W / (double)H);
     GPUCam cam = {{0, 0, 0, 0}, {-aspect, -1, -1, 0}, {2 * aspect, 0, 0, 0}, {0, 2, 0, 0}};

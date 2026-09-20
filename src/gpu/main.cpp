@@ -16,24 +16,33 @@
 #include <vector>
 
 int main(int argc, char **argv) {
-    const int W = 400, H = 225;
+    int W = 400, H = -1;
     std::string shader = SHADER_DIR "/grad.spv";
     std::string out_path = "out/gpu_grad.ppm";
     int spp = 16, seed = 42;
+    std::string scene_name = "default";
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--spp" && i + 1 < argc)
             spp = std::max(1, std::atoi(argv[++i]));
         else if (a == "--seed" && i + 1 < argc)
             seed = std::atoi(argv[++i]);
+        else if (a == "--scene" && i + 1 < argc)
+            scene_name = argv[++i];
+        else if (a == "--width" && i + 1 < argc)
+            W = std::max(8, std::atoi(argv[++i]));
+        else if (a == "--height" && i + 1 < argc)
+            H = std::max(8, std::atoi(argv[++i]));
         else if (a.ends_with(".spv"))
             shader = a;
         else if (a.ends_with(".ppm"))
             out_path = a;
     }
+    if (H <= 0)
+        H = (W * 9 + 8) / 16; // 16:9 default
     auto t0 = std::chrono::high_resolution_clock::now();
 
-    gpu_scene scene = build_gpu_scene(W, H);
+    gpu_scene scene = build_gpu_scene(W, H, scene_name);
     GpuContext gpu{};
     gpu_init(gpu, W, H);
     const void *data[4] = {&scene.cam, scene.spheres.data(), scene.quads.data(),

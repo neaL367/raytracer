@@ -25,8 +25,11 @@ public:
         v = cross(w, u);
 
         origin = lookfrom;
-        horizontal = focus_dist * viewport_width * u;
-        vertical = focus_dist * viewport_height * v;
+        // Viewport already scaled by focus_dist above: no second multiply
+        // (an extra focus factor here is invisible at focus=1 but blows up
+        // the FOV for telephoto-style distances like Cornell's 800).
+        horizontal = viewport_width * u;
+        vertical = viewport_height * v;
         lower_left = origin - horizontal / 2 - vertical / 2 - focus_dist * w;
         lens_radius = aperture / 2;
     }
