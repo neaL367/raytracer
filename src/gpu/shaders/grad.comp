@@ -1,0 +1,17 @@
+#version 450
+// Gradient smoke kernel: proves dispatch + storage image + readback.
+// Real path tracer lands in path.comp (ticket 03).
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(binding = 0, rgba32f) uniform image2D img;
+layout(push_constant) uniform PC {
+    int W;
+    int H;
+}
+pc;
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= pc.W || p.y >= pc.H)
+        return;
+    vec4 c = vec4(float(p.x) / float(pc.W), float(p.y) / float(pc.H), 0.5, 1.0);
+    imageStore(img, p, c);
+}

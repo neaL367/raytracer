@@ -1,0 +1,261 @@
+#version 450
+// Full path tracer: cosine diffuse, metal/glass, emissive quads,
+// NEE + balance-heuristic MIS + Russian roulette. Mirrors CPU
+// integrator formulas in fp32. RNG is wang-hash (differs from CPU
+// mt19937 by design -> statistical parity, not bit-exact).
+#include "common.glsl"
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(binding = 0, rgba32f) uniform image2D img;
+layout(binding = 1) uniform Cam {
+    GPUCam cam;
+};
+layout(binding = 2) readonly buffer Spheres {
+    GPUSphere spheres[];
+};
+layout(binding = 3) readonly buffer Quads {
+    GPUQuad quads[];
+};
+layout(binding = 4) readonly buffer Tris {
+    GPUTri tris[];
+};
+layout(push_constant) uniform PC {
+    int W;
+    int H;
+    int ns;
+    int nq;
+    int nt;
+    int spp;
+    int seed;
+    int nlights; // leading quads are emissive
+}
+pc;
+
+uint wseed;
+uint wrand() {
+    wseed = uint(wseed ^ 61) ^ (wseed >> 16);
+    wseed *= 9u;
+    wseed ^= wseed >> 4;
+    wseed *= 0x27d4eb2du;
+    wseed ^= wseed >> 15;
+    return wseed;
+}
+float wrandf() {
+    return float(wrand()) / 4294967296.0;
+}
+vec3 wrand_in_sphere() {
+    for (int i = 0; i < 16; ++i) {
+        vec3 p = 2.0 * vec3(wrandf(), wrandf(), wrandf()) - vec3(1.0);
+        if (dot(p, p) < 1.0)
+            return p;
+    }
+    return vec3(0.0, 0.0, 1.0);
+}
+vec3 wcosine_dir() {
+    float r1 = wrandf();
+    float r2 = wrandf();
+    float phi = 6.28318530718 * r1;
+    return vec3(cos(phi) * sqrt(r2), sin(phi) * sqrt(r2), sqrt(1.0 - r2));
+}
+void wonb(vec3 n, out vec3 u, out vec3 v, out vec3 w) {
+    w = normalize(n);
+    vec3 a = abs(w.x) > 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    v = normalize(cross(w, a));
+    u = cross(v, w);
+}
+
+// Closest hit across all prims. Returns material of winner.
+bool trace(vec3 o, vec3 d, float tmax, out float t, out vec3 n, out vec4 alb,
+           out vec4 emit, out vec4 params, out int light_idx) {
+    t = tmax;
+    bool any = false;
+    float tt;
+    vec3 nn;
+    light_idx = -1;
+    for (int i = 0; i < pc.ns; ++i)
+        if (hit_sphere(o, d, 0.001, t, spheres[i], tt, nn)) {
+            t = tt;
+            n = nn;
+            alb = spheres[i].alb;
+            emit = spheres[i].emit;
+            params = spheres[i].params;
+            any = true;
+        }
+    for (int i = 0; i < pc.nq; ++i)
+        if (hit_quad(o, d, 0.001, t, quads[i], tt, nn)) {
+            t = tt;
+            n = nn;
+            alb = quads[i].alb;
+            emit = quads[i].emit;
+            params = quads[i].params;
+            light_idx = (emit.x + emit.y + emit.z > 0.0) ? i : -1;
+            any = true;
+        }
+    for (int i = 0; i < pc.nt; ++i)
+        if (hit_tri(o, d, 0.001, t, tris[i], tt, nn)) {
+            t = tt;
+            n = nn;
+            alb = tris[i].alb;
+            emit = tris[i].emit;
+            params = tris[i].params;
+            any = true;
+        }
+    return any;
+}
+
+float schlick(float cosT, float ri) {
+    float r0 = (1.0 - ri) / (1.0 + ri);
+    r0 *= r0;
+    return r0 + (1.0 - r0) * pow(1.0 - cosT, 5.0);
+}
+
+vec3 Li(vec3 o, vec3 d) {
+    vec3 throughput = vec3(1.0);
+    vec3 L = vec3(0.0);
+    vec3 prev = o;
+    bool specular = true;
+    float pdf_b_last = 0.0;
+    for (int bounce = 0; bounce < 50; ++bounce) {
+        float t;
+        vec3 n;
+        vec4 alb, emit, params;
+        int light_idx;
+        if (!trace(o, d, 1e30, t, n, alb, emit, params, light_idx)) {
+            vec3 unit = normalize(d);
+            float tt = 0.5 * (unit.y + 1.0);
+            L += throughput * ((1.0 - tt) * vec3(1.0) + tt * vec3(0.5, 0.7, 1.0));
+            break;
+        }
+        if (emit.x + emit.y + emit.z > 0.0) {
+            if (specular) {
+                L += throughput * emit.xyz;
+            } else if (light_idx >= 0) {
+                vec3 to_hit = (o + d * t) - prev;
+                float dist = length(to_hit);
+                vec3 wi = to_hit / dist;
+                GPUQuad lq = quads[light_idx];
+                vec3 ln = normalize(cross(lq.u.xyz, lq.v.xyz));
+                float cosA = abs(dot(ln, -wi));
+                float area = length(cross(lq.u.xyz, lq.v.xyz));
+                float pdf_l = (cosA > 0.0 && area > 0.0)
+                                  ? dist * dist / (float(pc.nlights) * area * cosA)
+                                  : 0.0;
+                float w = (pdf_l <= 0.0) ? 1.0 : pdf_b_last / (pdf_b_last + pdf_l);
+                L += throughput * emit.xyz * w;
+            } else {
+                L += throughput * emit.xyz;
+            }
+            break;
+        }
+        int mtype = int(params.x + 0.5);
+        vec3 attenuation;
+        vec3 sd;
+        bool ok = true;
+        bool diffuse = false;
+        if (mtype == 0) {
+            vec3 u, v, w;
+            wonb(n, u, v, w);
+            vec3 cd = wcosine_dir();
+            sd = u * cd.x + v * cd.y + w * cd.z;
+            attenuation = alb.xyz;
+            diffuse = true;
+        } else if (mtype == 1) {
+            vec3 refl = reflect(normalize(d), n);
+            sd = refl + params.y * wrand_in_sphere();
+            attenuation = alb.xyz;
+            ok = dot(sd, n) > 0.0;
+        } else {
+            float ir = params.z;
+            float ratio = dot(d, n) < 0.0 ? (1.0 / ir) : ir;
+            vec3 unit = normalize(d);
+            vec3 nn = dot(d, n) < 0.0 ? n : -n;
+            float cosT = min(dot(-unit, nn), 1.0);
+            float sinT = sqrt(1.0 - cosT * cosT);
+            attenuation = vec3(1.0);
+            if (ratio * sinT > 1.0 || schlick(cosT, ratio) > wrandf())
+                sd = reflect(unit, nn);
+            else
+                sd = refract(unit, nn, ratio);
+        }
+        if (!ok)
+            break;
+        if (diffuse && pc.nlights > 0) {
+            int li = int(wrandf() * float(pc.nlights));
+            li = min(li, pc.nlights - 1);
+            GPUQuad lq = quads[li];
+            vec3 lp = lq.Q.xyz + wrandf() * lq.u.xyz + wrandf() * lq.v.xyz;
+            vec3 hitp = o + d * t;
+            vec3 toL = lp - hitp;
+            float dist = length(toL);
+            vec3 wi = toL / dist;
+            vec3 ln = normalize(cross(lq.u.xyz, lq.v.xyz));
+            float cosS = dot(n, wi);
+            float cosA = abs(dot(ln, -wi));
+            float area = length(cross(lq.u.xyz, lq.v.xyz));
+            if (cosS > 0.0 && cosA > 0.0 && area > 0.0) {
+                float tt2;
+                vec3 nn2;
+                vec4 a2, e2, p2;
+                int lx2;
+                // Shadow probe: any hit before the light blocks.
+                bool blocked = trace(hitp, wi, dist - 0.001, tt2, nn2, a2, e2, p2, lx2);
+                // trace() tmin is 0.001 inside; but it also returns the
+                // light itself at ~dist: blocked only if something nearer.
+                blocked = blocked && tt2 < dist - 0.002;
+                if (!blocked) {
+                    float pdf_l = dist * dist / (float(pc.nlights) * area * cosA);
+                    float pdf_b = cosS / 3.14159265;
+                    float w = pdf_l / (pdf_l + pdf_b);
+                    L += throughput * attenuation * lq.emit.xyz *
+                         (cosS * cosA * float(pc.nlights) * area /
+                          (3.14159265 * dist * dist)) * w;
+                }
+            }
+        }
+        if (diffuse) {
+            vec3 wdir = normalize(sd);
+            pdf_b_last = max(dot(wdir, n), 0.0) / 3.14159265;
+            throughput *= attenuation;
+            specular = false;
+        } else {
+            throughput *= attenuation;
+            specular = true;
+        }
+        prev = o + d * t;
+        o = o + d * t;
+        d = sd;
+        if (bounce >= 3) {
+            float q = min(max(max(throughput.x, throughput.y), throughput.z), 0.95);
+            if (q <= 0.0 || wrandf() > q)
+                break;
+            throughput /= q;
+        }
+    }
+    return L;
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= pc.W || p.y >= pc.H)
+        return;
+    wseed = uint(pc.seed) + uint(p.y * pc.W + p.x) * 1973u + 1u;
+    // Stratified spp: host guarantees perfect square, passes side.
+    int side = 1;
+    for (; (side + 1) * (side + 1) <= pc.spp; ++side)
+        ;
+    vec3 acc = vec3(0.0);
+    int n = 0;
+    for (int iy = 0; iy < side; ++iy)
+        for (int ix = 0; ix < side; ++ix) {
+            float ox = (float(ix) + wrandf()) / float(side);
+            float oy = (float(iy) + wrandf()) / float(side);
+            float u = (float(p.x) + ox) / float(pc.W);
+            // Vulkan rows run top-first; flip so v=1 is up like the CPU.
+            float v = 1.0 - (float(p.y) + oy) / float(pc.H);
+            vec3 o = cam.origin.xyz;
+            vec3 d = cam.lower_left.xyz + u * cam.horiz.xyz + v * cam.vert.xyz - o;
+            acc += Li(o, d);
+            ++n;
+        }
+    acc /= float(n);
+    imageStore(img, p, vec4(acc, 1.0));
+}

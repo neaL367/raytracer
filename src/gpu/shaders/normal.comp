@@ -1,0 +1,62 @@
+#version 450
+// Normal-shade proof of GPU geometry: silhouette must match CPU.
+#include "common.glsl"
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(binding = 0, rgba32f) uniform image2D img;
+layout(binding = 1) uniform Cam {
+    GPUCam cam;
+};
+layout(binding = 2) readonly buffer Spheres {
+    GPUSphere spheres[];
+};
+layout(binding = 3) readonly buffer Quads {
+    GPUQuad quads[];
+};
+layout(binding = 4) readonly buffer Tris {
+    GPUTri tris[];
+};
+layout(push_constant) uniform PC {
+    int W;
+    int H;
+    int ns;
+    int nq;
+    int nt;
+}
+pc;
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= pc.W || p.y >= pc.H)
+        return;
+    float u = (float(p.x) + 0.5) / float(pc.W);
+    // Vulkan rows run top-first; flip v so v=1 is up like the CPU.
+    float v = 1.0 - (float(p.y) + 0.5) / float(pc.H);
+    vec3 o = cam.origin.xyz;
+    vec3 d = cam.lower_left.xyz + u * cam.horiz.xyz + v * cam.vert.xyz - o;
+    float closest = 1e30;
+    vec3 hn = vec3(0.0);
+    bool any = false;
+    float t;
+    vec3 n;
+    for (int i = 0; i < pc.ns; ++i)
+        if (hit_sphere(o, d, 0.001, closest, spheres[i], t, n)) {
+            closest = t;
+            hn = n;
+            any = true;
+        }
+    for (int i = 0; i < pc.nq; ++i)
+        if (hit_quad(o, d, 0.001, closest, quads[i], t, n)) {
+            closest = t;
+            hn = n;
+            any = true;
+        }
+    for (int i = 0; i < pc.nt; ++i)
+        if (hit_tri(o, d, 0.001, closest, tris[i], t, n)) {
+            closest = t;
+            hn = n;
+            any = true;
+        }
+    vec3 col = any ? 0.5 * (hn + vec3(1.0))
+                   : mix(vec3(1.0), vec3(0.5, 0.7, 1.0),
+                         0.5 * (normalize(d).y + 1.0));
+    imageStore(img, p, vec4(col, 1.0));
+}
