@@ -107,8 +107,7 @@ static void t_onb_cosine() {
     EXPECT_NEAR(cosine_pdf(-0.5), 0.0);
 }
 
-static void t_rr() {
-    test_current = "rr";
+static void t_rr() {    test_current = "rr";
     rng_seed(24);
     // Mirror of integrator RR: q=0.5 fixed throughput, mean preserved.
     double sum = 0;
@@ -122,6 +121,18 @@ static void t_rr() {
     EXPECT_TRUE(fabs(sum / T - 0.5) < 0.02); // unbiased termination
 }
 
+static void t_seed_streams() {
+    test_current = "seed_streams";
+    // --seed contract: same seed replays, neighbors decorrelate.
+    rng_seed(42);
+    double a1 = random_double(), a2 = random_double();
+    rng_seed(42);
+    EXPECT_TRUE(random_double() == a1 && random_double() == a2); // replay
+    rng_seed(43);
+    double b1 = random_double();
+    EXPECT_TRUE(b1 != a1); // adjacent pixel stream differs
+}
+
 void run_core_tests() {
     t_vec3();
     t_ray();
@@ -129,4 +140,5 @@ void run_core_tests() {
     t_montecarlo();
     t_onb_cosine();
     t_rr();
+    t_seed_streams();
 }

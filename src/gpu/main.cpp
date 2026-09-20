@@ -50,7 +50,7 @@ int main(int argc, char **argv) {
             out_path = a;
     }
     if (H <= 0)
-        H = (W * 9 + 8) / 16; // 16:9 default
+        H = (int)((double)W / (16.0 / 9.0)); // same default as CPU app
     auto t0 = std::chrono::high_resolution_clock::now();
 
     // One construction order with the CPU (scene/scene.h): flatten the

@@ -55,4 +55,4 @@ M19 done: motion blur via shutter + moving spheres, defaults frozen.
 M20 done: constant-density fog volumes, opt-in glow.
 M21 done: GPU motion + fog parity, path-time inheritance.
 M22 done: SDL3 preview + pixel inspector + diff mode.
-Next: pick slice.
+Next: `.scratch/roadmap.md` (M23 fog probe → M24 mipmaps → M25 MTL → M26 HDR+docs).
