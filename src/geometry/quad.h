@@ -35,6 +35,19 @@ public:
         return true;
     }
 
+    bool bounding_box(aabb &box) const override {
+        const double pad = 1e-4;
+        vec3 c1 = Q + u, c2 = Q + v, c3 = Q + u + v;
+        vec3 lo(fmin(Q.x(), fmin(c1.x(), fmin(c2.x(), c3.x()))) - pad,
+                fmin(Q.y(), fmin(c1.y(), fmin(c2.y(), c3.y()))) - pad,
+                fmin(Q.z(), fmin(c1.z(), fmin(c2.z(), c3.z()))) - pad);
+        vec3 hi(fmax(Q.x(), fmax(c1.x(), fmax(c2.x(), c3.x()))) + pad,
+                fmax(Q.y(), fmax(c1.y(), fmax(c2.y(), c3.y()))) + pad,
+                fmax(Q.z(), fmax(c1.z(), fmax(c2.z(), c3.z()))) + pad);
+        box = aabb(lo, hi);
+        return true;
+    }
+
     // Light-sampling support: uniform point + area for NEE pdf.
     double area() const { return cross(u, v).length(); }
     vec3 sample_point() const {

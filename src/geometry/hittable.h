@@ -1,6 +1,7 @@
 #pragma once
 #include "../core/vec3.h"
 #include "../core/ray.h"
+#include "../core/aabb.h"
 #include <memory>
 #include <vector>
 
@@ -25,6 +26,7 @@ class hittable {
 public:
     virtual ~hittable() = default;
     virtual bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const = 0;
+    virtual bool bounding_box(aabb &box) const = 0;
 };
 
 // Flat list, closest-hit scan. O(N) flagged: BVH replaces in M5.
@@ -45,6 +47,22 @@ public:
             }
         }
         return any;
+    }
+
+    bool bounding_box(aabb &box) const override {
+        if (objects.empty())
+            return false;
+        aabb tmp;
+        bool first = true;
+        for (const auto &o : objects) {
+            aabb b;
+            if (!o->bounding_box(b))
+                return false;
+            tmp = first ? b : aabb::surrounding(tmp, b);
+            first = false;
+        }
+        box = tmp;
+        return true;
     }
 
 private:

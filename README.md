@@ -13,7 +13,7 @@ ctest --test-dir build -C Release
 ## Run
 
 ```bat
-build\Release\raytracer.exe [--samples 16]
+build\Release\raytracer.exe [--samples 16] [--threads N] [--bench]
 ```
 
 Renders `out/image.ppm` (400x225, 16spp stratified default,
@@ -37,4 +37,5 @@ M0/M1 done: toolchain + first sphere image.
 M2 done: geometry + materials + lights.
 M3 done: stratified sampling + AA.
 M4 done: NEE + MIS path tracing, RR, defocus.
-Next: M5 CPU perf (threads, BVH).
+M5 done: median BVH, tile thread pool, bench counters.
+Next: M6 GPU compute port.

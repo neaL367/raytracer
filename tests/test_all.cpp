@@ -4,6 +4,8 @@
 #include "core/random.h"
 #include "core/sampler.h"
 #include "core/onb.h"
+#include "core/aabb.h"
+#include "accel/bvh.h"
 #include "integrator/integrator.h"
 #include "camera/camera.h"
 #include "geometry/hittable.h"
@@ -236,10 +238,58 @@ static void t_rr() {
     EXPECT_TRUE(fabs(sum / T - 0.5) < 0.02); // unbiased termination
 }
 
+static void t_aabb() {
+    cur = "aabb";
+    aabb b(vec3(-1, -1, -1), vec3(1, 1, 1));
+    hit_record dummy;
+    EXPECT_TRUE(b.hit(ray(vec3(0, 0, 5), vec3(0, 0, -1)), 0.001, 1e30));
+    EXPECT_TRUE(!b.hit(ray(vec3(0, 0, 5), vec3(0, 1, 0)), 0.001, 1e30));
+    // Parallel ray inside slab survives; outside rejected.
+    EXPECT_TRUE(b.hit(ray(vec3(0, 0, 0), vec3(1, 0, 0)), 0.001, 1e30));
+    EXPECT_TRUE(!b.hit(ray(vec3(0, 5, 0), vec3(1, 0, 0)), 0.001, 1e30));
+    aabb c(vec3(0, 0, 0), vec3(2, 2, 2));
+    aabb u = aabb::surrounding(b, c);
+    EXPECT_NEAR(u.minimum.x(), -1);
+    EXPECT_NEAR(u.maximum.x(), 2);
+    (void)dummy;
+}
+static void t_bvh() {
+    cur = "bvh";
+    rng_seed(30);
+    auto m = std::make_shared<lambertian>(vec3(0.6, 0.6, 0.6));
+    std::vector<std::shared_ptr<hittable>> objs;
+    objs.push_back(std::make_shared<sphere>(vec3(0, -100.5, -1), 100, m));
+    objs.push_back(std::make_shared<sphere>(vec3(0, 0, -1), 0.5, m));
+    objs.push_back(std::make_shared<sphere>(vec3(-1, 0, -1), 0.5, m));
+    objs.push_back(std::make_shared<triangle>(vec3(-1, -1, -2), vec3(1, -1, -2),
+                                              vec3(0, 1, -2), m));
+    objs.push_back(std::make_shared<quad>(vec3(-1, -1, -3), vec3(2, 0, 0),
+                                          vec3(0, 2, 0), m));
+    hittable_list list;
+    for (auto &o : objs)
+        list.add(o);
+    bvh_node tree(objs, 0, objs.size());
+    int agree = 0;
+    for (int k = 0; k < 200; ++k) {
+        vec3 o(random_double(-2, 2), random_double(-2, 2), random_double(-1, 1));
+        ray r(o, random_unit_vector());
+        hit_record rl, rb;
+        bool hl = list.hit(r, 0.001, 1e30, rl);
+        bool hb = tree.hit(r, 0.001, 1e30, rb);
+        EXPECT_TRUE(hl == hb);
+        if (hl && hb) {
+            EXPECT_TRUE(fabs(rl.t - rb.t) < 1e-9);
+            EXPECT_TRUE(rl.mat == rb.mat);
+            ++agree;
+        }
+    }
+    EXPECT_TRUE(agree > 50); // scene actually hit, not all misses
+}
+
 int main() {
     t_vec3(); t_ray(); t_camera(); t_sphere(); t_list(); t_triangle_quad();
     t_materials(); t_sampler(); t_montecarlo(); t_onb_cosine(); t_emissive();
-    t_defocus(); t_rr();
+    t_defocus(); t_rr(); t_aabb(); t_bvh();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

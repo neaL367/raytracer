@@ -3,6 +3,7 @@
 #include "../core/ray.h"
 #include "../core/random.h"
 #include "../core/sampler.h"
+#include "../core/bench_stats.h"
 #include "../geometry/hittable.h"
 #include "../geometry/quad.h"
 #include "../material/material.h"
@@ -18,6 +19,7 @@ class integrator {
 public:
     vec3 Li(const ray &r, const hittable &world,
             const std::vector<std::shared_ptr<quad>> &lights, int max_depth) const {
+        count_ray(); // primary
         vec3 throughput(1, 1, 1);
         vec3 L(0, 0, 0);
         ray cur = r;
@@ -81,6 +83,7 @@ public:
                 double cosA = fabs(dot(light->light_normal(), -wi));
                 if (cosS > 0 && cosA > 0 && light->area() > 0) {
                     hit_record tmp;
+                    count_ray(); // shadow ray
                     bool blocked = world.hit(ray(rec.point, wi), 0.001,
                                              dist - 0.001, tmp);
                     if (!blocked) {
@@ -109,6 +112,7 @@ public:
             }
             prev_point = rec.point;
             cur = scattered;
+            count_ray(); // bounce ray
 
             // Russian roulette past depth 3: unbiased, scales by 1/q.
             if (bounce >= 3) {

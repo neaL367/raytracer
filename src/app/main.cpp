@@ -2,31 +2,53 @@
 #include "core/ray.h"
 #include "core/random.h"
 #include "core/sampler.h"
+#include "core/bench_stats.h"
 #include "camera/camera.h"
 #include "geometry/hittable.h"
 #include "geometry/sphere.h"
 #include "geometry/triangle.h"
 #include "geometry/quad.h"
+#include "accel/bvh.h"
 #include "material/material.h"
 #include "integrator/integrator.h"
 #include "output/ppm.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 int main(int argc, char **argv) {
     int spp = 16; // 4x4 strata default; perfect squares stratify
-    double aperture = 0.0; // 0 = pinhole (M3 path); >0 thin-lens blur
-    for (int i = 1; i + 1 < argc; ++i) {
+    double aperture = 0.0; // 0 = pinhole; >0 thin-lens blur
+    unsigned num_threads = std::thread::hardware_concurrency();
+    if (num_threads == 0)
+        num_threads = 4;
+    int tile_rows = 8;
+    bool bench = false;
+    for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
-        if (a == "--samples")
-            spp = std::max(1, std::atoi(argv[i + 1]));
-        else if (a == "--aperture")
-            aperture = std::max(0.0, std::atof(argv[i + 1]));
+        if (a == "--samples" && i + 1 < argc)
+            spp = std::max(1, std::atoi(argv[++i]));
+        else if (a == "--aperture" && i + 1 < argc)
+            aperture = std::max(0.0, std::atof(argv[++i]));
+        else if (a == "--threads" && i + 1 < argc)
+            num_threads = (unsigned)std::max(1, std::atoi(argv[++i]));
+        else if (a == "--tile" && i + 1 < argc)
+            tile_rows = std::max(1, std::atoi(argv[++i]));
+        else if (a == "--bench")
+            bench = true;
+    }
+    // Legacy M2 stream needs one global RNG in pixel order: single thread.
+    bool legacy = (spp == 1);
+    if (legacy && num_threads != 1) {
+        std::cout << "note: spp=1 legacy path forces 1 thread (M2 stream)\n";
+        num_threads = 1;
     }
 
     const int W = 400;
@@ -34,7 +56,7 @@ int main(int argc, char **argv) {
     const int max_depth = 50; // RR handles termination; depth is backstop
     const unsigned base_seed = 42;
 
-    hittable_list world;
+    std::vector<std::shared_ptr<hittable>> objs;
     std::vector<std::shared_ptr<quad>> lights;
     auto ground_mat = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));
     auto center_mat = std::make_shared<lambertian>(vec3(0.7, 0.3, 0.3));
@@ -42,53 +64,84 @@ int main(int argc, char **argv) {
     auto right_mat = std::make_shared<dielectric>(1.5);
     auto light_mat = std::make_shared<diffuse_light>(vec3(4, 4, 4));
 
-    world.add(std::make_shared<sphere>(vec3(0, -100.5, -1), 100, ground_mat));
-    world.add(std::make_shared<sphere>(vec3(0, 0, -1), 0.5, center_mat));
-    world.add(std::make_shared<sphere>(vec3(-1, 0, -1), 0.5, left_mat));
-    world.add(std::make_shared<sphere>(vec3(1, 0, -1), 0.5, right_mat));
-    world.add(std::make_shared<triangle>(vec3(-0.3, -0.35, -0.6), vec3(0.3, -0.35, -0.6),
-                                         vec3(0, 0.1, -0.6), center_mat));
-    // Ceiling area light, faces down into scene.
+    objs.push_back(std::make_shared<sphere>(vec3(0, -100.5, -1), 100, ground_mat));
+    objs.push_back(std::make_shared<sphere>(vec3(0, 0, -1), 0.5, center_mat));
+    objs.push_back(std::make_shared<sphere>(vec3(-1, 0, -1), 0.5, left_mat));
+    objs.push_back(std::make_shared<sphere>(vec3(1, 0, -1), 0.5, right_mat));
+    objs.push_back(std::make_shared<triangle>(vec3(-0.3, -0.35, -0.6), vec3(0.3, -0.35, -0.6),
+                                              vec3(0, 0.1, -0.6), center_mat));
     auto light = std::make_shared<quad>(vec3(-1, 1.9, -2), vec3(2, 0, 0),
                                         vec3(0, 0, 2), light_mat);
-    world.add(light);
+    objs.push_back(light);
     lights.push_back(light);
 
-    // Focus at sphere plane (dist 1); aperture 0 reproduces pinhole.
+    // BVH over everything incl. light quad: shadow + NEE rays traverse it.
+    bvh_node world(objs, 0, objs.size());
+
     camera cam(vec3(0, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0),
                90.0, double(W) / double(H), aperture, 1.0);
     integrator tracer;
     std::vector<vec3> fb(W * H);
-    if (spp == 1)
-        rng_seed(base_seed); // legacy stream path
-    for (int j = 0; j < H; ++j) {
-        for (int i = 0; i < W; ++i) {
-            if (spp != 1)
-                rng_seed(base_seed + (unsigned)(j * W + i));
-            vec3 acc(0, 0, 0);
-            if (spp == 1) {
-                double u = double(i) / (W - 1);
-                double v = double(j) / (H - 1);
-                acc = tracer.Li(cam.get_ray(u, v), world, lights, max_depth);
-            } else {
-                auto offs = pixel_samples(spp);
-                for (auto [ox, oy] : offs) {
-                    double u = (i + ox) / W;
-                    double v = (j + oy) / H;
-                    acc += tracer.Li(cam.get_ray(u, v), world, lights, max_depth);
-                }
-                acc /= (double)offs.size();
+    bench_enabled_flag().store(bench, std::memory_order_relaxed);
+
+    auto render_pixel = [&](int i, int j) {
+        vec3 acc(0, 0, 0);
+        if (legacy) {
+            double u = double(i) / (W - 1);
+            double v = double(j) / (H - 1);
+            acc = tracer.Li(cam.get_ray(u, v), world, lights, max_depth);
+        } else {
+            rng_seed(base_seed + (unsigned)(j * W + i));
+            auto offs = pixel_samples(spp);
+            for (auto [ox, oy] : offs) {
+                double u = (i + ox) / W;
+                double v = (j + oy) / H;
+                acc += tracer.Li(cam.get_ray(u, v), world, lights, max_depth);
             }
-            fb[j * W + i] = acc;
+            acc /= (double)offs.size();
         }
+        fb[(size_t)j * W + i] = acc;
+    };
+
+    auto t_start = std::chrono::high_resolution_clock::now();
+    if (legacy)
+        rng_seed(base_seed);
+    const int num_tiles = (H + tile_rows - 1) / tile_rows;
+    std::atomic<int> next_tile{0};
+    std::vector<std::thread> workers;
+    for (unsigned t = 0; t < num_threads; ++t) {
+        workers.emplace_back([&] {
+            for (;;) {
+                int ti = next_tile.fetch_add(1, std::memory_order_relaxed);
+                if (ti >= num_tiles)
+                    break;
+                int j0 = ti * tile_rows;
+                int j1 = std::min(j0 + tile_rows, H);
+                for (int j = j0; j < j1; ++j)
+                    for (int i = 0; i < W; ++i)
+                        render_pixel(i, j);
+            }
+        });
     }
+    for (auto &th : workers)
+        th.join();
+    auto t_end = std::chrono::high_resolution_clock::now();
+    double secs = std::chrono::duration<double>(t_end - t_start).count();
 
     std::filesystem::create_directories("out");
     if (!write_ppm("out/image.ppm", fb, W, H)) {
         std::cerr << "write failed\n";
         return 1;
     }
+    std::uint64_t rays = bench_rays().load();
     std::cout << "wrote out/image.ppm " << W << "x" << H << " spp=" << spp
-              << " depth=" << max_depth << " aperture=" << aperture << "\n";
+              << " threads=" << num_threads << " tile=" << tile_rows << "\n";
+    std::cout << "render " << secs << "s";
+    if (bench) {
+        std::cout << " rays=" << rays << " (" << (rays / 1e6 / secs) << " Mrays/s)"
+                  << " box=" << bench_boxes().load()
+                  << " prim=" << bench_prims().load();
+    }
+    std::cout << "\n";
     return 0;
 }

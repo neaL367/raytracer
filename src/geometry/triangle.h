@@ -37,6 +37,18 @@ public:
         return true;
     }
 
+    bool bounding_box(aabb &box) const override {
+        const double pad = 1e-4; // zero-thickness plane needs slab volume
+        vec3 lo(fmin(v0.x(), fmin(v1.x(), v2.x())) - pad,
+                fmin(v0.y(), fmin(v1.y(), v2.y())) - pad,
+                fmin(v0.z(), fmin(v1.z(), v2.z())) - pad);
+        vec3 hi(fmax(v0.x(), fmax(v1.x(), v2.x())) + pad,
+                fmax(v0.y(), fmax(v1.y(), v2.y())) + pad,
+                fmax(v0.z(), fmax(v1.z(), v2.z())) + pad);
+        box = aabb(lo, hi);
+        return true;
+    }
+
 private:
     vec3 v0, v1, v2;
     std::shared_ptr<material> mat;
