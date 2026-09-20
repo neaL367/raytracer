@@ -1,109 +1,60 @@
-#pragma once       // include guard: prevents this header's contents being seen twice in one translation unit
-#include <cmath>   // for std::sqrt, used in vec3::length()
-#include <ostream> // for std::ostream, used in operator<< overload
+#pragma once
+#include <cmath>
+#include <iostream>
 
-class vec3 // 3D vector: represents a point, direction, or color depending on context
-{
+// vec3 value type, not hierarchy. Reason: cache-friendly, inlinable,
+// no vtable in hot loop. Millions of ops per image, indirection kills.
+class vec3 {
 public:
-    vec3() : e{0, 0, 0} {}                             // default constructor: zero vector
-    vec3(double x, double y, double z) : e{x, y, z} {} // parameterized constructor
+    double e[3];
 
-    double x() const { return e[0]; } // read-only accessor for x component
-    double y() const { return e[1]; } // read-only accessor for y component
-    double z() const { return e[2]; } // read-only accessor for z component
-    // Indexed access into the same storage. Lets axis loops run over an
-    // integer index instead of a three-way branch per component — the form
-    // compilers can unroll and vectorize. No bounds check, same as x()/y()/z().
-    double operator[](int i) const { return e[i]; }
+    vec3() : e{0, 0, 0} {}
+    vec3(double x, double y, double z) : e{x, y, z} {}
 
-    vec3 &operator+=(const vec3 &other) // compound assignment: modifies *this in place, unlike operator+
-    {
-        e[0] += other.x();
-        e[1] += other.y();
-        e[2] += other.z();
-        return *this; // return a reference to the modified object, enabling chaining (a += b += c)
+    double x() const { return e[0]; }
+    double y() const { return e[1]; }
+    double z() const { return e[2]; }
+
+    vec3 operator-() const { return vec3(-e[0], -e[1], -e[2]); }
+    vec3 &operator+=(const vec3 &v) {
+        e[0] += v.e[0]; e[1] += v.e[1]; e[2] += v.e[2];
+        return *this;
     }
-
-    double length_squared() const // returns the squared length of the vector, which is faster to compute than the actual length and often sufficient for comparisons
-    {
-        return e[0] * e[0] + e[1] * e[1] + e[2] * e[2];
+    vec3 &operator*=(double t) {
+        e[0] *= t; e[1] *= t; e[2] *= t;
+        return *this;
     }
+    vec3 &operator/=(double t) { return *this *= 1 / t; }
 
-    double length() const // returns the actual length of the vector, which is the square root of the squared length
-    {
-        return std::sqrt(length_squared());
-    }
-
-private:
-    double e[3]; // x, y, z stored contiguously (matters later for cache/SIMD behavior)
+    double length_squared() const { return e[0]*e[0] + e[1]*e[1] + e[2]*e[2]; }
+    double length() const { return std::sqrt(length_squared()); }
 };
 
-vec3 operator+(const vec3 &lhs, const vec3 &rhs) // free function: produces a new vec3, leaves lhs/rhs unchanged
-{
-    return vec3(lhs.x() + rhs.x(), lhs.y() + rhs.y(), lhs.z() + rhs.z());
+inline vec3 operator+(const vec3 &u, const vec3 &v) {
+    return vec3(u.e[0]+v.e[0], u.e[1]+v.e[1], u.e[2]+v.e[2]);
 }
-
-vec3 operator-(const vec3 &lhs, const vec3 &rhs) // free function: component-wise subtraction, new vec3
-{
-    return vec3(lhs.x() - rhs.x(), lhs.y() - rhs.y(), lhs.z() - rhs.z());
+inline vec3 operator-(const vec3 &u, const vec3 &v) {
+    return vec3(u.e[0]-v.e[0], u.e[1]-v.e[1], u.e[2]-v.e[2]);
 }
-
-vec3 operator-(const vec3 &v) // unary negation: returns a new vec3 with all components negated
-{
-    return vec3(-v.x(), -v.y(), -v.z());
+inline vec3 operator*(const vec3 &u, const vec3 &v) {
+    return vec3(u.e[0]*v.e[0], u.e[1]*v.e[1], u.e[2]*v.e[2]);
 }
-
-vec3 operator*(const vec3 &v, double t) // vector * scalar: does the actual component-wise multiplication
-{
-    return vec3(v.x() * t, v.y() * t, v.z() * t);
+inline vec3 operator*(double t, const vec3 &v) {
+    return vec3(t*v.e[0], t*v.e[1], t*v.e[2]);
 }
+inline vec3 operator*(const vec3 &v, double t) { return t * v; }
+inline vec3 operator/(const vec3 &v, double t) { return (1 / t) * v; }
 
-vec3 operator*(double t, const vec3 &v) // scalar * vector: reorders arguments and delegates to the overload above
-{
-    return v * t;
+inline double dot(const vec3 &u, const vec3 &v) {
+    return u.e[0]*v.e[0] + u.e[1]*v.e[1] + u.e[2]*v.e[2];
 }
-
-vec3 operator*(const vec3 &u, const vec3 &v) // vector * vector: component-wise multiplication, not a dot or cross product
-{
-    return vec3(u.x() * v.x(), u.y() * v.y(), u.z() * v.z());
+inline vec3 cross(const vec3 &u, const vec3 &v) {
+    return vec3(u.e[1]*v.e[2] - u.e[2]*v.e[1],
+                u.e[2]*v.e[0] - u.e[0]*v.e[2],
+                u.e[0]*v.e[1] - u.e[1]*v.e[0]);
 }
+inline vec3 unit_vector(const vec3 &v) { return v / v.length(); }
 
-vec3 operator/(const vec3 &v, double t) // vector / scalar: implemented as multiply-by-reciprocal, not direct division
-{
-    return v * (1.0 / t);
-}
-
-std::ostream &operator<<(std::ostream &out, const vec3 &v) // overloads the << operator for easy printing of vec3 objects, e.g., std::cout << v;
-{
-    return out << v.x() << ' ' << v.y() << ' ' << v.z();
-}
-
-double dot(const vec3 &u, const vec3 &v) // dot product: returns a scalar, not a vector
-{
-    return u.x() * v.x() + u.y() * v.y() + u.z() * v.z();
-}
-
-vec3 cross(const vec3 &u, const vec3 &v) // cross product: returns a vector perpendicular to both u and v, following the right-hand rule
-{
-    return vec3(u.y() * v.z() - u.z() * v.y(),
-                u.z() * v.x() - u.x() * v.z(),
-                u.x() * v.y() - u.y() * v.x());
-}
-
-vec3 unit_vector(const vec3 &v) // returns a new vector in the same direction as v but with length 1, useful for normalization
-{
-    return v / v.length();
-}
-
-vec3 reflect(const vec3 &v, const vec3 &n) // reflection formula: reflects vector v around normal n, assuming n is a unit vector
-{
-    return v - 2 * dot(v, n) * n;
-}
-
-vec3 refract(const vec3 &uv, const vec3 &n, double etai_over_etat) // Snell's law: computes the refracted ray direction given an incident unit vector uv, a normal n, and the ratio of indices of refraction etai_over_etat
-{
-    double cos_theta = std::fmin(dot(-uv, n), 1.0);
-    vec3 r_out_perp = etai_over_etat * (uv + cos_theta * n);
-    vec3 r_out_parallel = -std::sqrt(std::fabs(1.0 - r_out_perp.length_squared())) * n;
-    return r_out_perp + r_out_parallel;
+inline std::ostream &operator<<(std::ostream &out, const vec3 &v) {
+    return out << v.e[0] << ' ' << v.e[1] << ' ' << v.e[2];
 }
