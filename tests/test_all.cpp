@@ -8,6 +8,7 @@
 #include "core/texture.h"
 #include "core/obj_loader.h"
 #include "io/ppm_image.h"
+#include "output/film.h"
 #include "accel/bvh.h"
 #include "integrator/integrator.h"
 #include "camera/camera.h"
@@ -369,10 +370,30 @@ static void t_ppm_obj() {
     EXPECT_TRUE(w.hit(ray(vec3(0.5, 0.5, 3), vec3(0, 0, -1)), 0.001, 1e30, hr));
 }
 
+static void t_film() {
+    cur = "film";
+    vec3 black = aces_approx(vec3(0, 0, 0));
+    EXPECT_NEAR(black.x(), 0);
+    double a05 = aces_approx(vec3(0.5, 0.5, 0.5)).x();
+    double a1 = aces_approx(vec3(1, 1, 1)).x();
+    double a4 = aces_approx(vec3(4, 4, 4)).x();
+    EXPECT_TRUE(a05 < a1 && a1 < a4); // monotonic
+    EXPECT_TRUE(a4 > 0.8 && a4 <= 1.0); // rolls off, never clips past 1
+    EXPECT_NEAR(srgb_encode(0.0), 0.0);
+    EXPECT_NEAR(srgb_encode(1.0), 1.0);
+    // Exposure scales linear input: ev2 at half light == ev1 at full.
+    vec3 t1 = tonemap(vec3(0.18, 0.18, 0.18), 2.0);
+    vec3 t2 = tonemap(vec3(0.36, 0.36, 0.36), 1.0);
+    EXPECT_NEAR(t1.x(), t2.x());
+    // Light quad hue kept: bright white stays neutral, not clipped flat.
+    vec3 lamp = tonemap(vec3(4, 4, 4), 1.0);
+    EXPECT_TRUE(lamp.x() > 0.95 && lamp.y() > 0.95 && lamp.z() > 0.95);
+}
+
 int main() {
     t_vec3(); t_ray(); t_camera(); t_sphere(); t_list(); t_triangle_quad();
     t_materials(); t_sampler(); t_montecarlo(); t_onb_cosine(); t_emissive();
-    t_defocus(); t_rr(); t_aabb(); t_bvh(); t_texture_uv(); t_ppm_obj();
+    t_defocus(); t_rr(); t_aabb(); t_bvh(); t_texture_uv(); t_ppm_obj(); t_film();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

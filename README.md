@@ -40,4 +40,5 @@ M4 done: NEE + MIS path tracing, RR, defocus.
 M5 done: median BVH, tile thread pool, bench counters.
 M6 done: headless Vulkan compute backend (rt_gpu), CPU parity.
 M7 done: textures + OBJ meshes, checker demo, GPU parity.
-Next: M8 film pipeline or CI.
+M8 done: exposure + ACES + sRGB film, shared CPU/GPU writer.
+Next: CI or binned SAH.

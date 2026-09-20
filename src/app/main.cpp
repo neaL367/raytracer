@@ -28,6 +28,7 @@
 int main(int argc, char **argv) {
     int spp = 16; // 4x4 strata default; perfect squares stratify
     double aperture = 0.0; // 0 = pinhole; >0 thin-lens blur
+    double exposure = 1.0; // linear HDR scale before ACES
     unsigned num_threads = std::thread::hardware_concurrency();
     if (num_threads == 0)
         num_threads = 4;
@@ -43,6 +44,8 @@ int main(int argc, char **argv) {
             num_threads = (unsigned)std::max(1, std::atoi(argv[++i]));
         else if (a == "--tile" && i + 1 < argc)
             tile_rows = std::max(1, std::atoi(argv[++i]));
+        else if (a == "--exposure" && i + 1 < argc)
+            exposure = std::max(0.0, std::atof(argv[++i]));
         else if (a == "--bench")
             bench = true;
     }
@@ -144,13 +147,14 @@ int main(int argc, char **argv) {
     double secs = std::chrono::duration<double>(t_end - t_start).count();
 
     std::filesystem::create_directories("out");
-    if (!write_ppm("out/image.ppm", fb, W, H)) {
+    if (!write_ppm("out/image.ppm", fb, W, H, exposure)) {
         std::cerr << "write failed\n";
         return 1;
     }
     std::uint64_t rays = bench_rays().load();
     std::cout << "wrote out/image.ppm " << W << "x" << H << " spp=" << spp
-              << " threads=" << num_threads << " tile=" << tile_rows << "\n";
+              << " threads=" << num_threads << " tile=" << tile_rows
+              << " exposure=" << exposure << "\n";
     std::cout << "render " << secs << "s";
     if (bench) {
         std::cout << " rays=" << rays << " (" << (rays / 1e6 / secs) << " Mrays/s)"
