@@ -64,6 +64,23 @@ static void t_obj() {
         w.add(t);
     hit_record hr;
     EXPECT_TRUE(w.hit(ray(vec3(0.5, 0.5, 3), vec3(0, 0, -1)), 0.001, 1e30, hr));
+    // vn faces: smooth normals load and shade tilted.
+    std::string smooth =
+        (std::filesystem::temp_directory_path() / "rt_smooth_test.obj").string();
+    {
+        std::ofstream f(smooth);
+        f << "v 0 0 0\nv 1 0 0\nv 0 1 0\n";
+        f << "vn 0 0 1\nvn 1 0 0\nvn 0 1 0\n";
+        f << "f 1//1 2//2 3//3\n";
+    }
+    std::vector<std::shared_ptr<triangle>> stris;
+    EXPECT_TRUE(obj_loader::load_obj(smooth, stris, m));
+    EXPECT_TRUE((int)stris.size() == 1);
+    EXPECT_TRUE(stris[0]->hit(ray(vec3(0.25, 0.25, 1), vec3(0, 0, -1)), 0.001, 1e30, hr));
+    // Blend of (0,0,1)*0.5 + (1,0,0)*0.25 + (0,1,0)*0.25, normalized.
+    vec3 expect = unit_vector(vec3(0.25, 0.25, 0.5));
+    EXPECT_NEAR(hr.normal.x(), expect.x());
+    EXPECT_NEAR(hr.normal.z(), expect.z());
 }
 
 static void t_cornell() {

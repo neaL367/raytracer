@@ -121,10 +121,15 @@ inline bool push_prim(flat_scene &out, std::map<const hittable *, std::pair<int,
         GPUTri g{};
         for (int k = 0; k < 3; ++k) {
             vec3 vv = t->vert(k);
+            vec3 nn = t->norm_vert(k);
             float *dst = (k == 0) ? g.a : ((k == 1) ? g.b : g.c);
+            float *nd = (k == 0) ? g.n0 : ((k == 1) ? g.n1 : g.n2);
             dst[0] = (float)vv.x();
             dst[1] = (float)vv.y();
             dst[2] = (float)vv.z();
+            nd[0] = (float)nn.x();
+            nd[1] = (float)nn.y();
+            nd[2] = (float)nn.z();
         }
         fill_material(out, t->mat_ptr(), g.alb, g.alb2, g.emit, g.prm);
         id[o.get()] = {2, (int)gs.tris.size()};

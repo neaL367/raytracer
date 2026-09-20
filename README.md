@@ -48,4 +48,5 @@ M12 done: guided joint-bilateral denoise, 6.57x vs ref.
 M13 done: GPU BVH traversal, parity 0.11%, brute deleted.
 M14 done: stb JPEG/PNG, photo ground, GPU image path.
 M15 done: bilinear sampling both backends, parity 0.6%.
+M16 done: OBJ smooth normals, zero pixel drift.
 Next: pick slice.

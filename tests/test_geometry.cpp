@@ -160,8 +160,7 @@ static void t_sah() {
     EXPECT_NEAR(hr.t, 2.5);
 }
 
-static void t_uv() {
-    test_current = "uv";
+static void t_uv() {    test_current = "uv";
     auto m = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));
     sphere s(vec3(0, 0, 0), 1.0, m);
     hit_record hr;
@@ -177,6 +176,31 @@ static void t_uv() {
     EXPECT_NEAR(hr.u + hr.v, 0.4); // barycentric weights preserved
 }
 
+static void t_smooth() {
+    test_current = "smooth";
+    auto m = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));
+    // Tilted vertex normals on a z=0 tri: center hit blends to average.
+    triangle t(vec3(0, 0, 0), vec3(1, 0, 0), vec3(0, 1, 0), vec3(0, 0, 1),
+               vec3(1, 0, 0), vec3(0, 1, 0), m);
+    hit_record hr;
+    // Ray at barycentric (u=0.25, v=0.25): point (0.25,0.25,0).
+    EXPECT_TRUE(t.hit(ray(vec3(0.25, 0.25, 1), vec3(0, 0, -1)), 0.001, 1e30, hr));
+    vec3 expect = unit_vector(vec3(0, 0, 1) * 0.5 + vec3(1, 0, 0) * 0.25 +
+                              vec3(0, 1, 0) * 0.25);
+    EXPECT_NEAR(hr.normal.x(), expect.x());
+    EXPECT_NEAR(hr.normal.y(), expect.y());
+    EXPECT_NEAR(hr.normal.z(), expect.z());
+    // Flat tri: face normal exactly (no blend drift).
+    triangle f(vec3(0, 0, 0), vec3(1, 0, 0), vec3(0, 1, 0), m);
+    EXPECT_TRUE(f.hit(ray(vec3(0.25, 0.25, 1), vec3(0, 0, -1)), 0.001, 1e30, hr));
+    EXPECT_NEAR(hr.normal.x(), 0);
+    EXPECT_NEAR(hr.normal.y(), 0);
+    EXPECT_NEAR(hr.normal.z(), 1);
+    // Backface: smooth normal flips toward ray like flat does.
+    EXPECT_TRUE(t.hit(ray(vec3(0.25, 0.25, -1), vec3(0, 0, 1)), 0.001, 1e30, hr));
+    EXPECT_TRUE(hr.normal.z() < 0);
+}
+
 void run_geometry_tests() {
     t_sphere();
     t_list();
@@ -185,4 +209,5 @@ void run_geometry_tests() {
     t_bvh();
     t_sah();
     t_uv();
+    t_smooth();
 }

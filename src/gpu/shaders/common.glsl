@@ -20,6 +20,9 @@ struct GPUTri {
     vec4 a;
     vec4 b;
     vec4 c;
+    vec4 n0;
+    vec4 n1;
+    vec4 n2;
     vec4 alb;
     vec4 alb2;
     vec4 emit;
@@ -87,10 +90,12 @@ bool hit_tri(vec3 o, vec3 d, float tmin, float tmax, GPUTri t_,
     if (tt < tmin || tt > tmax)
         return false;
     t = tt;
-    n = normalize(cross(e1, e2));
-    // Double-sided: flip toward ray like CPU set_face_normal.
-    if (dot(d, n) > 0.0)
-        n = -n;
+    // Smooth normals when present, else face normal: barycentric blend
+    // mirrors the CPU (flat tris upload face normal x3, same result).
+    vec3 face_n = normalize(cross(e1, e2));
+    vec3 blend = normalize(t_.n0.xyz * (1.0 - u - v) + t_.n1.xyz * u + t_.n2.xyz * v);
+    vec3 outward = (dot(blend, face_n) < 0.0) ? -blend : blend;
+    n = (dot(d, outward) > 0.0) ? -outward : outward;
     uv = vec2(u, v); // barycentric, mirrors CPU
     return true;
 }
