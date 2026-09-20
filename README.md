@@ -36,4 +36,5 @@ tests/         dependency-free asserts via ctest
 M0/M1 done: toolchain + first sphere image.
 M2 done: geometry + materials + lights.
 M3 done: stratified sampling + AA.
-Next: M4 path tracing + GI.
+M4 done: NEE + MIS path tracing, RR, defocus.
+Next: M5 CPU perf (threads, BVH).

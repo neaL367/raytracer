@@ -24,3 +24,11 @@ inline vec3 random_in_unit_sphere() {
     }
 }
 inline vec3 random_unit_vector() { return unit_vector(random_in_unit_sphere()); }
+// Uniform disk (z=0) for thin-lens aperture sampling.
+inline vec3 random_in_unit_disk() {
+    for (;;) {
+        vec3 p(random_double(-1, 1), random_double(-1, 1), 0);
+        if (p.length_squared() < 1)
+            return p;
+    }
+}

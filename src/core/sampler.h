@@ -34,6 +34,21 @@ inline std::vector<sample_offset> stratified_offsets(int n) {
     return out;
 }
 
+// Cosine-weighted hemisphere dir (local frame, +z up). pdf = cos/PI.
+// Used with ONB to align +z to surface normal.
+inline vec3 random_cosine_direction() {
+    double r1 = random_double();
+    double r2 = random_double();
+    double phi = 2 * 3.1415926535897932385 * r1;
+    double x = std::cos(phi) * std::sqrt(r2);
+    double y = std::sin(phi) * std::sqrt(r2);
+    double z = std::sqrt(1 - r2);
+    return vec3(x, y, z);
+}
+inline double cosine_pdf(double cos_theta) {
+    return cos_theta <= 0 ? 0 : cos_theta / 3.1415926535897932385;
+}
+
 // Perfect square -> strata, else jitter. n=1 returns center (M2 path).
 inline std::vector<sample_offset> pixel_samples(int n) {
     if (n <= 1)

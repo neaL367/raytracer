@@ -1,5 +1,6 @@
 #pragma once
 #include "hittable.h"
+#include "../core/random.h"
 #include <memory>
 
 // Parallelogram from corner Q + edges u,v. Ray-plane then alpha/beta
@@ -15,8 +16,7 @@ public:
         w = n / dot(n, n);
     }
 
-    bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const override {
-        double denom = dot(normal, r.direction());
+    bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const override {        double denom = dot(normal, r.direction());
         if (fabs(denom) < 1e-8)
             return false; // parallel
         double t = (D - dot(normal, r.origin())) / denom;
@@ -34,6 +34,14 @@ public:
         rec.mat = mat;
         return true;
     }
+
+    // Light-sampling support: uniform point + area for NEE pdf.
+    double area() const { return cross(u, v).length(); }
+    vec3 sample_point() const {
+        return Q + random_double() * u + random_double() * v;
+    }
+    vec3 light_normal() const { return normal; }
+    std::shared_ptr<material> mat_ptr() const { return mat; }
 
 private:
     vec3 Q, u, v, w, normal;

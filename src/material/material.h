@@ -2,16 +2,21 @@
 #include "../core/vec3.h"
 #include "../core/ray.h"
 #include "../core/random.h"
+#include "../core/onb.h"
 #include "../geometry/hittable.h"
 #include <memory>
 
 // Material answers scatter only. No light/traversal knowledge.
 // Returns false = ray absorbed (killed, contributes black).
+// emitted() default black; diffuse_light overrides (no scatter).
 class material {
 public:
     virtual ~material() = default;
     virtual bool scatter(const ray &in, const hit_record &rec,
                          vec3 &attenuation, ray &scattered) const = 0;
+    virtual vec3 emitted() const { return vec3(0, 0, 0); }
+    // NEE applies to diffuse only; specular paths skip explicit lights.
+    virtual bool is_diffuse() const { return false; }
 };
 
 class lambertian : public material {
@@ -19,13 +24,17 @@ public:
     lambertian(const vec3 &a) : albedo(a) {}
     bool scatter(const ray &, const hit_record &rec,
                  vec3 &attenuation, ray &scattered) const override {
-        vec3 dir = rec.normal + random_unit_vector();
+        // Cosine-weighted: pdf cos/PI cancels f*cos term, throughput *= albedo exact.
+        onb frame;
+        frame.build_from_w(rec.normal);
+        vec3 dir = frame.local(random_cosine_direction());
         if (near_zero(dir))
             dir = rec.normal; // degenerate guard
         scattered = ray(rec.point, dir);
         attenuation = albedo;
         return true;
     }
+    bool is_diffuse() const override { return true; }
 
 private:
     vec3 albedo;
@@ -73,4 +82,18 @@ private:
         r0 = r0 * r0;
         return r0 + (1 - r0) * pow(1 - cos, 5);
     }
+};
+
+// Pure emitter: never scatters, integrator reads emitted() on hit.
+class diffuse_light : public material {
+public:
+    diffuse_light(const vec3 &c) : emit_color(c) {}
+    bool scatter(const ray &, const hit_record &,
+                 vec3 &, ray &) const override {
+        return false;
+    }
+    vec3 emitted() const override { return emit_color; }
+
+private:
+    vec3 emit_color;
 };

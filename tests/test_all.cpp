@@ -3,6 +3,8 @@
 #include "core/ray.h"
 #include "core/random.h"
 #include "core/sampler.h"
+#include "core/onb.h"
+#include "integrator/integrator.h"
 #include "camera/camera.h"
 #include "geometry/hittable.h"
 #include "geometry/sphere.h"
@@ -164,9 +166,80 @@ static void t_montecarlo() {
     EXPECT_TRUE(vs < vj); // strata win on variance
 }
 
+static void t_onb_cosine() {
+    cur = "onb";
+    onb frame;
+    frame.build_from_w(vec3(0, 1, 0));
+    EXPECT_NEAR(frame.u.length(), 1);
+    EXPECT_NEAR(frame.v.length(), 1);
+    EXPECT_NEAR(frame.w.length(), 1);
+    EXPECT_NEAR(dot(frame.u, frame.v), 0);
+    EXPECT_NEAR(dot(frame.v, frame.w), 0);
+    EXPECT_NEAR(dot(frame.w, frame.u), 0);
+    rng_seed(20);
+    double mean_z = 0;
+    const int N = 10000;
+    for (int i = 0; i < N; ++i)
+        mean_z += random_cosine_direction().z();
+    mean_z /= N;
+    EXPECT_TRUE(fabs(mean_z - 0.6667) < 0.02); // pdf z/PI integrates so
+    EXPECT_NEAR(cosine_pdf(1.0), 1.0 / 3.1415926535897932385);
+    EXPECT_NEAR(cosine_pdf(-0.5), 0.0);
+}
+static void t_emissive() {
+    cur = "emissive";
+    rng_seed(21);
+    diffuse_light lamp(vec3(4, 4, 4));
+    EXPECT_NEAR(lamp.emitted().x(), 4);
+    hit_record rec;
+    vec3 att; ray sc;
+    EXPECT_TRUE(!lamp.scatter(ray(vec3(0,0,0), vec3(0,0,-1)), rec, att, sc));
+    auto m = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));
+    quad q(vec3(-1, 0, -3), vec3(2, 0, 0), vec3(0, 2, 0), m);
+    EXPECT_NEAR(q.area(), 4);
+    vec3 p = q.sample_point();
+    EXPECT_TRUE(p.x() >= -1 && p.x() <= 1 && p.y() >= 0 && p.y() <= 2);
+    EXPECT_NEAR(p.z(), -3);
+}
+static void t_defocus() {
+    cur = "defocus";
+    rng_seed(22);
+    camera pin; // default pinhole
+    camera pin2(vec3(0,0,0), vec3(0,0,-1), vec3(0,1,0), 90.0, 16.0/9.0, 0.0, 1.0);
+    rng_seed(22);
+    vec3 a = pin2.get_ray(0.25, 0.75).direction();
+    rng_seed(22);
+    vec3 b = pin.get_ray(0.25, 0.75).direction();
+    EXPECT_NEAR(a.x(), b.x()); // aperture 0 == pinhole bit-exact
+    EXPECT_NEAR(a.y(), b.y());
+    EXPECT_NEAR(a.z(), b.z());
+    camera wide(vec3(0,0,0), vec3(0,0,-1), vec3(0,1,0), 90.0, 16.0/9.0, 2.0, 1.0);
+    rng_seed(23);
+    vec3 o1 = wide.get_ray(0.5, 0.5).origin();
+    vec3 o2 = wide.get_ray(0.5, 0.5).origin();
+    EXPECT_TRUE(o1.length() <= 1.0 + 1e-9); // on lens disk radius 1
+    EXPECT_TRUE(o2.length() <= 1.0 + 1e-9);
+    EXPECT_TRUE((o1 - o2).length() > 1e-9); // origins actually spread
+}
+static void t_rr() {
+    cur = "rr";
+    rng_seed(24);
+    // Mirror of integrator RR: q=0.5 fixed throughput, mean preserved.
+    double sum = 0;
+    const int T = 20000;
+    for (int i = 0; i < T; ++i) {
+        double tput = 0.5;
+        double q = tput < 0.95 ? tput : 0.95;
+        double v = (random_double() > q) ? 0.0 : tput / q;
+        sum += v;
+    }
+    EXPECT_TRUE(fabs(sum / T - 0.5) < 0.02); // unbiased termination
+}
+
 int main() {
     t_vec3(); t_ray(); t_camera(); t_sphere(); t_list(); t_triangle_quad();
-    t_materials(); t_sampler(); t_montecarlo();
+    t_materials(); t_sampler(); t_montecarlo(); t_onb_cosine(); t_emissive();
+    t_defocus(); t_rr();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

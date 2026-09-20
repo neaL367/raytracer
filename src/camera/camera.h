@@ -1,29 +1,47 @@
 #pragma once
 #include "../core/vec3.h"
 #include "../core/ray.h"
+#include "../core/random.h"
+#include <cmath>
 
-// Pinhole camera, fixed at origin looking -z. Reason: minimal correct
-// ray gen; thinlens aperture waits till M2/M4 (pinhole isolates bugs).
+// Thin-lens camera. aperture 0 = pinhole exactly (same math, zero disk).
+// focus_dist scales viewport: rays converge at focal plane, blur elsewhere.
+// Default ctor reproduces M1-M3 pinhole (vfov 90, focus 1) bit-exact.
 class camera {
 public:
-    camera(double aspect_ratio = 16.0 / 9.0) {
-        double viewport_height = 2.0;
+    camera(double aspect_ratio = 16.0 / 9.0)
+        : camera(vec3(0, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0),
+                 90.0, aspect_ratio, 0.0, 1.0) {}
+
+    camera(const vec3 &lookfrom, const vec3 &lookat, const vec3 &vup,
+           double vfov_deg, double aspect_ratio, double aperture, double focus_dist) {
+        double theta = vfov_deg * 3.1415926535897932385 / 180.0;
+        double h = 2.0 * std::tan(theta / 2.0);
+        double viewport_height = h * focus_dist;
         double viewport_width = viewport_height * aspect_ratio;
-        double focal_length = 1.0;
 
-        origin = vec3(0, 0, 0);
-        horizontal = vec3(viewport_width, 0, 0);
-        vertical = vec3(0, viewport_height, 0);
-        lower_left = origin - horizontal / 2 - vertical / 2 - vec3(0, 0, focal_length);
+        w = unit_vector(lookfrom - lookat);
+        u = unit_vector(cross(vup, w));
+        v = cross(w, u);
+
+        origin = lookfrom;
+        horizontal = focus_dist * viewport_width * u;
+        vertical = focus_dist * viewport_height * v;
+        lower_left = origin - horizontal / 2 - vertical / 2 - focus_dist * w;
+        lens_radius = aperture / 2;
     }
 
-    ray get_ray(double u, double v) const {
-        return ray(origin, lower_left + u * horizontal + v * vertical - origin);
+    ray get_ray(double s, double t) const {
+        vec3 rd = lens_radius * random_in_unit_disk();
+        vec3 offset = u * rd.x() + v * rd.y();
+        return ray(origin + offset,
+                   lower_left + s * horizontal + t * vertical - origin - offset);
     }
+
+    vec3 lens_origin() const { return origin; }
+    double lens_r() const { return lens_radius; }
 
 private:
-    vec3 origin;
-    vec3 lower_left;
-    vec3 horizontal;
-    vec3 vertical;
+    vec3 origin, lower_left, horizontal, vertical, u, v, w;
+    double lens_radius = 0;
 };
