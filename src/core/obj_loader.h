@@ -2,14 +2,15 @@
 // OBJ: v positions, vn normals, vt uvs, f faces (v, v/vt, v//vn,
 // v/vt/vn). Fan-triangulates polygons, handles relative (-) indices.
 // Winding irrelevant: triangles are double-sided via set_face_normal.
-// MTL: mtllib + usemtl wires per-face materials (Kd / Ks / map_Kd).
+// MTL: mtllib + usemtl wires per-face materials (Kd / Ks / Ns / map_Kd).
 // Faces without usemtl keep the caller fallback. Unknown statements
-// (illum, d, Ns, Ke, ...) warn once per file, never silently.
+// (illum, d, Ke, ...) warn once per file, never silently.
 // MTL/map paths resolve relative to their own file's directory.
 #include "geometry/triangle.h"
 #include "material/material.h"
 #include "io/stb_loader.h"
 
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -34,6 +35,7 @@ inline vec3 clamp01(const vec3 &c) {
 struct mtl_entry {
     vec3 Kd{0.8, 0.8, 0.8};
     vec3 Ks{0, 0, 0};
+    double Ns = -1; // specular exponent, -1 = absent
     std::string map_Kd;
 };
 
@@ -66,6 +68,10 @@ inline void load_mtl(const std::string &path, std::map<std::string, mtl_entry> &
             std::string p;
             if (ls >> p)
                 out[cur].map_Kd = p;
+        } else if (tag == "Ns" && !cur.empty()) {
+            double n;
+            if (ls >> n)
+                out[cur].Ns = n < 0 ? 0 : n;
         } else if (!warned[tag]) {
             warned[tag] = true;
             std::cerr << "mtl ignores '" << tag << "' in " << path << "\n";
@@ -73,7 +79,11 @@ inline void load_mtl(const std::string &path, std::map<std::string, mtl_entry> &
     }
 }
 
-// Ks present -> metal mirror tint; else lambertian (map_Kd image wins).
+// Ks present -> metal (Ns maps to GGX roughness, absent Ns stays mirror);
+// else lambertian (map_Kd image wins, Ns unused there and warned).
+// Ns->roughness follows Walter: r = sqrt(2/(Ns+2)) (Ns 0 -> 1, 1000 -> .04).
+inline double mtl_roughness(double Ns) { return std::sqrt(2.0 / (Ns + 2.0)); }
+
 inline std::shared_ptr<material> make_mtl_material(const mtl_entry &e,
                                                    const std::string &mtl_dir) {
     if (!e.map_Kd.empty()) {
@@ -84,7 +94,9 @@ inline std::shared_ptr<material> make_mtl_material(const mtl_entry &e,
         std::cerr << "mtl map missing: " << mtl_dir + e.map_Kd << " (Kd fallback)\n";
     }
     if (e.Ks.length_squared() > 0)
-        return std::make_shared<metal>(e.Ks, 0.0);
+        return std::make_shared<metal>(e.Ks, e.Ns >= 0 ? mtl_roughness(e.Ns) : 0.0);
+    if (e.Ns >= 0)
+        std::cerr << "mtl Ns without Ks ignored (needs a specular color)\n";
     return std::make_shared<lambertian>(e.Kd);
 }
 

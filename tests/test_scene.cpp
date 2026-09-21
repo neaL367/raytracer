@@ -11,6 +11,7 @@
 #include "scene/scene.h"
 #include "gpu/flatten.h"
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -126,6 +127,8 @@ static void t_mtl() {
         std::ofstream f(mtl);
         f << "newmtl red\nKd 1 0 0\nillum 2\n";
         f << "newmtl mirror\nKd 0.2 0.2 0.2\nKs 0.9 0.9 0.9\n";
+        f << "newmtl brushed\nKd 0.2 0.2 0.2\nKs 0.9 0.9 0.9\nNs 100\n";
+        f << "newmtl dull\nKd 0 0 1\nNs 50\n";
         f << "newmtl badmap\nKd 0 1 0\nmap_Kd missing.png\n";
         f << "newmtl mapped\nKd 1 1 1\nmap_Kd rt_mtl_test.bmp\n";
     }
@@ -134,16 +137,19 @@ static void t_mtl() {
         f << "mtllib rt_mtl_test.mtl\n";
         f << "v 0 0 0\nv 1 0 0\nv 0 1 0\nv 0 0 1\nv 1 0 1\nv 0 1 1\n";
         f << "v 2 0 0\nv 3 0 0\nv 2 1 0\nv 2 0 1\nv 3 0 1\nv 2 1 1\n";
+        f << "v 4 0 0\nv 5 0 0\nv 4 1 0\nv 4 0 1\nv 5 0 1\nv 4 1 1\n";
         f << "f 1 2 3\n"; // no usemtl yet: caller fallback
         f << "usemtl red\nf 4 5 6\n";
         f << "usemtl mirror\nf 7 8 9\n";
         f << "usemtl badmap\nf 10 11 12\n";
         f << "usemtl ghost\nf 1 2 3\n"; // unknown name: fallback
+        f << "usemtl brushed\nf 13 14 15\n";
+        f << "usemtl dull\nf 16 17 18\n";
     }
     auto fallback = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));
     std::vector<std::shared_ptr<triangle>> tris;
     EXPECT_TRUE(obj_loader::load_obj(obj, tris, fallback));
-    EXPECT_TRUE((int)tris.size() == 5);
+    EXPECT_TRUE((int)tris.size() == 7);
     EXPECT_TRUE(tris[0]->mat_ptr() == fallback); // pre-usemtl
     EXPECT_TRUE(tris[4]->mat_ptr() == fallback); // unknown usemtl
     hit_record dummy;
@@ -152,6 +158,17 @@ static void t_mtl() {
     EXPECT_TRUE(dynamic_cast<metal *>(tris[2]->mat_ptr().get()) != nullptr); // Ks
     EXPECT_NEAR(alb(2).x(), 0.9);
     EXPECT_NEAR(alb(3).y(), 1); // missing map -> Kd green
+    // Ns mapping: Ks+Ns 100 -> GGX roughness sqrt(2/102).
+    auto brushed = dynamic_cast<metal *>(tris[5]->mat_ptr().get());
+    EXPECT_TRUE(brushed != nullptr);
+    float alb4[4] = {}, alb24[4] = {}, emit4[4] = {}, prm4[4] = {};
+    EXPECT_TRUE(brushed->export_gpu(alb4, alb24, emit4, prm4));
+    EXPECT_TRUE(fabs(prm4[0] - 7.0f) < 1e-6); // GGX type
+    EXPECT_TRUE(fabs(prm4[1] - (float)std::sqrt(2.0 / 102.0)) < 1e-6);
+    // Ns without Ks stays lambertian (Kd blue).
+    auto dull = dynamic_cast<lambertian *>(tris[6]->mat_ptr().get());
+    EXPECT_TRUE(dull != nullptr);
+    EXPECT_NEAR(alb(6).z(), 1);
     // map_Kd success path: separate mesh (needs vt? no, image needs no UVs
     // for albedo — but keep faces valid).
     std::string obj2 = (dir / "rt_mtl_map.obj").string();
