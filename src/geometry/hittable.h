@@ -35,6 +35,8 @@ class hittable_list : public hittable {
 public:
     void add(std::shared_ptr<hittable> o) { objects.push_back(o); }
     void clear() { objects.clear(); }
+    // Instance baking (GPU flatten) walks box children without RTTI soup.
+    const std::vector<std::shared_ptr<hittable>> &children() const { return objects; }
 
     bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const override {
         hit_record tmp;

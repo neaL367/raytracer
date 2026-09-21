@@ -225,22 +225,76 @@ static void t_lights() {
     EXPECT_TRUE(ef.nlights == 2);
 }
 
+static void t_instance() {
+    test_current = "instance";
+    auto m = std::make_shared<lambertian>(vec3(0.7, 0.7, 0.7));
+    // translate: ray shifts by -offset, point shifts back, bbox shifts.
+    auto box0 = make_box_list(vec3(0, 0, 0), vec3(1, 1, 1), m);
+    auto moved = std::make_shared<translate>(box0, vec3(5, 0, 0));
+    hit_record hr;
+    EXPECT_TRUE(moved->hit(ray(vec3(5.5, 0.5, 3), vec3(0, 0, -1)), 0.001, 1e30, hr));
+    EXPECT_NEAR(hr.point.x(), 5.5);
+    EXPECT_NEAR(hr.point.z(), 1.0); // front face of the moved box
+    aabb tb;
+    EXPECT_TRUE(moved->bounding_box(tb));
+    EXPECT_TRUE(tb.minimum.x() < 5.0 && tb.maximum.x() > 6.0);
+    // rotate_y 90 deg: +x edge maps to -z; bbox swaps x/z extents.
+    auto slab = make_box_list(vec3(0, 0, 0), vec3(2, 1, 1), m);
+    auto spun = std::make_shared<rotate_y>(slab, 90.0);
+    aabb rb;
+    EXPECT_TRUE(spun->bounding_box(rb));
+    // 1e-4 pad per side: extents match within 1e-3.
+    EXPECT_TRUE(fabs((rb.maximum.x() - rb.minimum.x()) - 1.0) < 1e-3);
+    EXPECT_TRUE(fabs((rb.maximum.z() - rb.minimum.z()) - 2.0) < 1e-3);
+    // Ray down -z at x=0.5 hits the face that was +x before the spin.
+    EXPECT_TRUE(spun->hit(ray(vec3(0.5, 0.5, 3), vec3(0, 0, -1)), 0.001, 1e30, hr));
+    EXPECT_TRUE(fabs(hr.normal.z()) > 0.99); // normal spun back to world
+    // Identity: angle 0 behaves like the raw box bit-exact.
+    auto ident = std::make_shared<rotate_y>(box0, 0.0);
+    hit_record h1, h2;
+    ray probe(vec3(0.5, 0.5, 3), vec3(0, 0, -1));
+    EXPECT_TRUE(box0->hit(probe, 0.001, 1e30, h1));
+    EXPECT_TRUE(ident->hit(probe, 0.001, 1e30, h2));
+    EXPECT_NEAR(h1.t, h2.t);
+    // GPU bake: posed box yields 6 world-space quads covering the instance.
+    auto posed = make_posed_box(vec3(2, 2, 2), 90.0, vec3(5, 0, 0), m);
+    std::vector<quad> baked;
+    EXPECT_TRUE(instance_detail::collect_baked_quads(posed, 1.0, 0.0, vec3(0, 0, 0),
+                                                      baked));
+    EXPECT_TRUE((int)baked.size() == 6);
+    aabb ib;
+    EXPECT_TRUE(posed->bounding_box(ib));
+    // Every baked corner sits inside the instance bbox (with pad slack).
+    for (auto &q : baked) {
+        for (vec3 c : {q.corner(), q.corner() + q.edge_u(),
+                       q.corner() + q.edge_v(), q.corner() + q.edge_u() + q.edge_v()}) {
+            EXPECT_TRUE(c.x() >= ib.minimum.x() - 1e-6 && c.x() <= ib.maximum.x() + 1e-6);
+            EXPECT_TRUE(c.z() >= ib.minimum.z() - 1e-6 && c.z() <= ib.maximum.z() + 1e-6);
+        }
+    }
+}
+
 static void t_cornell() {
     test_current = "cornell";
     scene_data scene = build_cornell(16.0 / 9.0, 0.0);
-    EXPECT_TRUE((int)scene.objs.size() == 18); // 5 walls + 12 box + 1 light
+    EXPECT_TRUE((int)scene.objs.size() == 8); // 5 walls + 2 posed boxes + 1 light
     EXPECT_TRUE((int)scene.lights.size() == 1);
     EXPECT_TRUE(light_mat(scene.lights[0])->emitted().x() > 1); // bright
     hittable_list world;
     for (auto &o : scene.objs)
         world.add(o);
     hit_record hr;
-    // Center ray: through (278,278) hits tall box front (z=295) first.
+    // Center ray still lands inside the room on box or wall.
     EXPECT_TRUE(world.hit(scene.cam.get_ray(0.5, 0.5), 0.001, 1e30, hr));
-    EXPECT_TRUE(hr.point.z() > 290 && hr.point.z() < 300);
-    // Inside tall box looking +x: exits at x=430 wall.
-    EXPECT_TRUE(world.hit(ray(vec3(300, 100, 350), vec3(1, 0, 0)), 0.001, 1e30, hr));
-    EXPECT_NEAR(hr.point.x(), 430);
+    EXPECT_TRUE(hr.point.x() > 0 && hr.point.x() < 555);
+    EXPECT_TRUE(hr.point.y() > 0 && hr.point.y() < 555);
+    EXPECT_TRUE(hr.point.z() > 0 && hr.point.z() < 555);
+    // Tall posed box occupies its classic footprint (rotated, so loose).
+    aabb tall_box;
+    EXPECT_TRUE(scene.objs[5]->bounding_box(tall_box));
+    EXPECT_TRUE(tall_box.minimum.x() < 265 && tall_box.maximum.x() > 265);
+    EXPECT_TRUE(tall_box.minimum.z() < 295 && tall_box.maximum.z() > 295);
+    EXPECT_TRUE(tall_box.maximum.y() > 329 && tall_box.maximum.y() < 331);
     // Default builder unchanged: ground + mesh/fallback + 2 spheres + quad + orb.
     scene_data def = build_default(16.0 / 9.0, 0.0);
     EXPECT_TRUE((int)def.lights.size() == 2); // quad + warm orb
@@ -316,11 +370,12 @@ static void t_flatten() {
     EXPECT_TRUE(flatten_scene(ramp_scene, fr));
     EXPECT_TRUE(fr.images[0].levels == 3);
     EXPECT_TRUE((int)fr.images[0].rgba.size() == (8 + 2 + 1) * 4);
-    // Cornell: 18 quads flat, light first for NEE indexing.
+    // Cornell: 8 scene objs bake to 18 quads flat, light first for NEE indexing.
     scene_data cor = build_scene("cornell", 1.0, 0.0);
     flat_scene fc;
     EXPECT_TRUE(flatten_scene(cor, fc));
-    EXPECT_TRUE((int)fc.refs.size() == 18);
+    EXPECT_TRUE((int)cor.objs.size() == 8);
+    EXPECT_TRUE((int)fc.refs.size() == 18); // 5 walls + 12 baked box + 1 light
     EXPECT_TRUE(fc.nlights == 1);
     EXPECT_TRUE(fabs(fc.gs.quads[0].emit[0] - 7) < 1e-6); // light leads
     // Export values exact on a known material.
@@ -389,6 +444,7 @@ void run_scene_tests() {
     t_obj();
     t_mtl();
     t_lights();
+    t_instance();
     t_cornell();
     t_flatten();
     t_shutter();

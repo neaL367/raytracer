@@ -94,4 +94,5 @@ M29 done: per-vertex mesh motion blur, cube drifts with shutter.
 M30 done: GPU bilateral denoise post-pass (`rt_gpu --denoise`).
 M31 done: heterogeneous volumes with delta tracking (two GPU volume bugs fixed).
 M32 done: CPU QBVH-4 collapse with SSE2 slabs, bit-exact traversal.
+M33 done: instance module (translate + rotate_y + posed boxes), rotated Cornell blocks, GPU bake parity.
 Next: `.scratch/roadmap.md` backlog (Linux/macOS port).

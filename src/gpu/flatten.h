@@ -5,6 +5,7 @@
 // Order: data structs, image export, detail fns, entry point.
 #include "host_scene.h"
 #include "../accel/bvh.h"
+#include "../geometry/instance.h"
 #include "../scene/scene.h"
 
 #include <algorithm>
@@ -104,7 +105,7 @@ inline void fill_material(flat_scene &out, const std::shared_ptr<material> &m, f
 }
 
 inline bool push_prim(flat_scene &out, std::map<const hittable *, std::pair<int, int>> &id,
-                      const std::shared_ptr<hittable> &o) {
+                       const std::shared_ptr<hittable> &o) {
     gpu_scene &gs = out.gs;
     // Fog volumes upload as type-6 sphere slots (boundary + density).
     // Non-sphere borders fail loudly (demo uses spheres).
@@ -280,11 +281,33 @@ inline int flatten_node(const bvh_node &n, std::vector<GPUNode> &nodes,
 // Build typed arrays + SAH tree + flat nodes from a scene. False on
 // unknown shapes only. Emissive prims (any shape) register in the light
 // table; the emissive-first partition is legacy order, kept stable.
+// Instances bake to world-space quads first, so the BVH + shaders only
+// ever see plain prims (CPU keeps true instances for exact normals).
 inline bool flatten_scene(const scene_data &scene, flat_scene &out) {
     out = flat_scene{};
+    // Expand instances up front; baked quads are owned here for the call.
+    std::vector<std::shared_ptr<hittable>> expanded;
+    std::vector<std::shared_ptr<quad>> baked_owned;
+    for (const auto &o : scene.objs) {
+        if (std::dynamic_pointer_cast<translate>(o) ||
+            std::dynamic_pointer_cast<rotate_y>(o)) {
+            std::vector<quad> baked;
+            if (!instance_detail::collect_baked_quads(o, 1.0, 0.0, vec3(0, 0, 0),
+                                                      baked) ||
+                baked.empty())
+                return false;
+            for (auto &q : baked) {
+                auto qp = std::make_shared<quad>(q);
+                baked_owned.push_back(qp);
+                expanded.push_back(qp);
+            }
+            continue;
+        }
+        expanded.push_back(o);
+    }
     // Reject unknown shapes up front (image textures unlimited now).
     // Fog media allowed only over sphere borders (demo scope).
-    for (const auto &o : scene.objs) {
+    for (const auto &o : expanded) {
         if (std::dynamic_pointer_cast<sphere>(o) || std::dynamic_pointer_cast<quad>(o) ||
             std::dynamic_pointer_cast<triangle>(o))
             continue;
@@ -296,7 +319,7 @@ inline bool flatten_scene(const scene_data &scene, flat_scene &out) {
             continue;
         return false;
     }
-    std::vector<std::shared_ptr<hittable>> ordered = scene.objs;
+    std::vector<std::shared_ptr<hittable>> ordered = expanded;
     std::stable_partition(
         ordered.begin(), ordered.end(), [](const std::shared_ptr<hittable> &o) {
             auto q = std::dynamic_pointer_cast<quad>(o);
