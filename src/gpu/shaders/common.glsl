@@ -335,12 +335,12 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                     light_ty = trlit ? 2 : -1;
                     any = true;
                 }
-            } else if (sp < 31) {
-                stack[sp++] = nd.qchild[s];
             }
-            }
+        } else if (sp < 31) {
+            stack[sp++] = nd.qchild[s];
         }
     }
+}
 }
 
 // Solid-surface trace: fog slots pass through (up to 4 boundaries).

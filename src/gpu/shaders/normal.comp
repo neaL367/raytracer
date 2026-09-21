@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_GOOGLE_cpp_style_line_directive : enable
 // Normal-shade proof of GPU geometry: silhouette must match CPU.
 #include "common.glsl"
 layout(local_size_x = 16, local_size_y = 16) in;

@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_GOOGLE_cpp_style_line_directive : enable
 // Full path tracer: cosine diffuse, metal/glass, emissive quads,
 // NEE + power-heuristic MIS + Russian roulette. Mirrors CPU
 // integrator formulas in fp32. RNG is wang-hash (differs from CPU
