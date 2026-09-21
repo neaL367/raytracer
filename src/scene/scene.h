@@ -25,6 +25,7 @@
 struct scene_data {
     std::vector<std::shared_ptr<hittable>> objs;
     std::vector<light> lights; // NEE-sampled emitters (any shape)
+    std::vector<std::shared_ptr<hittable>> media; // volumes for NEE transmittance
     camera cam;
     bool env_light = false; // analytic sun+sky environment (opt-in --env)
     bool black_bg = false;  // black background for enclosed/dark scenes (book2)
@@ -152,16 +153,18 @@ inline scene_data build_default(double aspect, double aperture, double sh0 = 0,
         // Smoke ball around the subject: white scatter, no NEE inside.
         auto fog_phase = std::make_shared<isotropic>(vec3(0.9, 0.9, 0.9));
         auto fog_border = std::make_shared<sphere>(vec3(0, 0, -1), 2.5, fog_phase);
-        scene.objs.push_back(
-            std::make_shared<constant_medium>(fog_border, fog_density, fog_phase));
+        auto fog = std::make_shared<constant_medium>(fog_border, fog_density, fog_phase);
+        scene.objs.push_back(fog);
+        scene.media.push_back(fog);
     }
     if (het_density > 0) {
         // Structured smoke over the same border: sinusoidal pockets,
         // delta-tracked (unbiased). Combinable with uniform fog.
         auto het_phase = std::make_shared<isotropic>(vec3(0.9, 0.9, 0.9));
         auto het_border = std::make_shared<sphere>(vec3(0, 0, -1), 2.5, het_phase);
-        scene.objs.push_back(
-            std::make_shared<heterogeneous_medium>(het_border, het_density, het_phase));
+        auto het = std::make_shared<heterogeneous_medium>(het_border, het_density, het_phase);
+        scene.objs.push_back(het);
+        scene.media.push_back(het);
     }
     scene.cam = camera(vec3(0, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0), 90.0, aspect,
                        aperture, 1.0);

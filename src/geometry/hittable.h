@@ -6,6 +6,7 @@
 #include <vector>
 
 class material; // fwd: geometry owns shape, material owns scatter
+class hittable; // fwd: hit_record links the owning shape (volumes set it)
 
 struct hit_record {
     double t = 0;
@@ -14,6 +15,9 @@ struct hit_record {
     bool front_face = true;
     std::shared_ptr<material> mat;
     double u = 0, v = 0; // shape UVs for textures (sphere/quad/tri fill)
+    // Owning shape for volume transmittance march (media set this, shapes
+    // leave null). Raw pointer: lifetime owned by the scene, never stored.
+    const hittable *hit_obj = nullptr;
 
     // Outward vs inward decided by ray dir. Glass needs true normal side.
     inline void set_face_normal(const ray &r, const vec3 &outward) {

@@ -604,18 +604,22 @@ static void t_env() {
     integrator tracer;
     hittable_list empty;
     std::vector<light> none;
+    std::vector<std::shared_ptr<hittable>> nomedia;
     rng_seed(200);
-    vec3 miss = tracer.Li(ray(vec3(0, 0, 0), vec3(0, 0.5, -1)), empty, none, 50, false);
+    vec3 miss = tracer.Li(ray(vec3(0, 0, 0), vec3(0, 0.5, -1)), empty, none, 50,
+                           nomedia, false);
     vec3 expect = env_light::sky(vec3(0, 0.5, -1));
     EXPECT_NEAR(miss.x(), expect.x());
     EXPECT_NEAR(miss.y(), expect.y());
     EXPECT_NEAR(miss.z(), expect.z());
     // Env-on primary miss sees the sun when aimed at it.
     rng_seed(201);
-    vec3 sunshot = tracer.Li(ray(vec3(0, 0, 0), sun), empty, none, 50, true);
+    vec3 sunshot =
+        tracer.Li(ray(vec3(0, 0, 0), sun), empty, none, 50, nomedia, true);
     EXPECT_TRUE(sunshot.x() > 20.0);
     rng_seed(202);
-    vec3 antishot = tracer.Li(ray(vec3(0, 0, 0), -sun), empty, none, 50, true);
+    vec3 antishot =
+        tracer.Li(ray(vec3(0, 0, 0), -sun), empty, none, 50, nomedia, true);
     EXPECT_NEAR(antishot.x(), env_light::sky(-sun).x());
     // Scene flag defaults off (frozen), opts in.
     scene_data s0 = build_default(16.0 / 9.0, 0.0);

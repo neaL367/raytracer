@@ -161,7 +161,7 @@ int main(int argc, char **argv) {
             double u = double(i) / (W - 1);
             double v = double(j) / (H - 1);
             ray primary = cam.get_ray(u, v);
-            acc = tracer.Li(primary, world, lights, max_depth, scene.env_light, scene.black_bg);
+            acc = tracer.Li(primary, world, lights, max_depth, scene.media, scene.env_light, scene.black_bg);
             if (want_guides) {
                 vec3 a, n;
                 bool hit = false;
@@ -184,7 +184,7 @@ int main(int argc, char **argv) {
                 double u = (i + ox) / W;
                 double v = (j + oy) / H;
                 ray primary = cam.get_ray(u, v);
-                acc += tracer.Li(primary, world, lights, max_depth, scene.env_light, scene.black_bg);
+                acc += tracer.Li(primary, world, lights, max_depth, scene.media, scene.env_light, scene.black_bg);
                 if (want_guides) {
                     vec3 a, n;
                     bool hit = false;
@@ -213,7 +213,7 @@ int main(int argc, char **argv) {
                 double u = (i + ox) / W;
                 double v = (j + oy) / H;
                 ray primary = cam.get_ray(u, v);
-                acc += tracer.Li(primary, world, lights, max_depth, scene.env_light, scene.black_bg);
+                acc += tracer.Li(primary, world, lights, max_depth, scene.media, scene.env_light, scene.black_bg);
                 // Guides appended after beauty: deterministic order, and
                 // AOV uses no RNG so the beauty stream never shifts.
                 if (want_guides) {

@@ -8,6 +8,7 @@
 #include "../geometry/hittable.h"
 #include "../geometry/light.h"
 #include "../geometry/quad.h"
+#include "../geometry/volume.h"
 #include "../material/material.h"
 #include "pdf.h"
 #include <cmath>
@@ -37,6 +38,7 @@ class integrator {
 public:
     vec3 Li(const ray &r, const hittable &world,
             const std::vector<light> &lights, int max_depth,
+            const std::vector<std::shared_ptr<hittable>> &media,
             bool use_env = false, bool black_bg = false) const {
         count_ray(); // primary
         vec3 throughput(1, 1, 1);
@@ -104,9 +106,11 @@ public:
                 double area = light_area(light);
                 if (cosS > 0 && cosA > 0 && area > 0) {
                     count_ray(); // shadow ray
-                    ray shadow(rec.point, wi, cur.time());
-                    bool blocked = world.hit_any(shadow, 0.001, dist - 0.001);
-                    if (!blocked) {
+                    // Transmittance-weighted NEE: smoke attenuates instead
+                    // of binary-blocking (march returns 1.0 with no media).
+                    double Tr = shadow_transmittance(world, media, rec.point, wi, dist,
+                                                     cur.time());
+                    if (Tr > 0) {
                         vec3 light_Le = light_mat(light)->emitted();
                         double pdf_l = dist * dist /
                                        ((double)lights.size() * area * cosA);
@@ -115,7 +119,7 @@ public:
                         // f*G/pdf_area: rho*Le*cosS*cosA*A*L/(PI*dist^2)
                         L += throughput * attenuation * light_Le *
                              (cosS * cosA * (double)lights.size() * area /
-                              (pi * dist * dist)) * w;
+                              (pi * dist * dist)) * w * Tr;
                     }
                 }
             }
@@ -128,14 +132,15 @@ public:
                 double cosS = dot(rec.normal, edir);
                 if (cosS > 0) {
                     count_ray(); // env shadow ray
-                    ray eshadow(rec.point, edir, cur.time());
-                    if (!world.hit_any(eshadow, 0.001, 1e30)) {
+                    double Tr = shadow_transmittance(world, media, rec.point, edir, 1e30,
+                                                     cur.time());
+                    if (Tr > 0) {
                         vec3 env_Le = env_light::radiance(edir);
                         double pdf_e = env_light::sample_pdf();
                         double pdf_b = cosine_pdf(cosS);
                         double w = direction_pdf::power_weight(pdf_e, pdf_b);
                         L += throughput * attenuation * env_Le *
-                             (cosS / (pi * pdf_e)) * w;
+                             (cosS / (pi * pdf_e)) * w * Tr;
                     }
                 }
             }

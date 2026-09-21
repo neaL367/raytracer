@@ -14,6 +14,7 @@
 #include "accel/qbvh_flat.h"
 #include "material/material.h"
 
+#include <cmath>
 #include <memory>
 #include <vector>
 
@@ -318,6 +319,76 @@ static void t_hetero() {
     EXPECT_TRUE(fabs((double)esc / ET - theory) < 0.01);
 }
 
+static void t_transmit() {
+    test_current = "transmit";
+    auto phase = std::make_shared<isotropic>(vec3(0.9, 0.9, 0.9));
+    auto border = std::make_shared<sphere>(vec3(0, 0, -1), 1.0, phase);
+    // Constant analytic: sigma 0.5 over chord 2 -> exp(-1).
+    constant_medium fog(border, 0.5, phase);
+    double exit = -1;
+    ray through(vec3(0, 0, 1), vec3(0, 0, -1));
+    EXPECT_NEAR(fog.transmittance(through, 0.001, 1e30, exit), std::exp(-1.0));
+    EXPECT_TRUE(exit > 2.9 && exit < 3.1); // chord [1,3] on the exterior ray
+    // Miss -> 1, clipped chord scales.
+    EXPECT_NEAR(fog.transmittance(ray(vec3(5, 5, 0), vec3(0, 0, -1)), 0.001, 1e30, exit),
+                1.0);
+    EXPECT_NEAR(fog.transmittance(through, 0.5, 1.5, exit), std::exp(-0.25));
+    // March: empty world -> 1; solid wall -> 0.
+    hittable_list empty;
+    std::vector<std::shared_ptr<hittable>> nomedia;
+    EXPECT_NEAR(shadow_transmittance(empty, nomedia, vec3(0, 0, 0), vec3(0, 0, -1), 10.0,
+                                     0.0),
+                1.0);
+    auto wall_mat = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));
+    hittable_list wall;
+    wall.add(std::make_shared<quad>(vec3(-5, -5, -5), vec3(10, 0, 0), vec3(0, 10, 0),
+                                    wall_mat));
+    EXPECT_NEAR(shadow_transmittance(wall, nomedia, vec3(0, 0, 0), vec3(0, 0, -1), 10.0,
+                                     0.0),
+                0.0);
+    // March through one medium == its analytic segment.
+    hittable_list smoky;
+    auto foggy = std::make_shared<constant_medium>(border, 0.5, phase);
+    smoky.add(foggy);
+    std::vector<std::shared_ptr<hittable>> onemedia = {foggy};
+    EXPECT_NEAR(
+        shadow_transmittance(smoky, onemedia, vec3(0, 0, 1), vec3(0, 0, -1), 10.0, 0.0),
+        std::exp(-1.0));
+    // Coincident twins multiply (densities add): exp(-2).
+    auto foggy2 = std::make_shared<constant_medium>(border, 0.5, phase);
+    smoky.add(foggy2);
+    std::vector<std::shared_ptr<hittable>> twomedia = {foggy, foggy2};
+    EXPECT_NEAR(
+        shadow_transmittance(smoky, twomedia, vec3(0, 0, 1), vec3(0, 0, -1), 10.0, 0.0),
+        std::exp(-2.0));
+    // Scene-scale chord (r=2.5 ball, chord 5, sigma 0.3): march == analytic.
+    auto big = std::make_shared<sphere>(vec3(0, 0, -1), 2.5, phase);
+    auto bigfog = std::make_shared<constant_medium>(big, 0.3, phase);
+    hittable_list bigworld;
+    bigworld.add(bigfog);
+    std::vector<std::shared_ptr<hittable>> bigmedia = {bigfog};
+    // From inside (ball center) toward outside: exit at t=2.5.
+    // dist 4 -> tmax ~4, chord [0.001, 2.5]: Tr = exp(-0.3*2.499).
+    EXPECT_NEAR(shadow_transmittance(bigworld, bigmedia, vec3(0, 0, -1), vec3(0, 0, 1),
+                                     4.0, 0.0),
+                std::exp(-0.3 * 2.499));
+    // Hetero ratio tracking is unbiased: mean over seeds ~= exp(-sig*M).
+    heterogeneous_medium het(border, 2.0, phase);
+    std::vector<std::shared_ptr<hittable>> hetmedia = {
+        std::make_shared<heterogeneous_medium>(border, 2.0, phase)};
+    hittable_list hworld;
+    hworld.add(hetmedia[0]);
+    double sum = 0;
+    const int HT = 40;
+    for (int s = 0; s < HT; ++s) {
+        rng_seed(300 + (unsigned)s);
+        sum += shadow_transmittance(hworld, hetmedia, vec3(0.3, 0.2, 0), vec3(0, 0, -1),
+                                    10.0, 0.0);
+    }
+    // Offset ray chord ~1.866, mean modulation ~0.5 -> Tr ~= exp(-2*0.93).
+    EXPECT_TRUE(sum / HT > 0.05 && sum / HT < 0.35);
+}
+
 static void t_trimotion() {
     test_current = "trimotion";
     auto m = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));
@@ -540,4 +611,5 @@ void run_geometry_tests() {
     t_volume();
     t_hetero();
     t_hetprec();
+    t_transmit();
 }

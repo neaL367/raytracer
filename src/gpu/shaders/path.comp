@@ -408,6 +408,9 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase) {
             sd = u * cd.x + v * cd.y + w * cd.z;
             attenuation = base_alb;
             diffuse = true;
+        } else if (mtype == 3) {
+            ok = false; // emissive has no scatter (CPU returns false);
+                        // reached only when emit == 0 (black), absorbed
         } else if (mtype == 7) {
             // GGX conductor (fuzz-era type 1 deleted): F0 = albedo,
             // perceptual roughness in params.y. Frame faces the view
@@ -517,30 +520,30 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase) {
             float cosS = dot(n, wi);
             float cosA = abs(dot(ln, -wi));
             if (cosS > 0.0 && cosA > 0.0 && area > 0.0) {
-                // Shadow probe mirrors CPU: fog events or solid surfaces
-                // before the light block (medium competes by t there too).
-                // The light itself at ~dist never blocks (range excludes it).
-                // Fog RNG gated: static streams stay bit-exact.
-                bool blocked;
+                // Transmittance-weighted NEE mirrors CPU: smoke attenuates
+                // instead of binary-blocking. Draw-free (hashes/analytic).
+                float Tr;
                 if (pc.nfog > 0) {
-                    blocked = shadow_occluded(hitp, wi, rtime, pc.ns, wrandf(),
-                                              dist - 0.001, hbase, bounce, 1);
+                    Tr = shadow_transmittance(hitp, wi, rtime, pc.ns, dist - 0.001,
+                                              hbase, bounce, 1);
                 } else {
                     float tt2;
                     vec3 nn2;
                     vec4 a2, ab2, e2, p2;
                     vec2 huv2;
                     int lx2, lt2;
-                    blocked = trace_solid(hitp, wi, rtime, dist - 0.001, tt2, nn2, a2,
-                                          ab2, e2, p2, lx2, lt2, huv2);
+                    Tr = trace_solid(hitp, wi, rtime, dist - 0.001, tt2, nn2, a2,
+                                     ab2, e2, p2, lx2, lt2, huv2)
+                             ? 0.0
+                             : 1.0;
                 }
-                if (!blocked) {
+                if (Tr > 0.0) {
                     float pdf_l = dist * dist / (float(pc.nlights) * area * cosA);
                     float pdf_b = cosS / 3.14159265;
                     float w = power_weight(pdf_l, pdf_b);
                     L += throughput * attenuation * lemit *
                          (cosS * cosA * float(pc.nlights) * area /
-                          (3.14159265 * dist * dist)) * w;
+                          (3.14159265 * dist * dist)) * w * Tr;
                 }
             }
         }
@@ -551,26 +554,28 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase) {
             float cosS = dot(n, edir);
             if (cosS > 0.0) {
                 vec3 hitp = o + d * t;
-                bool eblocked;
+                float Tr;
                 if (pc.nfog > 0) {
-                    eblocked = shadow_occluded(hitp, edir, rtime, pc.ns, wrandf(),
-                                               1e30, hbase, bounce, 1);
+                    Tr = shadow_transmittance(hitp, edir, rtime, pc.ns, 1e30,
+                                              hbase, bounce, 2);
                 } else {
                     float tt3;
                     vec3 nn3;
                     vec4 a3, ab3, e3, p3;
                     vec2 huv3;
                     int lx3, lt3;
-                    eblocked = trace_solid(hitp, edir, rtime, 1e30, tt3, nn3, a3,
-                                           ab3, e3, p3, lx3, lt3, huv3);
+                    Tr = trace_solid(hitp, edir, rtime, 1e30, tt3, nn3, a3,
+                                     ab3, e3, p3, lx3, lt3, huv3)
+                             ? 0.0
+                             : 1.0;
                 }
-                if (!eblocked) {
+                if (Tr > 0.0) {
                     vec3 envLe = env_radiance(edir);
                     float pdf_e = 1.0 / (4.0 * 3.14159265);
                     float pdf_b = cosS / 3.14159265;
                     float w = power_weight(pdf_e, pdf_b);
                     L += throughput * attenuation * envLe *
-                         (cosS / (3.14159265 * pdf_e)) * w;
+                         (cosS / (3.14159265 * pdf_e)) * w * Tr;
                 }
             }
         }

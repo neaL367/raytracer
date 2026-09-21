@@ -208,7 +208,8 @@ bool fog_event(vec3 o, vec3 d, float rtime, int ns, float u01, float tmax,
         // Exit search is unbounded, then clamped (mirrors CPU): a border
         // past the light still fills the ray up to the light. Bounding the
         // search by tmax instead drops those events and leaks lights.
-        if (!hit_sphere(o, d, rtime, te + 0.01, 1e30, spheres[i], tx, dn, duv))
+        // Offset mirrors CPU (1e-4): coarser steps skip close exits.
+        if (!hit_sphere(o, d, rtime, te + 1e-4, 1e30, spheres[i], tx, dn, duv))
             continue;
         tx = min(tx, tmax);
         if (mtype == 6.0) {
@@ -220,19 +221,20 @@ bool fog_event(vec3 o, vec3 d, float rtime, int ns, float u01, float tmax,
             }
         } else {
             // Delta tracking at the majorant; accept on modulation.
-            // Tentative k draws independent counter hashes (no chaining).
+            // Per-slot hash base (multi-slot scenes stay decorrelated).
             float sig = max(spheres[i].params.y, 1e-7);
             vec3 fr = spheres[i].alb2.xyz;
+            uint sbase = h32(hbase ^ (uint(i) * 0x9E3779B9u));
             float cursor = te;
             for (int k = 0; k < 1024; ++k) {
-                float s = -log(max(h32f(hbase, bounce, site, k, 0), 1e-7)) / sig;
+                float s = -log(max(h32f(sbase, bounce, site, k, 0), 1e-7)) / sig;
                 float x = cursor + s;
                 if (x > tx)
                     break;
                 vec3 p = o + d * x;
                 float m = 0.5 + 0.5 * sin(fr.x * p.x) * sin(fr.y * p.y) *
                                             sin(fr.z * p.z);
-                if (m > h32f(hbase, bounce, site, k, 1)) {
+                if (m > h32f(sbase, bounce, site, k, 1)) {
                     if (x < tevent) {
                         tevent = x;
                         talb = spheres[i].alb.xyz;
@@ -249,7 +251,7 @@ bool fog_event(vec3 o, vec3 d, float rtime, int ns, float u01, float tmax,
 // contract as the old brute loops (narrowing tmax), so kernels just swap.
 void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
               out vec4 alb, out vec4 alb2, out vec4 emit, out vec4 params,
-              out int light_idx, out int light_ty, out vec2 huv, out bool any) {
+               out int light_idx, out int light_ty, out vec2 huv, out bool any) {
     int stack[32];
     int sp = 0;
     stack[sp++] = 0;
@@ -367,19 +369,62 @@ bool trace_solid(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 
     return false;
 }
 
-// Shadow probe mirrors CPU: blocked by fog events OR solid surfaces
-// before the light (medium competes by t on the CPU too).
-bool shadow_occluded(vec3 o, vec3 wi, float rtime, int ns, float u01, float dist,
-                     uint hbase, int bounce, int site) {
-    float fev;
-    vec3 fa;
-    if (fog_event(o, wi, rtime, ns, u01, dist - 0.001, fev, fa, hbase, bounce, site))
-        return true;
+// NEE shadow transmittance: solid in range -> 0; else product of per-slot
+// segments (type-6 analytic, type-8 ratio-tracked). Mirrors the CPU march.
+// Draw-free (counter hashes / analytic): shadow calls consume no RNG.
+float shadow_transmittance(vec3 o, vec3 wi, float rtime, int ns, float dist,
+                           uint hbase, int bounce, int site) {
     float t;
     vec3 n;
     vec4 alb, alb2, emit, params;
-    int light_idx, light_ty;
+    int li, lt;
     vec2 huv;
-    return trace_solid(o, wi, rtime, dist - 0.001, t, n, alb, alb2, emit, params,
-                       light_idx, light_ty, huv);
+    // Range excludes the light itself (mirrors CPU dist - 0.001).
+    float tmax = dist - 0.001;
+    if (trace_solid(o, wi, rtime, tmax, t, n, alb, alb2, emit, params, li, lt,
+                    huv))
+        return 0.0;
+    float Tr = 1.0;
+    for (int i = 0; i < ns; ++i) {
+        float mtype = spheres[i].params.x;
+        if (mtype != 6.0 && mtype != 8.0)
+            continue;
+        float te, tx;
+        vec3 dn;
+        vec2 duv;
+        if (!hit_sphere(o, wi, rtime, -1e30, tmax, spheres[i], te, dn, duv))
+            continue;
+        te = max(te, 0.001);
+        // Exit search offset mirrors CPU (1e-4): a coarser step would skip
+        // real exits just ahead of rays born inside the boundary.
+        if (!hit_sphere(o, wi, rtime, te + 1e-4, 1e30, spheres[i], tx, dn, duv))
+            continue;
+        tx = min(tx, tmax);
+        if (tx <= te)
+            continue;
+        if (mtype == 6.0) {
+            Tr *= exp(-max(spheres[i].params.y, 1e-7) * (tx - te));
+        } else {
+            float sig = max(spheres[i].params.y, 1e-7);
+            vec3 fr = spheres[i].alb2.xyz;
+            uint sbase = h32(hbase ^ (uint(i) * 0x9E3779B9u));
+            float cursor = te;
+            for (int k = 0; k < 1024; ++k) {
+                float s = -log(max(h32f(sbase, bounce, site, k, 0), 1e-7)) / sig;
+                float x = cursor + s;
+                if (x > tx)
+                    break;
+                vec3 p = o + wi * x;
+                float m = 0.5 + 0.5 * sin(fr.x * p.x) * sin(fr.y * p.y) *
+                                                sin(fr.z * p.z);
+                Tr *= 1.0 - m;
+                if (Tr <= 0.0)
+                    return 0.0;
+                cursor = x;
+            }
+        }
+        if (Tr <= 0.0)
+            return 0.0;
+    }
+    return Tr;
 }

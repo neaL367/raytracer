@@ -11,6 +11,7 @@
 
 #include <cmath>
 #include <memory>
+#include <vector>
 
 class constant_medium : public hittable {
 public:
@@ -47,10 +48,29 @@ public:
         rec.front_face = true;
         rec.mat = mat;
         rec.u = rec.v = 0;
+        rec.hit_obj = this;
         return true;
     }
 
     bool bounding_box(aabb &box) const override { return border->bounding_box(box); }
+
+    // Analytic transmittance over the chord clipped to range. Zero RNG.
+    // exit_t = unclipped boundary exit (march advance); Tr over the clip.
+    double transmittance(const ray &r, double t_min, double t_max,
+                         double &exit_t) const {
+        hit_record b0, b1;
+        exit_t = t_max;
+        if (!border->hit(r, -1e30, 1e30, b0))
+            return 1.0;
+        if (!border->hit(r, b0.t + 1e-4, 1e30, b1))
+            return 1.0;
+        exit_t = b1.t;
+        double lo = b0.t < t_min ? t_min : b0.t;
+        double hi = b1.t > t_max ? t_max : b1.t;
+        if (hi <= lo)
+            return 1.0;
+        return std::exp((lo - hi) / -neg_inv_density);
+    }
 
     // GPU flatten accessors (fog uploads as a type-6 sphere slot).
     const std::shared_ptr<hittable> &border_ref() const { return border; }
@@ -112,6 +132,7 @@ public:
                 rec.front_face = true;
                 rec.mat = mat;
                 rec.u = rec.v = 0;
+                rec.hit_obj = this;
                 return true;
             }
             cursor = x; // null scatter: advance, throughput untouched
@@ -120,6 +141,36 @@ public:
     }
 
     bool bounding_box(aabb &box) const override { return border->bounding_box(box); }
+
+    // Ratio-tracking transmittance over the clipped chord: Tr *= (1-m)
+    // per majorant tentative (unbiased; deterministic per seed).
+    double transmittance(const ray &r, double t_min, double t_max,
+                         double &exit_t) const {
+        hit_record b0, b1;
+        exit_t = t_max;
+        if (!border->hit(r, -1e30, 1e30, b0))
+            return 1.0;
+        if (!border->hit(r, b0.t + 1e-4, 1e30, b1))
+            return 1.0;
+        exit_t = b1.t;
+        double lo = b0.t < t_min ? t_min : b0.t;
+        double hi = b1.t > t_max ? t_max : b1.t;
+        if (hi <= lo)
+            return 1.0;
+        double Tr = 1.0, cursor = lo;
+        double neg_inv = -1.0 / sigma;
+        for (int i = 0; i < 1024; ++i) {
+            double s = neg_inv * std::log(random_double());
+            double x = cursor + s;
+            if (x > hi)
+                break;
+            Tr *= 1.0 - modulation(r.at(x));
+            if (Tr <= 0)
+                return 0.0;
+            cursor = x;
+        }
+        return Tr;
+    }
 
     // GPU flatten accessors (hetero uploads as a type-8 sphere slot).
     const std::shared_ptr<hittable> &border_ref() const { return border; }
@@ -133,3 +184,62 @@ private:
     std::shared_ptr<material> mat;
     double fx, fy, fz;
 };
+
+// NEE shadow transmittance: nearest solid in range blocks (0); else the
+// product over ALL media of full-range segment transmittance (overlaps
+// multiply exactly; event-driven discovery would miss coincident twins).
+// Media list comes from the scene (march discovers solids only).
+inline double medium_exit(const hittable *obj, const ray &r) {
+    std::shared_ptr<hittable> border;
+    if (auto c = dynamic_cast<const constant_medium *>(obj))
+        border = c->border_ref();
+    else if (auto h = dynamic_cast<const heterogeneous_medium *>(obj))
+        border = h->border_ref();
+    else
+        return 1e30;
+    hit_record b0, b1;
+    if (!border->hit(r, -1e30, 1e30, b0))
+        return 1e30;
+    if (!border->hit(r, b0.t + 1e-4, 1e30, b1))
+        return 1e30;
+    return b1.t;
+}
+
+inline double medium_transmittance(const std::shared_ptr<hittable> &obj, const ray &r,
+                                   double t_min, double t_max) {
+    double exit = t_max;
+    if (auto c = std::dynamic_pointer_cast<constant_medium>(obj))
+        return c->transmittance(r, t_min, t_max, exit);
+    if (auto h = std::dynamic_pointer_cast<heterogeneous_medium>(obj))
+        return h->transmittance(r, t_min, t_max, exit);
+    return 1.0;
+}
+
+inline double shadow_transmittance(const hittable &world,
+                                   const std::vector<std::shared_ptr<hittable>> &media,
+                                   const vec3 &origin, const vec3 &wi, double dist,
+                                   double time) {
+    double tmax = dist - 0.001;
+    ray shadow(origin, wi, time);
+    // Phase 1: nearest solid (media transparent to the search).
+    double tmin = 0.001;
+    for (int i = 0; i < 8; ++i) {
+        hit_record tmp;
+        if (!world.hit(shadow, tmin, tmax, tmp))
+            break;
+        const constant_medium *cm = dynamic_cast<const constant_medium *>(tmp.hit_obj);
+        const heterogeneous_medium *hm =
+            dynamic_cast<const heterogeneous_medium *>(tmp.hit_obj);
+        if (!cm && !hm)
+            return 0.0; // solid blocks
+        tmin = medium_exit(tmp.hit_obj, shadow) + 1e-4; // pass it
+    }
+    // Phase 2: every medium over its full range chord.
+    double Tr = 1.0;
+    for (const auto &m : media) {
+        Tr *= medium_transmittance(m, shadow, 0.001, tmax);
+        if (Tr <= 0)
+            return 0.0;
+    }
+    return Tr;
+}
