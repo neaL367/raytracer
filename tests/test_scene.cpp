@@ -305,6 +305,23 @@ static void t_gpucam() {
     GPUCam c = build_gpu_camera(200, 200, "cornell", 1.0);
     EXPECT_NEAR(c.lens[0], 0.5);
     EXPECT_NEAR(c.o[2], -800);
+    // Weekend final: (13,2,3) vfov-20 framing, defocus aperture by default.
+    GPUCam w = build_gpu_camera(1200, 675, "weekend");
+    EXPECT_NEAR(w.o[0], 13);
+    EXPECT_NEAR(w.o[1], 2);
+    EXPECT_NEAR(w.o[2], 3);
+    EXPECT_TRUE(w.lens[0] > 0); // default defocus lens on
+    GPUCam w0 = build_gpu_camera(1200, 675, "weekend", 0.0);
+    EXPECT_NEAR(w0.lens[0], w.lens[0]); // explicit 0 keeps the default lens
+    GPUCam b2 = build_gpu_camera(800, 800, "book2");
+    EXPECT_NEAR(b2.o[0], 478);
+    EXPECT_NEAR(b2.o[1], 278);
+    EXPECT_NEAR(b2.o[2], -600);
+    // Aliases resolve to the same builders.
+    GPUCam bk = build_gpu_camera(1200, 675, "book1");
+    EXPECT_NEAR(bk.o[0], w.o[0]);
+    GPUCam bx = build_gpu_camera(800, 800, "boxes");
+    EXPECT_NEAR(bx.o[0], b2.o[0]);
 }
 
 static void t_cornell() {
