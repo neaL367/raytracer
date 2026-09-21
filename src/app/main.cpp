@@ -67,6 +67,10 @@ int main(int argc, char **argv) {
             do_denoise = true;
         else if (a == "--scene" && i + 1 < argc)
             scene_name = argv[++i];
+        else if (a == "--list-scenes") {
+            print_scenes();
+            return 0;
+        }
         else if (a == "--shutter" && i + 2 < argc) {
             shutter0 = std::atof(argv[++i]);
             shutter1 = std::atof(argv[++i]);
