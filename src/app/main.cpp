@@ -124,6 +124,13 @@ int main(int argc, char **argv) {
     const bool want_guides = do_denoise || dump_aov;
     bench_enabled_flag().store(bench, std::memory_order_relaxed);
 
+    std::vector<std::pair<double, double>> base_sobol;
+    if (use_sobol) {
+        base_sobol.resize((size_t)spp);
+        for (int k = 0; k < spp; ++k)
+            base_sobol[(size_t)k] = {sobol_dim0((unsigned)k), sobol_dim1((unsigned)k)};
+    }
+
     auto render_pixel = [&](int i, int j) {
         vec3 acc(0, 0, 0), alb(0, 0, 0), nrm(0, 0, 0);
         double dep = -1;
@@ -143,9 +150,41 @@ int main(int argc, char **argv) {
                     dep = t;
                 }
             }
+        } else if (use_sobol) {
+            rng_seed(base_seed + (unsigned)(j * W + i));
+            double sx = random_double(), sy = random_double();
+            for (int k = 0; k < spp; ++k) {
+                double ox = base_sobol[(size_t)k].first + sx;
+                double oy = base_sobol[(size_t)k].second + sy;
+                if (ox >= 1.0) ox -= 1.0;
+                if (oy >= 1.0) oy -= 1.0;
+                double u = (i + ox) / W;
+                double v = (j + oy) / H;
+                ray primary = cam.get_ray(u, v);
+                acc += tracer.Li(primary, world, lights, max_depth, scene.env_light);
+                if (want_guides) {
+                    vec3 a, n;
+                    bool hit = false;
+                    double t = -1;
+                    first_hit_aov(primary, world, a, n, hit, &t);
+                    if (hit) {
+                        alb += a;
+                        nrm += n;
+                        dep = (dep < 0) ? t : dep + t;
+                    }
+                }
+            }
+            acc /= (double)spp;
+            if (want_guides) {
+                alb /= (double)spp;
+                if (nrm.length_squared() > 0)
+                    nrm = unit_vector(nrm);
+                if (dep >= 0)
+                    dep /= (double)spp;
+            }
         } else {
             rng_seed(base_seed + (unsigned)(j * W + i));
-            auto offs = use_sobol ? sobol_offsets(spp) : pixel_samples(spp);
+            auto offs = pixel_samples(spp);
             for (auto [ox, oy] : offs) {
                 double u = (i + ox) / W;
                 double v = (j + oy) / H;
@@ -187,6 +226,7 @@ int main(int argc, char **argv) {
         rng_seed(base_seed);
     const int num_tiles = (H + tile_rows - 1) / tile_rows;
     std::atomic<int> next_tile{0};
+    std::atomic<int> completed_tiles{0};
     std::vector<std::thread> workers;
     for (unsigned t = 0; t < num_threads; ++t) {
         workers.emplace_back([&] {
@@ -199,11 +239,17 @@ int main(int argc, char **argv) {
                 for (int j = j0; j < j1; ++j)
                     for (int i = 0; i < W; ++i)
                         render_pixel(i, j);
+                int done = completed_tiles.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (done % 5 == 0 || done == num_tiles) {
+                    std::cerr << "\rRendering [" << done * 100 / num_tiles << "%] ("
+                              << done << "/" << num_tiles << " tiles)" << std::flush;
+                }
             }
         });
     }
     for (auto &th : workers)
         th.join();
+    std::cerr << "\n";
     auto t_end = std::chrono::high_resolution_clock::now();
     double secs = std::chrono::duration<double>(t_end - t_start).count();
 
