@@ -34,6 +34,7 @@ layout(push_constant) uniform PC {
     float sh0;
     float sh1; // shutter span (closed when equal)
     int nfog; // fog-ish slots present (type 6/8, gates fog RNG draws)
+    int nenv; // analytic sun+sky environment on (gates env RNG draws)
 }
 pc;
 
@@ -196,6 +197,32 @@ vec3 noise_col(vec3 p, vec3 c0, vec3 c1, float freq, int depth, int mode) {
     return c0 * (1.0 - f) + c1 * f;
 }
 
+// Analytic sun+sky environment mirroring CPU env_light (uniform sphere,
+// pdf 1/4PI). Off = legacy gradient miss, no RNG drawn.
+vec3 env_sky(vec3 d) {
+    vec3 unit = normalize(d);
+    float tt = 0.5 * (unit.y + 1.0);
+    return (1.0 - tt) * vec3(1.0) + tt * vec3(0.5, 0.7, 1.0);
+}
+vec3 env_sun_dir() {
+    return normalize(vec3(0.5, 0.8, 0.35));
+}
+vec3 env_radiance(vec3 d) {
+    vec3 ud = normalize(d);
+    vec3 L = env_sky(ud);
+    float s = dot(ud, env_sun_dir());
+    if (s > 0.9993) {
+        float k = (s - 0.9993) / (1.0 - 0.9993);
+        L += vec3(30.0, 25.0, 18.0) * (k * k);
+    }
+    return L;
+}
+vec3 env_sample_dir(float u1, float u2) {
+    float z = 1.0 - 2.0 * u1;
+    float phi = 6.28318530718 * u2;
+    float r = sqrt(max(1.0 - z * z, 0.0));
+    return vec3(r * cos(phi), r * sin(phi), z);
+}
 // Uniform area-light sample mirroring CPU light_point/light_area.
 // Consumes exactly 2 RNG draws per shape like the CPU.
 void light_sample(int li, float rtime, float u1, float u2, out vec3 lp, out vec3 ln,
@@ -297,9 +324,15 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase) {
                         light_ty, huv);
         if (!solid) {
             if (!has_fog) {
-                vec3 unit = normalize(d);
-                float tt = 0.5 * (unit.y + 1.0);
-                L += throughput * ((1.0 - tt) * vec3(1.0) + tt * vec3(0.5, 0.7, 1.0));
+                // Miss: legacy sky, or sun+sky env. Bounced misses MIS-weight
+                // against the env strategy; primary misses count full.
+                vec3 miss_L = pc.nenv > 0 ? env_radiance(d) : env_sky(d);
+                if (pc.nenv > 0 && !specular) {
+                    float w = power_weight(pdf_b_last, 1.0 / (4.0 * 3.14159265));
+                    L += throughput * miss_L * w;
+                } else {
+                    L += throughput * miss_L;
+                }
                 break;
             }
             // Solid miss inside smoke: the event still scatters (CPU finds
@@ -449,6 +482,36 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase) {
                     L += throughput * attenuation * lemit *
                          (cosS * cosA * float(pc.nlights) * area /
                           (3.14159265 * dist * dist)) * w;
+                }
+            }
+        }
+        if (pc.nenv > 0 && diffuse) {
+            // Environment NEE mirrors CPU: uniform sphere, probe to
+            // infinity, power MIS vs cosine. RNG only when opted in.
+            vec3 edir = env_sample_dir(wrandf(), wrandf());
+            float cosS = dot(n, edir);
+            if (cosS > 0.0) {
+                vec3 hitp = o + d * t;
+                bool eblocked;
+                if (pc.nfog > 0) {
+                    eblocked = shadow_occluded(hitp, edir, rtime, pc.ns, wrandf(),
+                                               1e30, hbase, bounce, 1);
+                } else {
+                    float tt3;
+                    vec3 nn3;
+                    vec4 a3, ab3, e3, p3;
+                    vec2 huv3;
+                    int lx3, lt3;
+                    eblocked = trace_solid(hitp, edir, rtime, 1e30, tt3, nn3, a3,
+                                           ab3, e3, p3, lx3, lt3, huv3);
+                }
+                if (!eblocked) {
+                    vec3 envLe = env_radiance(edir);
+                    float pdf_e = 1.0 / (4.0 * 3.14159265);
+                    float pdf_b = cosS / 3.14159265;
+                    float w = power_weight(pdf_e, pdf_b);
+                    L += throughput * attenuation * envLe *
+                         (cosS / (3.14159265 * pdf_e)) * w;
                 }
             }
         }

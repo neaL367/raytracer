@@ -4,6 +4,7 @@
 #include "../core/random.h"
 #include "../core/sampler.h"
 #include "../core/bench_stats.h"
+#include "../core/env.h"
 #include "../geometry/hittable.h"
 #include "../geometry/light.h"
 #include "../geometry/quad.h"
@@ -21,19 +22,22 @@
 // First-hit AOV query: albedo + world normal, no bounce, no RNG.
 // Guide draws never perturb the beauty stream (pure function of ray).
 inline void first_hit_aov(const ray &r, const hittable &world, vec3 &albedo, vec3 &normal,
-                          bool &hit) {
+                           bool &hit, double *depth = nullptr) {
     hit_record rec;
     hit = world.hit(r, 0.001, 1e30, rec);
     if (!hit)
         return;
     albedo = rec.mat->surface_albedo(rec);
     normal = rec.normal;
+    if (depth)
+        *depth = rec.t;
 }
 
 class integrator {
 public:
     vec3 Li(const ray &r, const hittable &world,
-            const std::vector<light> &lights, int max_depth) const {
+            const std::vector<light> &lights, int max_depth,
+            bool use_env = false) const {
         count_ray(); // primary
         vec3 throughput(1, 1, 1);
         vec3 L(0, 0, 0);
@@ -46,9 +50,18 @@ public:
         for (int bounce = 0; bounce < max_depth; ++bounce) {
             hit_record rec;
             if (!world.hit(cur, 0.001, 1e30, rec)) {
-                vec3 unit = unit_vector(cur.direction());
-                double t = 0.5 * (unit.y() + 1.0);
-                L += throughput * ((1.0 - t) * vec3(1, 1, 1) + t * vec3(0.5, 0.7, 1.0));
+                // Miss: legacy sky, or the sun+sky environment. Bounced
+                // misses MIS-weight against the env strategy (primary misses
+                // keep full count: specular path, same as legacy).
+                vec3 miss_L = use_env ? env_light::radiance(cur.direction())
+                                      : env_light::sky(cur.direction());
+                if (use_env && !specular) {
+                    double w = direction_pdf::power_weight(
+                        pdf_b_last, env_light::sample_pdf());
+                    L += throughput * miss_L * w;
+                } else {
+                    L += throughput * miss_L;
+                }
                 break;
             }
             vec3 Le = rec.mat->emitted();
@@ -102,6 +115,27 @@ public:
                         L += throughput * attenuation * light_Le *
                              (cosS * cosA * (double)lights.size() * area /
                               (pi * dist * dist)) * w;
+                    }
+                }
+            }
+
+            if (use_env && diffuse) {
+                // Environment NEE: uniform-sphere sample, shadow probe to
+                // infinity, power MIS against the cosine strategy. Draws RNG
+                // only when opted in, so env-off streams stay byte-exact.
+                vec3 edir = env_light::sample_dir(random_double(), random_double());
+                double cosS = dot(rec.normal, edir);
+                if (cosS > 0) {
+                    hit_record etmp;
+                    count_ray(); // env shadow ray
+                    ray eshadow(rec.point, edir, cur.time());
+                    if (!world.hit(eshadow, 0.001, 1e30, etmp)) {
+                        vec3 env_Le = env_light::radiance(edir);
+                        double pdf_e = env_light::sample_pdf();
+                        double pdf_b = cosine_pdf(cosS);
+                        double w = direction_pdf::power_weight(pdf_e, pdf_b);
+                        L += throughput * attenuation * env_Le *
+                             (cosS / (pi * pdf_e)) * w;
                     }
                 }
             }

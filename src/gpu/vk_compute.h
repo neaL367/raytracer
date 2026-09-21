@@ -300,7 +300,7 @@ inline void gpu_set_scene(GpuContext &g, const void *data[9], const size_t bytes
 
 // Dispatch spv with 32B push block, copy image to host, report device ms.
 // out_rgba receives W*H*4 floats, top-first rows.
-inline double gpu_run(GpuContext &g, const std::string &spv_path, const uint32_t push11[11],
+inline double gpu_run(GpuContext &g, const std::string &spv_path, const uint32_t push12[12],
                       std::vector<float> &out_rgba) {
     std::ifstream f(spv_path, std::ios::binary | std::ios::ate);
     if (!f) {
@@ -323,7 +323,7 @@ inline double gpu_run(GpuContext &g, const std::string &spv_path, const uint32_t
     {
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        pc.size = 44;
+        pc.size = 48;
         VkPipelineLayoutCreateInfo li{};
         li.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         li.setLayoutCount = 1;
@@ -360,7 +360,7 @@ inline double gpu_run(GpuContext &g, const std::string &spv_path, const uint32_t
         vkCmdBindPipeline(g.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g.pipe);
         vkCmdBindDescriptorSets(g.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g.pipe_layout, 0,
                                 1, &g.set, 0, nullptr);
-        vkCmdPushConstants(g.cmd, g.pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 44, push11);
+        vkCmdPushConstants(g.cmd, g.pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 48, push12);
         vkCmdWriteTimestamp(g.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.query_pool, 0);
         vkCmdDispatch(g.cmd, (g.W + 15) / 16, (g.H + 15) / 16, 1);
         vkCmdWriteTimestamp(g.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.query_pool, 1);

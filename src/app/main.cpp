@@ -40,6 +40,7 @@ int main(int argc, char **argv) {
     double fog_density = 0;
     double het_density = 0;
     bool marble_demo = false;
+    bool env_demo = false;
     unsigned seed = 42; // base RNG seed; per-pixel stream = seed + pixel index
     int W = 400, H = -1; // H defaults to 16:9 unless --height given
     std::string hdr_path; // empty = no float dump
@@ -70,6 +71,8 @@ int main(int argc, char **argv) {
             het_density = std::max(0.0, std::atof(argv[++i]));
         } else if (a == "--noise")
             marble_demo = true;
+        else if (a == "--env")
+            env_demo = true;
         else if (a == "--seed" && i + 1 < argc)
             seed = (unsigned)std::max(0, std::atoi(argv[++i]));
         else if (a == "--width" && i + 1 < argc)
@@ -97,7 +100,8 @@ int main(int argc, char **argv) {
 
     // One construction order shared with the GPU uploader (scene/scene.h).
     scene_data scene = build_scene(scene_name, double(W) / double(H), aperture, shutter0,
-                                   shutter1, fog_density, het_density, marble_demo);
+                                    shutter1, fog_density, het_density, marble_demo,
+                                    env_demo);
     std::vector<std::shared_ptr<hittable>> &objs = scene.objs;
     std::vector<light> &lights = scene.lights;
     camera &cam = scene.cam;
@@ -118,8 +122,7 @@ int main(int argc, char **argv) {
             double u = double(i) / (W - 1);
             double v = double(j) / (H - 1);
             ray primary = cam.get_ray(u, v);
-            acc = tracer.Li(primary, world, lights, max_depth);
-            if (do_denoise) {
+            acc = tracer.Li(primary, world, lights, max_depth, scene.env_light);
                 vec3 a, n;
                 bool hit = false;
                 first_hit_aov(primary, world, a, n, hit);
@@ -135,7 +138,7 @@ int main(int argc, char **argv) {
                 double u = (i + ox) / W;
                 double v = (j + oy) / H;
                 ray primary = cam.get_ray(u, v);
-                acc += tracer.Li(primary, world, lights, max_depth);
+                acc += tracer.Li(primary, world, lights, max_depth, scene.env_light);
                 // Guides appended after beauty: deterministic order, and
                 // AOV uses no RNG so the beauty stream never shifts.
                 if (do_denoise) {
@@ -212,7 +215,8 @@ int main(int argc, char **argv) {
               << " denoise=" << (do_denoise ? "joint" : "off")
               << " shutter=[" << shutter0 << "," << shutter1 << "]"
               << " fog=" << fog_density << " het=" << het_density
-              << " noise=" << (marble_demo ? "on" : "off") << " seed=" << base_seed << "\n";
+              << " noise=" << (marble_demo ? "on" : "off")
+              << " env=" << (env_demo ? "on" : "off")
     std::cout << "render " << secs << "s";
     if (bench) {
         std::cout << " rays=" << rays << " (" << (rays / 1e6 / secs) << " Mrays/s)"

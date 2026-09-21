@@ -9,8 +9,10 @@
 #include "geometry/quad.h"
 #include "material/material.h"
 #include "geometry/sphere.h"
+#include "scene/scene.h"
 #include "integrator/integrator.h"
 #include "integrator/pdf.h"
+#include "core/env.h"
 #include "io/ppm_image.h"
 #include "io/stb_loader.h"
 #include "io/compare.h"
@@ -514,12 +516,57 @@ static void t_pdf() {
     EXPECT_NEAR(mirror.direction_pdf(vec3(0, 1, 0), mrec), 0.0);
 }
 
+static void t_env() {
+    test_current = "env";
+    // Sky gradient endpoints: white below, blue above (legacy look).
+    EXPECT_NEAR(env_light::sky(vec3(0, -1, 0)).x(), 1.0);
+    EXPECT_NEAR(env_light::sky(vec3(0, 1, 0)).z(), 1.0);
+    // Sun disc: center ~30x white, rim falls to sky.
+    vec3 sun = env_light::sun_dir();
+    EXPECT_TRUE(fabs(sun.length() - 1.0) < 1e-12);
+    vec3 center = env_light::radiance(sun);
+    EXPECT_TRUE(center.x() > 25.0 && center.x() < 35.0);
+    vec3 anti = env_light::radiance(-sun);
+    vec3 anti_sky = env_light::sky(-sun);
+    EXPECT_NEAR(anti.x(), anti_sky.x()); // no sun behind: pure sky
+    // Uniform-sphere pdf is 1/4PI; sampler returns unit dirs, replayable.
+    const double pi = 3.1415926535897932385;
+    EXPECT_NEAR(env_light::sample_pdf(), 1.0 / (4.0 * pi));
+    vec3 d = env_light::sample_dir(0.0, 0.0); // north pole, exact
+    EXPECT_NEAR(d.z(), 1.0);
+    vec3 d2 = env_light::sample_dir(0.25, 0.5);
+    EXPECT_TRUE(fabs(d2.length() - 1.0) < 1e-9);
+    // Env-off miss is the legacy sky bit-exact (frozen path).
+    integrator tracer;
+    hittable_list empty;
+    std::vector<light> none;
+    rng_seed(200);
+    vec3 miss = tracer.Li(ray(vec3(0, 0, 0), vec3(0, 0.5, -1)), empty, none, 50, false);
+    vec3 expect = env_light::sky(vec3(0, 0.5, -1));
+    EXPECT_NEAR(miss.x(), expect.x());
+    EXPECT_NEAR(miss.y(), expect.y());
+    EXPECT_NEAR(miss.z(), expect.z());
+    // Env-on primary miss sees the sun when aimed at it.
+    rng_seed(201);
+    vec3 sunshot = tracer.Li(ray(vec3(0, 0, 0), sun), empty, none, 50, true);
+    EXPECT_TRUE(sunshot.x() > 20.0);
+    rng_seed(202);
+    vec3 antishot = tracer.Li(ray(vec3(0, 0, 0), -sun), empty, none, 50, true);
+    EXPECT_NEAR(antishot.x(), env_light::sky(-sun).x());
+    // Scene flag defaults off (frozen), opts in.
+    scene_data s0 = build_default(16.0 / 9.0, 0.0);
+    EXPECT_TRUE(!s0.env_light);
+    scene_data s1 = build_default(16.0 / 9.0, 0.0, 0, 0, 0, 0, false, true);
+    EXPECT_TRUE(s1.env_light);
+}
+
 void run_shading_tests() {
     t_materials();
     t_texture();
     t_mipmaps();
     t_noise();
     t_pdf();
+    t_env();
     t_ggx();
     t_emissive();
     t_ppm();

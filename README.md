@@ -16,13 +16,14 @@ ctest --test-dir build -C Release
 build\Release\raytracer.exe [--samples 16] [--threads N] [--tile 8]
   [--split sah|median] [--exposure 1] [--denoise] [--scene default|cornell]
   [--shutter T0 T1] [--fog D] [--aperture A] [--width W] [--height H]
-  [--seed 42] [--hdr float.pfm] [--bench] [--noise]
+  [--seed 42] [--hdr float.pfm] [--bench] [--noise] [--env]
 ```
 
 Renders `out/image.ppm` (400x225, 16spp stratified default,
 `--samples 1` reproduces single-sample look). `--hdr` dumps linear
 pre-exposure float (PFM) for post-workflows alongside the PPM.
 `--noise` adds an opt-in marble showcase sphere (defaults stay frozen).
+`--env` enables the analytic sun+sky environment with MIS (off = byte-exact legacy sky).
 
 ```bat
 build\Release\rt_gpu.exe [path.spv] [out.ppm] [--spp N] [--seed S]
@@ -100,4 +101,5 @@ M34 done: Perlin value-noise + fBm + turbulence + marble textures, opt-in `--noi
 M35 done: direction-PDF module (cosine + NEE + 50/50 mixture) beside the integrator, zero pixel change.
 M36 done: power-heuristic MIS on CPU, first-class direction densities, isotropic found-lights MIS-weighted.
 M37 done: GPU power-heuristic MIS parity in path shader (found-light + NEE weights mirrored).
+M38 done: analytic sun+sky environment with uniform-sphere NEE + MIS on both backends, `--env` opt-in.
 Next: `.scratch/roadmap.md` backlog (Linux/macOS port).

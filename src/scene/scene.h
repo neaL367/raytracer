@@ -24,6 +24,7 @@ struct scene_data {
     std::vector<std::shared_ptr<hittable>> objs;
     std::vector<light> lights; // NEE-sampled emitters (any shape)
     camera cam;
+    bool env_light = false; // analytic sun+sky environment (opt-in --env)
 };
 
 // Axis box from 6 quads, returned as a list so callers can instance it
@@ -69,8 +70,9 @@ inline std::shared_ptr<hittable> make_posed_box(const vec3 &dims, double angle_d
 // sphere fallback, metal/glass spheres, ceiling light. Shutter open =>
 // left sphere drifts +0.3y (motion demo); closed => static, hashes frozen.
 inline scene_data build_default(double aspect, double aperture, double sh0 = 0,
-                                double sh1 = 0, double fog_density = 0,
-                                double het_density = 0, bool marble = false) {
+                                 double sh1 = 0, double fog_density = 0,
+                                 double het_density = 0, bool marble = false,
+                                 bool env = false) {
     scene_data scene;
     // Photo ground (spherical UVs); checker fallback keeps binary alive
     // when the asset is missing.
@@ -155,13 +157,14 @@ inline scene_data build_default(double aspect, double aperture, double sh0 = 0,
     scene.cam = camera(vec3(0, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0), 90.0, aspect,
                        aperture, 1.0);
     scene.cam.set_shutter(sh0, sh1);
+    scene.env_light = env;
     return scene;
 }
 
 // Classic 555 Cornell: red image-left wall, green image-right, white
 // shell + 2 boxes, ceiling area light. Camera u axis points -x, so the
 // x=555 wall appears image-left: red goes there for canonical look.
-inline scene_data build_cornell(double aspect, double aperture) {
+inline scene_data build_cornell(double aspect, double aperture, bool env = false) {
     scene_data scene;
     auto red = std::make_shared<lambertian>(vec3(0.63, 0.065, 0.05));
     auto green = std::make_shared<lambertian>(vec3(0.14, 0.45, 0.15));
@@ -193,13 +196,14 @@ inline scene_data build_cornell(double aspect, double aperture) {
     vec3 from(278, 278, -800), at(278, 278, 0);
     scene.cam = camera(from, at, vec3(0, 1, 0), 40.0, aspect, aperture,
                        (from - at).length());
+    scene.env_light = env;
     return scene;
 }
 
 inline scene_data build_scene(const std::string &name, double aspect, double aperture,
-                               double sh0 = 0, double sh1 = 0, double fog = 0,
-                               double het = 0, bool marble = false) {
+                                double sh0 = 0, double sh1 = 0, double fog = 0,
+                                double het = 0, bool marble = false, bool env = false) {
     if (name == "cornell")
-        return build_cornell(aspect, aperture);
-    return build_default(aspect, aperture, sh0, sh1, fog, het, marble);
+        return build_cornell(aspect, aperture, env);
+    return build_default(aspect, aperture, sh0, sh1, fog, het, marble, env);
 }

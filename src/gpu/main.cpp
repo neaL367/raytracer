@@ -3,6 +3,7 @@
 // vk_compute.h, numbers in scene/scene.h via flatten.h.
 // Usage: rt_gpu [shader.spv] [out.ppm] [--spp N] [--seed S]
 //        [--scene NAME] [--width W] [--height H] [--hdr float.pfm] [--denoise]
+//        [--shutter T0 T1] [--fog D] [--het D] [--noise] [--env]
 #include "host_scene.h"
 #include "flatten.h"
 #include "vk_compute.h"
@@ -30,7 +31,7 @@ int main(int argc, char **argv) {
     std::string hdr_path; // empty = no float dump
     bool do_denoise = false;
     double shutter0 = 0, shutter1 = 0, fog_density = 0, het_density = 0;
-    bool marble_demo = false;
+    bool marble_demo = false, env_demo = false;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--spp" && i + 1 < argc)
@@ -48,6 +49,8 @@ int main(int argc, char **argv) {
             het_density = std::max(0.0, std::atof(argv[++i]));
         else if (a == "--noise")
             marble_demo = true;
+        else if (a == "--env")
+            env_demo = true;
         else if (a == "--width" && i + 1 < argc)
             W = std::max(8, std::atoi(argv[++i]));
         else if (a == "--height" && i + 1 < argc)
@@ -69,7 +72,7 @@ int main(int argc, char **argv) {
     // same scene to typed arrays + BVH nodes instead of hardcoded data.
     scene_data sdata =
         build_scene(scene_name, (double)W / (double)H, 0.0, shutter0, shutter1, fog_density,
-                    het_density, marble_demo);
+                    het_density, marble_demo, env_demo);
     flat_scene flat;
     if (!flatten_scene(sdata, flat)) {
         std::cerr << "scene has non-exportable shapes\n";
@@ -137,12 +140,13 @@ int main(int argc, char **argv) {
     for (const auto &s : scene.spheres)
         if (s.prm[0] == 6 || s.prm[0] == 8)
             nfog++;
-    uint32_t push11[11];
+    uint32_t push12[12];
     for (int k = 0; k < 10; ++k)
-        push11[k] = push10[k];
-    push11[10] = (uint32_t)nfog;
+        push12[k] = push10[k];
+    push12[10] = (uint32_t)nfog;
+    push12[11] = sdata.env_light ? 1u : 0u;
     std::vector<float> rgba;
-    double dispatch_ms = gpu_run(gpu, shader, push11, rgba);
+    double dispatch_ms = gpu_run(gpu, shader, push12, rgba);
     double denoise_ms = 0;
     if (do_denoise) {
         // Bilateral post-pass on device (linear HDR); needs the denoise
