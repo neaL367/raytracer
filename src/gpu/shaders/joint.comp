@@ -1,0 +1,39 @@
+#version 450
+// Joint (cross) bilateral denoise: weights from albedo + normal guides,
+// applied to beauty. Mirrors CPU joint_bilateral_denoise exactly (R=2,
+// sigma_s=1.5, sigma_a=0.1, sigma_n=0.25, out-of-bounds skipped, 1 iter).
+// Linear HDR in, linear HDR out. Guides live on device (path AOVs).
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(binding = 0, rgba32f) readonly uniform image2D srcImg;
+layout(binding = 1, rgba32f) readonly uniform image2D albImg;
+layout(binding = 2, rgba32f) readonly uniform image2D nrmImg;
+layout(binding = 3, rgba32f) uniform image2D dstImg;
+layout(push_constant) uniform PC {
+    int W;
+    int H;
+}
+pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= pc.W || p.y >= pc.H)
+        return;
+    vec3 ac = imageLoad(albImg, p).xyz;
+    vec3 nc = imageLoad(nrmImg, p).xyz;
+    vec3 acc = vec3(0.0);
+    float wsum = 0.0;
+    for (int dy = -2; dy <= 2; ++dy) {
+        for (int dx = -2; dx <= 2; ++dx) {
+            ivec2 q = p + ivec2(dx, dy);
+            if (q.x < 0 || q.y < 0 || q.x >= pc.W || q.y >= pc.H)
+                continue;
+            vec3 da = imageLoad(albImg, q).xyz - ac;
+            vec3 dn = imageLoad(nrmImg, q).xyz - nc;
+            float w = exp(-float(dx * dx + dy * dy) / 4.5) *
+                      exp(-dot(da, da) / 0.02) * exp(-dot(dn, dn) / 0.125);
+            acc += w * imageLoad(srcImg, q).xyz;
+            wsum += w;
+        }
+    }
+    imageStore(dstImg, p, vec4(acc / wsum, 1.0));
+}

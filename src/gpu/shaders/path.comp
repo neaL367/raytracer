@@ -24,6 +24,10 @@ layout(binding = 8) readonly buffer ImgTable {
 layout(binding = 9) readonly buffer LightTab {
     ivec2 lightTab[];
 };
+// Bindings 10-11: albedo + normal AOV outputs (always written, read by the
+// joint pass; no RNG involved so beauty streams stay bit-exact).
+layout(binding = 10, rgba32f) uniform image2D albImg;
+layout(binding = 11, rgba32f) uniform image2D nrmImg;
 layout(push_constant) uniform PC {
     int W;
     int H;
@@ -297,12 +301,15 @@ float power_weight(float pdf_a, float pdf_b) {
     return denom > 0.0 ? a2 / denom : 0.0;
 }
 
-vec3 Li(vec3 o, vec3 d, float rtime, uint hbase) {
+vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
+         out vec3 guide_n) {
     vec3 throughput = vec3(1.0);
     vec3 L = vec3(0.0);
     vec3 prev = o;
     bool specular = true;
     float pdf_b_last = 0.0;
+    guide_a = vec3(0.0);
+    guide_n = vec3(0.0);
     for (int bounce = 0; bounce < 50; ++bounce) {
         float t;
         vec3 n;
@@ -345,6 +352,11 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase) {
             // Volume event wins: isotropic continue, specular-style MIS.
             // wrand_in_sphere never returns 0 (unit fallback), so normalize
             // is safe directly.
+            // First-hit AOV mirrors CPU (phase albedo, arbitrary up normal).
+            if (bounce == 0) {
+                guide_a = fog_alb;
+                guide_n = vec3(0.0, 1.0, 0.0);
+            }
             throughput *= fog_alb;
             o = o + d * fog_t;
             prev = o;
@@ -357,6 +369,37 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase) {
                 throughput /= q;
             }
             continue;
+        }
+        int mtype = int(params.x + 0.5);
+        vec3 hitp0 = o + d * t;
+        // Type 4 = checker diffuse: world-pos parity like CPU texture.
+        // Type 5 = image diffuse: UV sample like CPU image_texture.
+        // Type 9 = procedural noise: marble family like CPU noise_texture.
+        vec3 base_alb = alb.xyz;
+        int img_idx = -1;
+        if (mtype == 4)
+            base_alb = checker_col(hitp0, alb.xyz, alb2.xyz, params.y);
+        else if (mtype == 5) {
+            img_idx = int(params.y + 0.5);
+            base_alb = image_sample(huv, img_idx, t);
+        } else if (mtype == 9) {
+            base_alb = noise_col(hitp0, alb.xyz, alb2.xyz, params.y,
+                                 int(params.z + 0.5), int(params.w + 0.5));
+        }
+        // First-hit AOV mirrors CPU surface_albedo (L0, crisp guides).
+        // Before the emit break: lights carry guides too (CPU records all).
+        if (bounce == 0) {
+            guide_n = n;
+            if (mtype == 5 && img_idx >= 0)
+                guide_a = image_sample(huv, img_idx, 1e-3); // L0, no LOD
+            else if (mtype == 7)
+                guide_a = alb.xyz;
+            else if (mtype == 2)
+                guide_a = vec3(1.0);
+            else if (mtype == 3)
+                guide_a = emit.xyz;
+            else
+                guide_a = base_alb; // 0 solid, 4 checker, 9 noise
         }
         if (emit.x + emit.y + emit.z > 0.0) {
             if (specular) {
@@ -381,21 +424,6 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase) {
                 L += throughput * emit.xyz;
             }
             break;
-        }
-        int mtype = int(params.x + 0.5);
-        vec3 hitp0 = o + d * t;
-        // Type 4 = checker diffuse: world-pos parity like CPU texture.
-        // Type 5 = image diffuse: UV sample like CPU image_texture.
-        // Type 9 = procedural noise: marble family like CPU noise_texture.
-        vec3 base_alb = alb.xyz;
-        if (mtype == 4)
-            base_alb = checker_col(hitp0, alb.xyz, alb2.xyz, params.y);
-        else if (mtype == 5) {
-            int img_idx = int(params.y + 0.5);
-            base_alb = image_sample(huv, img_idx, t);
-        } else if (mtype == 9) {
-            base_alb = noise_col(hitp0, alb.xyz, alb2.xyz, params.y,
-                                 int(params.z + 0.5), int(params.w + 0.5));
         }
         vec3 attenuation;
         vec3 sd;
@@ -611,6 +639,8 @@ void main() {
     for (; (side + 1) * (side + 1) <= pc.spp; ++side)
         ;
     vec3 acc = vec3(0.0);
+    vec3 alb_acc = vec3(0.0);
+    vec3 nrm_acc = vec3(0.0);
     int n = 0;
     for (int iy = 0; iy < side; ++iy)
         for (int ix = 0; ix < side; ++ix) {
@@ -635,9 +665,18 @@ void main() {
             float rt = (pc.sh1 > pc.sh0)
                            ? pc.sh0 + wrandf() * (pc.sh1 - pc.sh0)
                            : pc.sh0;
-            acc += Li(o, d, rt, wseed);
+            vec3 ga, gn;
+            acc += Li(o, d, rt, wseed, ga, gn);
+            alb_acc += ga;
+            nrm_acc += gn;
             ++n;
         }
     acc /= float(n);
+    alb_acc /= float(n);
+    nrm_acc /= float(n);
+    // All-miss pixels keep zero guides; else renormalize (mirrors CPU).
+    vec3 nrm_out = (dot(nrm_acc, nrm_acc) > 0.0) ? normalize(nrm_acc) : vec3(0.0);
     imageStore(img, p, vec4(acc, 1.0));
+    imageStore(albImg, p, vec4(alb_acc, 1.0));
+    imageStore(nrmImg, p, vec4(nrm_out, 1.0));
 }

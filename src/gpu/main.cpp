@@ -3,6 +3,7 @@
 // vk_compute.h, numbers in scene/scene.h via flatten.h.
 // Usage: rt_gpu [shader.spv] [out.ppm] [--spp N] [--seed S]
 //        [--scene NAME] [--width W] [--height H] [--hdr float.pfm] [--denoise]
+//        [--joint]
 //        [--shutter T0 T1] [--fog D] [--het D] [--noise] [--env]
 //        [--aperture A] [--exposure X]
 #include "host_scene.h"
@@ -31,6 +32,7 @@ int main(int argc, char **argv) {
     std::string scene_name = "default";
     std::string hdr_path; // empty = no float dump
     bool do_denoise = false;
+    bool do_joint = false;
     double aperture = 0.0, exposure = 1.0;
     double shutter0 = 0, shutter1 = 0, fog_density = 0, het_density = 0;
     bool marble_demo = false, env_demo = false;
@@ -61,6 +63,8 @@ int main(int argc, char **argv) {
             hdr_path = argv[++i];
         else if (a == "--denoise")
             do_denoise = true;
+        else if (a == "--joint")
+            do_joint = true;
         else if (a == "--aperture" && i + 1 < argc)
             aperture = std::max(0.0, std::atof(argv[++i]));
         else if (a == "--exposure" && i + 1 < argc)
@@ -162,6 +166,15 @@ int main(int argc, char **argv) {
         denoise_ms = gpu_denoise(gpu, dsh, rgba, smooth);
         rgba = std::move(smooth);
     }
+    double joint_ms = 0;
+    if (do_joint) {
+        // Guided pass reads beauty + AOVs on device (no upload); needs
+        // joint.spv next to the path shader.
+        std::string jsh = shader.substr(0, shader.find_last_of("/\\") + 1) + "joint.spv";
+        std::vector<float> guided;
+        joint_ms = gpu_joint(gpu, jsh, guided);
+        rgba = std::move(guided);
+    }
 
     // Image rows top-first -> flip for PPM writer (bottom-first).
     std::vector<vec3> fb((size_t)W * H);
@@ -187,6 +200,8 @@ int main(int argc, char **argv) {
               << std::chrono::duration<double>(t1 - t0).count() << "s";
     if (do_denoise)
         std::cout << " denoise=" << denoise_ms << "ms";
+    if (do_joint)
+        std::cout << " joint=" << joint_ms << "ms";
     std::cout << "\n";
     return 0;
 }
