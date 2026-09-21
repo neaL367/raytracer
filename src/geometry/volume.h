@@ -25,6 +25,8 @@ public:
         hit_record b0, b1;
         if (!border->hit(r, -1e30, 1e30, b0))
             return false;
+        if (b0.t > t_max)
+            return false;
         if (!border->hit(r, b0.t + 1e-4, 1e30, b1))
             return false;
         if (b0.t < t_min)
@@ -83,6 +85,8 @@ public:
     bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const override {
         hit_record b0, b1;
         if (!border->hit(r, -1e30, 1e30, b0))
+            return false;
+        if (b0.t > t_max)
             return false;
         if (!border->hit(r, b0.t + 1e-4, 1e30, b1))
             return false;

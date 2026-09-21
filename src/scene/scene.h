@@ -3,6 +3,7 @@
 // main() only wires (BVH + render); all placement lives here.
 // Quads double-sided, so wall winding never matters.
 #include "../accel/bvh.h"
+#include "../accel/qbvh.h"
 #include "../camera/camera.h"
 #include "../core/obj_loader.h"
 #include "../core/texture.h"
@@ -273,10 +274,10 @@ inline scene_data build_weekend(double aspect, double aperture, double sh0 = 0,
 inline scene_data build_book2(double aspect, double aperture, double sh0 = 0,
                               double sh1 = 0, bool env = false) {
     scene_data scene;
-    hittable_list boxes1;
     auto ground = std::make_shared<lambertian>(color(0.48, 0.83, 0.53));
-
     int boxes_per_side = 20;
+    std::vector<std::shared_ptr<hittable>> boxes1_quads;
+    boxes1_quads.reserve(boxes_per_side * boxes_per_side * 6);
     for (int i = 0; i < boxes_per_side; i++) {
         for (int j = 0; j < boxes_per_side; j++) {
             auto w = 100.0;
@@ -287,11 +288,11 @@ inline scene_data build_book2(double aspect, double aperture, double sh0 = 0,
             auto y1 = random_double(1, 101);
             auto z1 = z0 + w;
 
-            boxes1.add(box(point3(x0, y0, z0), point3(x1, y1, z1), ground));
+            add_box(boxes1_quads, point3(x0, y0, z0), point3(x1, y1, z1), ground);
         }
     }
-
-    scene.objs.push_back(std::make_shared<bvh_node>(boxes1));
+    scene.objs.push_back(
+        std::make_shared<qbvh_node>(boxes1_quads, 0, boxes1_quads.size(), true));
 
     auto light = std::make_shared<diffuse_light>(color(7, 7, 7));
     auto light_quad = std::make_shared<quad>(point3(123, 554, 147), vec3(300, 0, 0),
@@ -322,15 +323,17 @@ inline scene_data build_book2(double aspect, double aperture, double sh0 = 0,
     scene.objs.push_back(
         std::make_shared<sphere>(point3(220, 280, 300), 80, std::make_shared<lambertian>(pertext)));
 
-    hittable_list boxes2;
+    std::vector<std::shared_ptr<hittable>> boxes2_spheres;
+    boxes2_spheres.reserve(1000);
     auto white = std::make_shared<lambertian>(color(.73, .73, .73));
     int ns = 1000;
     for (int j = 0; j < ns; j++) {
-        boxes2.add(std::make_shared<sphere>(point3::random(0, 165), 10, white));
+        boxes2_spheres.push_back(std::make_shared<sphere>(point3::random(0, 165), 10, white));
     }
 
     scene.objs.push_back(std::make_shared<translate>(
-        std::make_shared<rotate_y>(std::make_shared<bvh_node>(boxes2), 15),
+        std::make_shared<rotate_y>(
+            std::make_shared<qbvh_node>(boxes2_spheres, 0, boxes2_spheres.size(), true), 15),
         vec3(-100, 270, 395)));
 
     point3 lookfrom(478, 278, -600);

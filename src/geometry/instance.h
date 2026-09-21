@@ -25,6 +25,11 @@ public:
         return true; // normals rotation-free: translation preserves them
     }
 
+    bool hit_any(const ray &r, double t_min, double t_max) const override {
+        ray moved(r.origin() - off, r.direction(), r.time());
+        return obj->hit_any(moved, t_min, t_max);
+    }
+
     bool bounding_box(aabb &box) const override {
         aabb inner;
         if (!obj->bounding_box(inner))
@@ -64,6 +69,16 @@ public:
         rec.normal = vec3(cos_t * n.x() + sin_t * n.z(), n.y(),
                           -sin_t * n.x() + cos_t * n.z());
         return true;
+    }
+
+    bool hit_any(const ray &r, double t_min, double t_max) const override {
+        vec3 o = r.origin(), d = r.direction();
+        vec3 o_loc(cos_t * o.x() - sin_t * o.z(), o.y(),
+                   sin_t * o.x() + cos_t * o.z());
+        vec3 d_loc(cos_t * d.x() - sin_t * d.z(), d.y(),
+                   sin_t * d.x() + cos_t * d.z());
+        ray local(o_loc, d_loc, r.time());
+        return obj->hit_any(local, t_min, t_max);
     }
 
     bool bounding_box(aabb &box) const override {

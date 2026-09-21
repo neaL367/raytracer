@@ -27,6 +27,10 @@ class hittable {
 public:
     virtual ~hittable() = default;
     virtual bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const = 0;
+    virtual bool hit_any(const ray &r, double t_min, double t_max) const {
+        hit_record rec;
+        return hit(r, t_min, t_max, rec);
+    }
     virtual bool bounding_box(aabb &box) const = 0;
 };
 
@@ -50,6 +54,14 @@ public:
             }
         }
         return any;
+    }
+
+    bool hit_any(const ray &r, double t_min, double t_max) const override {
+        for (const auto &o : objects) {
+            if (o->hit_any(r, t_min, t_max))
+                return true;
+        }
+        return false;
     }
 
     bool bounding_box(aabb &box) const override {

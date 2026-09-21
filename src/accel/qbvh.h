@@ -66,6 +66,31 @@ public:
         return any;
     }
 
+    bool hit_any(const ray &r, double t_min, double t_max) const override {
+        ::count_box();
+        ::count_box();
+        ::count_box();
+        ::count_box();
+        unsigned mask = box_mask(r, t_min, t_max);
+        if (!mask)
+            return false;
+        for (int s = 0; s < nkids; ++s) {
+            if (!(mask & (1u << (unsigned)s)))
+                continue;
+            const child &c = kids[(size_t)s];
+            if (c.leaf) {
+                for (const auto &p : c.prims) {
+                    ::count_prim();
+                    if (p->hit_any(r, t_min, t_max))
+                        return true;
+                }
+            } else if (c.node->hit_any(r, t_min, t_max)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     bool bounding_box(aabb &b) const override {
         b = box;
         return true;

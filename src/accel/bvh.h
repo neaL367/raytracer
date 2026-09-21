@@ -109,6 +109,25 @@ public:
         return false;
     }
 
+    bool hit_any(const ray &r, double t_min, double t_max) const override {
+        ::count_box();
+        if (!box.hit(r, t_min, t_max))
+            return false;
+        if (!prims.empty()) {
+            for (const auto &p : prims) {
+                ::count_prim();
+                if (p->hit_any(r, t_min, t_max))
+                    return true;
+            }
+            return false;
+        }
+        if (left && left->hit_any(r, t_min, t_max))
+            return true;
+        if (right && right->hit_any(r, t_min, t_max))
+            return true;
+        return false;
+    }
+
     bool bounding_box(aabb &b) const override {
         b = box;
         return true;

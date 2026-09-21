@@ -103,10 +103,9 @@ public:
                 double cosA = fabs(dot(ln, -wi));
                 double area = light_area(light);
                 if (cosS > 0 && cosA > 0 && area > 0) {
-                    hit_record tmp;
                     count_ray(); // shadow ray
                     ray shadow(rec.point, wi, cur.time());
-                    bool blocked = world.hit(shadow, 0.001, dist - 0.001, tmp);
+                    bool blocked = world.hit_any(shadow, 0.001, dist - 0.001);
                     if (!blocked) {
                         vec3 light_Le = light_mat(light)->emitted();
                         double pdf_l = dist * dist /
@@ -128,10 +127,9 @@ public:
                 vec3 edir = env_light::sample_dir(random_double(), random_double());
                 double cosS = dot(rec.normal, edir);
                 if (cosS > 0) {
-                    hit_record etmp;
                     count_ray(); // env shadow ray
                     ray eshadow(rec.point, edir, cur.time());
-                    if (!world.hit(eshadow, 0.001, 1e30, etmp)) {
+                    if (!world.hit_any(eshadow, 0.001, 1e30)) {
                         vec3 env_Le = env_light::radiance(edir);
                         double pdf_e = env_light::sample_pdf();
                         double pdf_b = cosine_pdf(cosS);

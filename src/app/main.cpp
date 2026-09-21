@@ -207,7 +207,8 @@ int main(int argc, char **argv) {
             }
         } else {
             rng_seed(base_seed + (unsigned)(j * W + i));
-            auto offs = pixel_samples(spp);
+            static thread_local std::vector<sample_offset> offs;
+            fill_pixel_samples(spp, offs);
             for (auto [ox, oy] : offs) {
                 double u = (i + ox) / W;
                 double v = (j + oy) / H;

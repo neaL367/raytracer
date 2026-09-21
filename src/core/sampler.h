@@ -93,15 +93,38 @@ inline std::vector<sample_offset> sobol_offsets(int n) {
     }
     return out;
 }
-// Perfect square -> strata, else jitter. n=1 returns center (M2 path).
-// Sobol is opt-in (--sampler sobol); the default stream stays frozen.
-inline std::vector<sample_offset> pixel_samples(int n) {
-    if (n <= 1)
-        return {{0.5, 0.5}};
+inline void fill_pixel_samples(int n, std::vector<sample_offset> &out) {
+    if (n <= 1) {
+        out.resize(1);
+        out[0] = {0.5, 0.5};
+        return;
+    }
     int s = 0;
     for (; (s + 1) * (s + 1) <= n; ++s)
         ;
-    if (s * s == n)
-        return stratified_offsets(s);
-    return jitter_offsets(n);
+    if (s * s == n) {
+        out.resize((size_t)(s * s));
+        size_t idx = 0;
+        for (int iy = 0; iy < s; ++iy)
+            for (int ix = 0; ix < s; ++ix)
+                out[idx++] = {(ix + random_double()) / s, (iy + random_double()) / s};
+        for (int i = (int)out.size() - 1; i > 0; --i) {
+            int j = (int)(random_double() * (i + 1));
+            if (j > i)
+                j = i;
+            std::swap(out[(size_t)i], out[(size_t)j]);
+        }
+        return;
+    }
+    out.resize((size_t)n);
+    for (int i = 0; i < n; ++i)
+        out[(size_t)i] = {random_double(), random_double()};
+}
+
+// Perfect square -> strata, else jitter. n=1 returns center (M2 path).
+// Sobol is opt-in (--sampler sobol); the default stream stays frozen.
+inline std::vector<sample_offset> pixel_samples(int n) {
+    std::vector<sample_offset> out;
+    fill_pixel_samples(n, out);
+    return out;
 }
