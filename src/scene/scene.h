@@ -205,7 +205,9 @@ inline scene_data build_cornell(double aspect, double aperture, bool env = false
 inline scene_data build_weekend(double aspect, double aperture, double sh0 = 0,
                                 double sh1 = 0, bool env = false) {
     scene_data scene;
-    auto ground_material = std::make_shared<lambertian>(color(0.5, 0.5, 0.5));
+    auto ground_tex =
+        std::make_shared<checker>(0.32, color(0.2, 0.3, 0.1), color(0.9, 0.9, 0.9));
+    auto ground_material = std::make_shared<lambertian>(ground_tex);
     scene.objs.push_back(std::make_shared<sphere>(point3(0, -1000, 0), 1000, ground_material));
 
     for (int a = -11; a < 11; a++) {
