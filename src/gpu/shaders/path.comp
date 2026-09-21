@@ -1,6 +1,6 @@
 #version 450
 // Full path tracer: cosine diffuse, metal/glass, emissive quads,
-// NEE + balance-heuristic MIS + Russian roulette. Mirrors CPU
+// NEE + power-heuristic MIS + Russian roulette. Mirrors CPU
 // integrator formulas in fp32. RNG is wang-hash (differs from CPU
 // mt19937 by design -> statistical parity, not bit-exact).
 #include "common.glsl"
@@ -261,6 +261,12 @@ float schlick(float cosT, float ri) {
     r0 *= r0;
     return r0 + (1.0 - r0) * pow(1.0 - cosT, 5.0);
 }
+// Power heuristic, one sample each: mirrors CPU direction_pdf::power_weight.
+float power_weight(float pdf_a, float pdf_b) {
+    float a2 = pdf_a * pdf_a, b2 = pdf_b * pdf_b;
+    float denom = a2 + b2;
+    return denom > 0.0 ? a2 / denom : 0.0;
+}
 
 vec3 Li(vec3 o, vec3 d, float rtime, uint hbase) {
     vec3 throughput = vec3(1.0);
@@ -334,7 +340,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase) {
                 float pdf_l = (cosA > 0.0 && area > 0.0)
                                   ? dist * dist / (float(pc.nlights) * area * cosA)
                                   : 0.0;
-                float w = (pdf_l <= 0.0) ? 1.0 : pdf_b_last / (pdf_b_last + pdf_l);
+                float w = (pdf_l <= 0.0) ? 1.0 : power_weight(pdf_b_last, pdf_l);
                 L += throughput * emit.xyz * w;
             } else {
                 L += throughput * emit.xyz;
@@ -439,7 +445,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase) {
                 if (!blocked) {
                     float pdf_l = dist * dist / (float(pc.nlights) * area * cosA);
                     float pdf_b = cosS / 3.14159265;
-                    float w = pdf_l / (pdf_l + pdf_b);
+                    float w = power_weight(pdf_l, pdf_b);
                     L += throughput * attenuation * lemit *
                          (cosS * cosA * float(pc.nlights) * area /
                           (3.14159265 * dist * dist)) * w;

@@ -99,4 +99,5 @@ M33 done: instance module (translate + rotate_y + posed boxes), rotated Cornell 
 M34 done: Perlin value-noise + fBm + turbulence + marble textures, opt-in `--noise` demo, type-9 GPU path.
 M35 done: direction-PDF module (cosine + NEE + 50/50 mixture) beside the integrator, zero pixel change.
 M36 done: power-heuristic MIS on CPU, first-class direction densities, isotropic found-lights MIS-weighted.
+M37 done: GPU power-heuristic MIS parity in path shader (found-light + NEE weights mirrored).
 Next: `.scratch/roadmap.md` backlog (Linux/macOS port).
