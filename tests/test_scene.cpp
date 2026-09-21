@@ -307,12 +307,13 @@ static void t_flatten() {
     scene_data def = build_scene("default", 16.0 / 9.0, 0.0);
     flat_scene fs;
     EXPECT_TRUE(flatten_scene(def, fs));
-    // Refs conserve prims; nodes form a real tree (or single leaf).
+    // Refs conserve prims; QBVH nodes form a real 4-wide tree.
     EXPECT_TRUE((int)fs.refs.size() == (int)def.objs.size());
     EXPECT_TRUE(!fs.nodes.empty());
     int leaf_prims = 0;
     for (auto &n : fs.nodes)
-        leaf_prims += (n.left < 0) ? n.count : 0;
+        for (int s = 0; s < 4; ++s)
+            leaf_prims += n.count[s];
     EXPECT_TRUE(leaf_prims == (int)def.objs.size());
     // Ground photo is image 0; cube photo2 is image 1 (registry).
     EXPECT_TRUE(!fs.gs.spheres.empty());

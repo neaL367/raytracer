@@ -5,6 +5,7 @@
 // Order: data structs, image export, detail fns, entry point.
 #include "host_scene.h"
 #include "../accel/bvh.h"
+#include "../accel/qbvh_flat.h"
 #include "../geometry/instance.h"
 #include "../scene/scene.h"
 
@@ -13,11 +14,6 @@
 #include <memory>
 #include <utility>
 #include <vector>
-
-struct GPUNode {
-    float bmin[4], bmax[4];
-    int left = -1, right = -1, start = 0, count = 0;
-};
 
 struct GPURef {
     int type = -1; // 0 sphere, 1 quad, 2 tri
@@ -34,8 +30,8 @@ struct GPUImage {
 
 struct flat_scene {
     gpu_scene gs;
-    std::vector<GPUNode> nodes;
-    std::vector<GPURef> refs;
+    std::vector<GPUQNode> nodes; // 4-wide QBVH, index 0 = root
+    std::vector<GPURef> refs; // leaf runs, one (start,count) per leaf slot
     int nlights = 0; // NEE light count (entries in light_table)
     std::vector<std::pair<int, int>> light_table; // (type, index): 0 quad, 1 sphere, 2 tri
     std::vector<GPUImage> images; // deduped by texture pointer
@@ -245,35 +241,32 @@ inline bool push_prim(flat_scene &out, std::map<const hittable *, std::pair<int,
     return false; // unknown shape: fail loudly in flatten_scene
 }
 
-inline int flatten_node(const bvh_node &n, std::vector<GPUNode> &nodes,
-                        std::vector<GPURef> &refs,
-                        const std::map<const hittable *, std::pair<int, int>> &id) {
-    int idx = (int)nodes.size();
-    nodes.push_back(GPUNode{});
-    aabb box = n.node_box();
-    nodes[idx].bmin[0] = (float)box.minimum.x();
-    nodes[idx].bmin[1] = (float)box.minimum.y();
-    nodes[idx].bmin[2] = (float)box.minimum.z();
-    nodes[idx].bmax[0] = (float)box.maximum.x();
-    nodes[idx].bmax[1] = (float)box.maximum.y();
-    nodes[idx].bmax[2] = (float)box.maximum.z();
-    if (n.is_leaf()) {
-        nodes[idx].start = (int)refs.size();
-        nodes[idx].count = 0;
-        for (const auto &p : n.leaf_prims()) {
-            auto it = id.find(p.get());
-            if (it == id.end())
-                continue; // unmapped (should not happen): skip loudly below
-            refs.push_back(GPURef{it->second.first, it->second.second});
-            nodes[idx].count++;
+// DFS flatten of one flat-QBVH node: pre-register the slot, then fill leaf
+// runs (appended to refs) and recurse inner slots. Returns the output index.
+inline int flatten_qnode_at(const std::vector<flat_qnode> &all, int idx,
+                            std::vector<GPUQNode> &nodes, std::vector<GPURef> &refs,
+                            const std::map<const hittable *, std::pair<int, int>> &id) {
+    int out_idx = (int)nodes.size();
+    nodes.push_back(GPUQNode{});
+    const flat_qnode &qn = all[(size_t)idx];
+    GPUQNode g = to_gpu_qnode(qn);
+    for (int s = 0; s < qn.nslots; ++s) {
+        if (qn.slot[s].leaf) {
+            g.start[s] = (int)refs.size();
+            g.count[s] = 0;
+            for (const auto &p : qn.slot[s].prims) {
+                auto it = id.find(p.get());
+                if (it == id.end())
+                    continue; // unmapped (should not happen): skip loudly below
+                refs.push_back(GPURef{it->second.first, it->second.second});
+                g.count[s]++;
+            }
+        } else {
+            g.child[s] = flatten_qnode_at(all, qn.slot[s].node, nodes, refs, id);
         }
-        return idx;
     }
-    int l = flatten_node(*n.child(false), nodes, refs, id);
-    int r = flatten_node(*n.child(true), nodes, refs, id);
-    nodes[idx].left = l;
-    nodes[idx].right = r;
-    return idx;
+    nodes[(size_t)out_idx] = g;
+    return out_idx;
 }
 
 } // namespace flat_detail
@@ -337,6 +330,10 @@ inline bool flatten_scene(const scene_data &scene, flat_scene &out) {
     out.nlights = (int)out.light_table.size();
     std::vector<std::shared_ptr<hittable>> objs = ordered; // ptr copies
     bvh_node root(objs, 0, objs.size(), true);
-    flat_detail::flatten_node(root, out.nodes, out.refs, id);
+    // 4-wide collapse over the same SAH tree the CPU traverses, then flat
+    // upload (one ref run per leaf slot; binary path deleted in M39).
+    std::vector<flat_qnode> qtree;
+    build_flat_qbvh(root, qtree);
+    flat_detail::flatten_qnode_at(qtree, 0, out.nodes, out.refs, id);
     return true;
 }

@@ -123,7 +123,7 @@ int main(int argc, char **argv) {
     const size_t bytes[9] = {sizeof scene.cam, scene.spheres.size() * sizeof(GPUSphere),
                              scene.quads.size() * sizeof(GPUQuad),
                              scene.tris.size() * sizeof(GPUTri),
-                             flat.nodes.size() * sizeof(GPUNode),
+                              flat.nodes.size() * sizeof(GPUQNode),
                              flat.refs.size() * sizeof(GPURef), img_bytes, tab_bytes,
                              light_bytes};
     gpu_set_scene(gpu, data, bytes);

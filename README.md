@@ -51,7 +51,7 @@ src/camera/    pinhole + thin-lens defocus + shutter timing
 src/geometry/  sphere/triangle/quad, hittable list, constant-density fog
 src/material/  lambertian/metal/dielectric/isotropic/diffuse_light
 src/integrator/ NEE + MIS path integrator, first-hit AOV guides
-src/accel/     median + binned-SAH BVH, QBVH-4 collapse (SSE2 slabs), flatten accessors
+src/accel/     median + binned-SAH BVH, QBVH-4 collapse (SSE2 slabs), flat QBVH upload twin
 src/scene/     default + cornell builders (shared CPU/GPU construction order)
 src/gpu/       Vulkan compute host, flatten, shaders (grad/normal/path)
 src/output/    PPM writer, ACES film, PFM float dump
@@ -102,4 +102,5 @@ M35 done: direction-PDF module (cosine + NEE + 50/50 mixture) beside the integra
 M36 done: power-heuristic MIS on CPU, first-class direction densities, isotropic found-lights MIS-weighted.
 M37 done: GPU power-heuristic MIS parity in path shader (found-light + NEE weights mirrored).
 M38 done: analytic sun+sky environment with uniform-sphere NEE + MIS on both backends, `--env` opt-in.
+M39 done: GPU QBVH-4 traversal (flat collapse twin, bit-exact CPU mirror), binary path deleted.
 Next: `.scratch/roadmap.md` backlog (Linux/macOS port).

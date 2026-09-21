@@ -11,6 +11,7 @@
 #include "geometry/volume.h"
 #include "accel/bvh.h"
 #include "accel/qbvh.h"
+#include "accel/qbvh_flat.h"
 #include "material/material.h"
 
 #include <memory>
@@ -449,6 +450,79 @@ static void t_qbvh() {
     EXPECT_TRUE(agree > 100); // scene actually hit, not all misses
 }
 
+static void t_qflat() {
+    test_current = "qflat";
+    rng_seed(32);
+    auto m = std::make_shared<lambertian>(vec3(0.6, 0.6, 0.6));
+    std::vector<std::shared_ptr<hittable>> objs;
+    objs.push_back(std::make_shared<sphere>(vec3(0, -100.5, -1), 100, m));
+    objs.push_back(std::make_shared<sphere>(vec3(0, 0, -1), 0.5, m));
+    objs.push_back(std::make_shared<sphere>(vec3(-1, 0, -1), 0.5, m));
+    objs.push_back(std::make_shared<sphere>(vec3(1, 0.5, -2), 0.3, m));
+    objs.push_back(std::make_shared<sphere>(vec3(0.5, -0.5, -1.5), 0.4, m));
+    objs.push_back(std::make_shared<triangle>(vec3(-1, -1, -2), vec3(1, -1, -2),
+                                              vec3(0, 1, -2), m));
+    objs.push_back(std::make_shared<triangle>(vec3(0, 0, -3), vec3(1, 0, -3),
+                                              vec3(0, 1, -3), m));
+    objs.push_back(std::make_shared<quad>(vec3(-1, -1, -3), vec3(2, 0, 0),
+                                          vec3(0, 2, 0), m));
+    hittable_list list;
+    for (auto &o : objs)
+        list.add(o);
+    bvh_node ref(objs, 0, objs.size());
+    std::vector<flat_qnode> flat;
+    build_flat_qbvh(ref, flat);
+    EXPECT_TRUE(!flat.empty());
+    // Structure: slots bounded, leaves conserve prims exactly once.
+    size_t leaf_prims = 0;
+    size_t inner = 0;
+    for (auto &qn : flat) {
+        EXPECT_TRUE(qn.nslots >= 1 && qn.nslots <= 4);
+        for (int s = 0; s < qn.nslots; ++s) {
+            if (qn.slot[s].leaf)
+                leaf_prims += qn.slot[s].prims.size();
+            else {
+                EXPECT_TRUE(qn.slot[s].node >= 0 &&
+                            qn.slot[s].node < (int)flat.size());
+                ++inner;
+            }
+        }
+    }
+    EXPECT_TRUE(leaf_prims == objs.size());
+    // GPU pod: inverted boxes on dead slots, leaf flags line up.
+    GPUQNode g0 = to_gpu_qnode(flat[0]);
+    int live_leaves = 0;
+    for (int s = 0; s < 4; ++s) {
+        bool live = s < flat[0].nslots;
+        if (live && flat[0].slot[s].leaf) {
+            EXPECT_TRUE(g0.child[s] == -1 && g0.count[s] == 0);
+            ++live_leaves;
+        } else if (live) {
+            EXPECT_TRUE(g0.child[s] >= 0);
+        } else {
+            EXPECT_TRUE(g0.bmin[s][0] > g0.bmax[s][0]); // inverted: never hit
+            EXPECT_TRUE(g0.child[s] == -1 && g0.count[s] == 0);
+        }
+    }
+    EXPECT_TRUE(live_leaves + (int)inner >= 1);
+    // Traversal equivalence vs binary twin on seeded rays.
+    int agree = 0;
+    for (int k = 0; k < 400; ++k) {
+        vec3 o(random_double(-2, 2), random_double(-2, 2), random_double(-1, 1));
+        ray r(o, random_unit_vector());
+        hit_record rb, rf;
+        bool hb = ref.hit(r, 0.001, 1e30, rb);
+        bool hf = flat_qbvh_hit(flat, r, 0.001, 1e30, rf);
+        EXPECT_TRUE(hb == hf);
+        if (hb && hf) {
+            EXPECT_TRUE(rb.t == rf.t);
+            EXPECT_TRUE(rb.mat == rf.mat);
+            ++agree;
+        }
+    }
+    EXPECT_TRUE(agree > 100);
+}
+
 void run_geometry_tests() {
     t_sphere();
     t_list();
@@ -456,6 +530,7 @@ void run_geometry_tests() {
     t_aabb();
     t_bvh();
     t_qbvh();
+    t_qflat();
     t_sah();
     t_uv();
     t_smooth();

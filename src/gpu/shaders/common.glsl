@@ -1,5 +1,5 @@
 // Shared scene structs + intersection. Included by normal/path kernels.
-// Brute-force list (6 prims); GPU BVH flagged later like CPU M2->M5.
+// 4-wide QBVH traversal over the same SAH collapse the CPU walks.
 struct GPUSphere {
     vec4 c_r;
     vec4 c1;
@@ -36,10 +36,12 @@ struct GPUTri {
     vec4 c1;
     vec4 tm; // motion range (moving when tm.y > tm.x)
 };
-struct GPUNode {
-    vec4 bmin;
-    vec4 bmax;
-    ivec4 lrsc; // left, right, ref-start, ref-count (-1 = leaf)
+struct GPUQNode {
+    vec4 qbmin[4];
+    vec4 qbmax[4];
+    ivec4 qchild; // node index, or -1 leaf
+    ivec4 qstart; // ref-run start per slot (leaf)
+    ivec4 qcount; // ref-run count per slot (leaf)
 };
 struct GPURef {
     ivec2 ti; // (type, index): 0 sphere, 1 quad, 2 tri
@@ -49,6 +51,7 @@ struct GPUCam {
     vec4 lower_left;
     vec4 horiz;
     vec4 vert;
+    vec4 lens; // x = thin-lens radius (0 = pinhole)
 };
 
 bool hit_sphere(vec3 o, vec3 d, float rtime, float tmin, float tmax, GPUSphere s,
@@ -152,7 +155,7 @@ layout(binding = 4) readonly buffer Tris {
     GPUTri tris[];
 };
 layout(binding = 5) readonly buffer Nodes {
-    GPUNode nodes[];
+    GPUQNode nodes[];
 };
 layout(binding = 6) readonly buffer Refs {
     GPURef refs[];
@@ -169,10 +172,10 @@ bool hit_box(vec3 o, vec3 d, float tmin, float tmax, vec3 bmin, vec3 bmax) {
     return mx > mn;
 }
 
-// Iterative BVH walk, explicit 32-stack, left-first. Same closest-hit
-// contract as brute force (narrowing tmax); fog slots pass through
-// here (volume events come from fog_event, mirroring the CPU where
-// the boundary never shades).
+// Iterative 4-wide QBVH walk, explicit 32-stack, slot 0 pops first (DFS,
+// mirroring the CPU flat mirror). Same closest-hit contract as before
+// (narrowing tmax); fog slots pass through here (volume events come from
+// fog_event, mirroring the CPU where the boundary never shades).
 //
 // Counter-based hash: independent uniforms per (base, bounce, step, tag).
 // Delta tracking must not chain one xorshift stream (consecutive-pair
@@ -256,12 +259,28 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
     light_ty = -1;
     huv = vec2(0.0);
     while (sp > 0) {
-        GPUNode nd = nodes[stack[--sp]];
-        if (!hit_box(o, d, 0.001, t, nd.bmin.xyz, nd.bmax.xyz))
-            continue;
-        if (nd.lrsc.x < 0) {
-            for (int k = 0; k < nd.lrsc.w; ++k) {
-                GPURef ref = refs[nd.lrsc.z + k];
+        GPUQNode nd = nodes[stack[--sp]];
+        // 4-wide slab: one interval per slot, strict miss, empty slots
+        // upload inverted (never hit).
+        vec3 inv = 1.0 / d;
+        int mask = 0;
+        for (int s = 0; s < 4; ++s) {
+            vec3 t0 = (nd.qbmin[s].xyz - o) * inv;
+            vec3 t1 = (nd.qbmax[s].xyz - o) * inv;
+            vec3 tsm = min(t0, t1);
+            vec3 tbg = max(t0, t1);
+            float mn = max(max(tsm.x, tsm.y), max(tsm.z, 0.001));
+            float mx = min(min(tbg.x, tbg.y), min(tbg.z, t));
+            if (mx > mn)
+                mask |= (1 << s);
+        }
+        // Push high-to-low so slot 0 pops first (DFS order).
+        for (int s = 3; s >= 0; --s) {
+            if ((mask & (1 << s)) == 0)
+                continue;
+            if (nd.qchild[s] < 0) {
+                for (int k = 0; k < nd.qcount[s]; ++k) {
+                    GPURef ref = refs[nd.qstart[s] + k];
                 float tt;
                 vec3 nn;
                 vec2 uv;
@@ -316,10 +335,10 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                     light_ty = trlit ? 2 : -1;
                     any = true;
                 }
+            } else if (sp < 31) {
+                stack[sp++] = nd.qchild[s];
             }
-        } else if (sp < 30) {
-            stack[sp++] = nd.lrsc.y; // right
-            stack[sp++] = nd.lrsc.x; // left pops first
+            }
         }
     }
 }
