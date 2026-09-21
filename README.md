@@ -28,7 +28,7 @@ pre-exposure float (PFM) for post-workflows alongside the PPM.
 ```bat
 build\Release\rt_gpu.exe [path.spv] [out.ppm] [--spp N] [--seed S]
   [--scene NAME] [--shutter T0 T1] [--fog D] [--width W] [--height H]
-  [--hdr float.pfm]
+  [--hdr float.pfm] [--aperture A] [--exposure X]
 ```
 
 Headless Vulkan compute backend (discrete NVIDIA pick). Statistical CPU
@@ -103,4 +103,5 @@ M36 done: power-heuristic MIS on CPU, first-class direction densities, isotropic
 M37 done: GPU power-heuristic MIS parity in path shader (found-light + NEE weights mirrored).
 M38 done: analytic sun+sky environment with uniform-sphere NEE + MIS on both backends, `--env` opt-in.
 M39 done: GPU QBVH-4 traversal (flat collapse twin, bit-exact CPU mirror), binary path deleted.
+M40 done: GPU `--aperture` thin-lens + `--exposure` film parity (pinhole streams bit-stable).
 Next: `.scratch/roadmap.md` backlog (Linux/macOS port).

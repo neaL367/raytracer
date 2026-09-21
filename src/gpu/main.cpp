@@ -4,6 +4,7 @@
 // Usage: rt_gpu [shader.spv] [out.ppm] [--spp N] [--seed S]
 //        [--scene NAME] [--width W] [--height H] [--hdr float.pfm] [--denoise]
 //        [--shutter T0 T1] [--fog D] [--het D] [--noise] [--env]
+//        [--aperture A] [--exposure X]
 #include "host_scene.h"
 #include "flatten.h"
 #include "vk_compute.h"
@@ -30,6 +31,7 @@ int main(int argc, char **argv) {
     std::string scene_name = "default";
     std::string hdr_path; // empty = no float dump
     bool do_denoise = false;
+    double aperture = 0.0, exposure = 1.0;
     double shutter0 = 0, shutter1 = 0, fog_density = 0, het_density = 0;
     bool marble_demo = false, env_demo = false;
     for (int i = 1; i < argc; ++i) {
@@ -59,6 +61,10 @@ int main(int argc, char **argv) {
             hdr_path = argv[++i];
         else if (a == "--denoise")
             do_denoise = true;
+        else if (a == "--aperture" && i + 1 < argc)
+            aperture = std::max(0.0, std::atof(argv[++i]));
+        else if (a == "--exposure" && i + 1 < argc)
+            exposure = std::max(0.0, std::atof(argv[++i]));
         else if (a.ends_with(".spv"))
             shader = a;
         else if (a.ends_with(".ppm"))
@@ -79,7 +85,7 @@ int main(int argc, char **argv) {
         return 1;
     }
     gpu_scene &scene = flat.gs;
-    scene.cam = build_gpu_camera(W, H, scene_name);
+    scene.cam = build_gpu_camera(W, H, scene_name, aperture);
     // Image table: (offset, w, h, levels) rows over the concatenated blob,
     // each followed by a (spanbits, 0, 0, 0) row for distance LOD.
     std::vector<int> img_table;
@@ -167,7 +173,7 @@ int main(int argc, char **argv) {
     gpu_shutdown(gpu);
 
     std::filesystem::create_directories("out");
-    if (!write_ppm(out_path.c_str(), fb, W, H)) {
+    if (!write_ppm(out_path.c_str(), fb, W, H, exposure)) {
         std::cerr << "write failed\n";
         return 1;
     }

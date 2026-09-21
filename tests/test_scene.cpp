@@ -274,6 +274,22 @@ static void t_instance() {
     }
 }
 
+static void t_gpucam() {
+    test_current = "gpucam";
+    GPUCam p = build_gpu_camera(200, 100, "default");
+    EXPECT_NEAR(p.lens[0], 0); // pinhole default, streams untouched
+    GPUCam a = build_gpu_camera(200, 100, "default", 2.0);
+    EXPECT_NEAR(a.lens[0], 1.0); // radius = aperture/2 like CPU lens_radius
+    // Lens field never moves the framing (pinhole bit-stable).
+    EXPECT_NEAR(a.o[0], p.o[0]);
+    EXPECT_NEAR(a.ll[0], p.ll[0]);
+    EXPECT_NEAR(a.h[0], p.h[0]);
+    EXPECT_NEAR(a.v[1], p.v[1]);
+    GPUCam c = build_gpu_camera(200, 200, "cornell", 1.0);
+    EXPECT_NEAR(c.lens[0], 0.5);
+    EXPECT_NEAR(c.o[2], -800);
+}
+
 static void t_cornell() {
     test_current = "cornell";
     scene_data scene = build_cornell(16.0 / 9.0, 0.0);
@@ -461,6 +477,7 @@ void run_scene_tests() {
     t_obj();
     t_mtl();
     t_lights();
+    t_gpucam();
     t_instance();
     t_cornell();
     t_flatten();
