@@ -64,6 +64,51 @@ static double trial_estimate(bool stratified, unsigned seed) {
     return sum / 16;
 }
 
+static void t_sobol() {
+    test_current = "sobol";
+    // Gray-order goldens: i=1 (1/2,1/2), i=2 (3/4,1/4), i=3 (1/4,3/4).
+    EXPECT_NEAR(sobol_dim0(0), 0.0);
+    EXPECT_NEAR(sobol_dim1(0), 0.0);
+    EXPECT_NEAR(sobol_dim0(1), 0.5);
+    EXPECT_NEAR(sobol_dim1(1), 0.5);
+    EXPECT_NEAR(sobol_dim0(2), 0.75);
+    EXPECT_NEAR(sobol_dim1(2), 0.25);
+    EXPECT_NEAR(sobol_dim0(3), 0.25);
+    EXPECT_NEAR(sobol_dim1(3), 0.75);
+    // (0,2)-sequence: first 16 points tile every 4x4 cell exactly once.
+    int cells[4][4] = {};
+    for (unsigned k = 0; k < 16; ++k) {
+        int cx = (int)(sobol_dim0(k) * 4), cy = (int)(sobol_dim1(k) * 4);
+        if (cx > 3)
+            cx = 3;
+        if (cy > 3)
+            cy = 3;
+        cells[cy][cx]++;
+    }
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 4; ++x)
+            EXPECT_TRUE(cells[y][x] == 1);
+    // Shifted set stays in-bounds and keeps cardinality.
+    rng_seed(11);
+    auto offs = sobol_offsets(16);
+    EXPECT_TRUE((int)offs.size() == 16);
+    for (auto [ox, oy] : offs)
+        EXPECT_TRUE(ox >= 0 && ox < 1 && oy >= 0 && oy < 1);
+    // Smooth integrand: Sobol beats same-count jitter on this seed.
+    auto fintegrand = [](const std::vector<sample_offset> &pts) {
+        double s = 0;
+        for (auto [x, y] : pts)
+            s += x * x + y * y; // truth over [0,1]^2 = 2/3
+        return s / pts.size();
+    };
+    rng_seed(12);
+    double es = fabs(fintegrand(sobol_offsets(64)) - 2.0 / 3.0);
+    rng_seed(12);
+    double ej = fabs(fintegrand(jitter_offsets(64)) - 2.0 / 3.0);
+    EXPECT_TRUE(es < 0.02); // low-discrepancy converges fast
+    EXPECT_TRUE(es <= ej);
+}
+
 static void t_montecarlo() {
     test_current = "montecarlo";
     double ms = 0, mj = 0;
@@ -137,6 +182,7 @@ void run_core_tests() {
     t_vec3();
     t_ray();
     t_sampler();
+    t_sobol();
     t_montecarlo();
     t_onb_cosine();
     t_rr();

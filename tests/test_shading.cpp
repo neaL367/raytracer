@@ -272,6 +272,15 @@ static void t_aov() {
     // Miss: flag false, buffers stay zero.
     first_hit_aov(ray(vec3(0, 0, 0), vec3(0, 1, 0)), w, alb, nrm, hit);
     EXPECT_TRUE(!hit);
+    // Depth probe: front hit at t=0.5, miss leaves the out-param alone.
+    double depth = -7;
+    first_hit_aov(ray(vec3(0, 0, 0), vec3(0, 0, -1)), w, alb, nrm, hit, &depth);
+    EXPECT_TRUE(hit);
+    EXPECT_NEAR(depth, 0.5);
+    double depth2 = -7;
+    first_hit_aov(ray(vec3(0, 0, 0), vec3(0, 1, 0)), w, alb, nrm, hit, &depth2);
+    EXPECT_TRUE(!hit);
+    EXPECT_NEAR(depth2, -7);
 }
 
 static void t_joint() {
@@ -428,6 +437,7 @@ static void t_noise() {
     double t7 = value_noise::turb(p * 2.0, 4);
     double f = 0.5 * (1.0 + std::sin(2.0 * p.z() + 10.0 * t7));
     EXPECT_NEAR(mb.value(0, 0, p).x(), f);
+    // GPU export: type 9 with (freq, depth, mode).
     auto ntex = std::make_shared<noise_texture>(4.0, 7, 2, vec3(0.85, 0.87, 0.9),
                                                 vec3(0.05, 0.15, 0.45));
     lambertian nl(ntex);

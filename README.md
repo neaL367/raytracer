@@ -17,6 +17,7 @@ build\Release\raytracer.exe [--samples 16] [--threads N] [--tile 8]
   [--split sah|median] [--exposure 1] [--denoise] [--scene default|cornell]
   [--shutter T0 T1] [--fog D] [--aperture A] [--width W] [--height H]
   [--seed 42] [--hdr float.pfm] [--bench] [--noise] [--env]
+  [--sampler stratified|sobol] [--aov]
 ```
 
 Renders `out/image.ppm` (400x225, 16spp stratified default,
@@ -24,6 +25,8 @@ Renders `out/image.ppm` (400x225, 16spp stratified default,
 pre-exposure float (PFM) for post-workflows alongside the PPM.
 `--noise` adds an opt-in marble showcase sphere (defaults stay frozen).
 `--env` enables the analytic sun+sky environment with MIS (off = byte-exact legacy sky).
+`--sampler sobol` swaps the pixel set for Cranley-Patterson rotated Sobol-2D (default stratified frozen).
+`--aov` dumps linear `out/aov_{albedo,normal,depth}.pfm` for denoise/ML workflows.
 
 ```bat
 build\Release\rt_gpu.exe [path.spv] [out.ppm] [--spp N] [--seed S]
@@ -104,4 +107,5 @@ M37 done: GPU power-heuristic MIS parity in path shader (found-light + NEE weigh
 M38 done: analytic sun+sky environment with uniform-sphere NEE + MIS on both backends, `--env` opt-in.
 M39 done: GPU QBVH-4 traversal (flat collapse twin, bit-exact CPU mirror), binary path deleted.
 M40 done: GPU `--aperture` thin-lens + `--exposure` film parity (pinhole streams bit-stable).
+M41 done: rotated Sobol-2D pixel sampler (`--sampler sobol`) + linear AOV trio dump (`--aov`).
 Next: `.scratch/roadmap.md` backlog (Linux/macOS port).

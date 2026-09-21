@@ -41,6 +41,8 @@ int main(int argc, char **argv) {
     double het_density = 0;
     bool marble_demo = false;
     bool env_demo = false;
+    bool use_sobol = false; // --sampler sobol: rotated Sobol pixel set
+    bool dump_aov = false; // --aov: albedo/normal/depth PFM trio next to PPM
     unsigned seed = 42; // base RNG seed; per-pixel stream = seed + pixel index
     int W = 400, H = -1; // H defaults to 16:9 unless --height given
     std::string hdr_path; // empty = no float dump
@@ -83,6 +85,10 @@ int main(int argc, char **argv) {
             bench = true;
         else if (a == "--hdr" && i + 1 < argc)
             hdr_path = argv[++i];
+        else if (a == "--sampler" && i + 1 < argc)
+            use_sobol = (std::string(argv[++i]) == "sobol");
+        else if (a == "--aov")
+            dump_aov = true;
     }
     // Legacy M2 stream needs one global RNG in pixel order: single thread.
     bool legacy = (spp == 1);
@@ -112,28 +118,34 @@ int main(int argc, char **argv) {
 
     integrator tracer;
     std::vector<vec3> fb((size_t)W * H);
-    // Guide buffers only under --denoise: default pixels byte-exact.
+    // Guide buffers only under --denoise/--aov: default pixels byte-exact.
     std::vector<vec3> albedo_fb((size_t)W * H), normal_fb((size_t)W * H);
+    std::vector<vec3> depth_fb((size_t)W * H); // x = first-hit t, -1 on miss
+    const bool want_guides = do_denoise || dump_aov;
     bench_enabled_flag().store(bench, std::memory_order_relaxed);
 
     auto render_pixel = [&](int i, int j) {
         vec3 acc(0, 0, 0), alb(0, 0, 0), nrm(0, 0, 0);
+        double dep = -1;
         if (legacy) {
             double u = double(i) / (W - 1);
             double v = double(j) / (H - 1);
             ray primary = cam.get_ray(u, v);
             acc = tracer.Li(primary, world, lights, max_depth, scene.env_light);
+            if (want_guides) {
                 vec3 a, n;
                 bool hit = false;
-                first_hit_aov(primary, world, a, n, hit);
+                double t = -1;
+                first_hit_aov(primary, world, a, n, hit, &t);
                 if (hit) {
                     alb = a;
                     nrm = n;
+                    dep = t;
                 }
             }
         } else {
             rng_seed(base_seed + (unsigned)(j * W + i));
-            auto offs = pixel_samples(spp);
+            auto offs = use_sobol ? sobol_offsets(spp) : pixel_samples(spp);
             for (auto [ox, oy] : offs) {
                 double u = (i + ox) / W;
                 double v = (j + oy) / H;
@@ -141,27 +153,32 @@ int main(int argc, char **argv) {
                 acc += tracer.Li(primary, world, lights, max_depth, scene.env_light);
                 // Guides appended after beauty: deterministic order, and
                 // AOV uses no RNG so the beauty stream never shifts.
-                if (do_denoise) {
+                if (want_guides) {
                     vec3 a, n;
                     bool hit = false;
-                    first_hit_aov(primary, world, a, n, hit);
+                    double t = -1;
+                    first_hit_aov(primary, world, a, n, hit, &t);
                     if (hit) {
                         alb += a;
                         nrm += n;
+                        dep = (dep < 0) ? t : dep + t;
                     }
                 }
             }
             acc /= (double)offs.size();
-            if (do_denoise) {
+            if (want_guides) {
                 alb /= (double)offs.size();
                 if (nrm.length_squared() > 0) // all-miss pixels keep zero guide
                     nrm = unit_vector(nrm);
+                if (dep >= 0)
+                    dep /= (double)offs.size();
             }
         }
         fb[(size_t)j * W + i] = acc;
-        if (do_denoise) {
+        if (want_guides) {
             albedo_fb[(size_t)j * W + i] = alb;
             normal_fb[(size_t)j * W + i] = nrm;
+            depth_fb[(size_t)j * W + i] = vec3(dep, dep, dep);
         }
     };
 
@@ -207,6 +224,15 @@ int main(int argc, char **argv) {
         std::cerr << "hdr dump failed\n";
         return 1;
     }
+    if (dump_aov) {
+        // Linear PFM trio for denoise/ML workflows (no film curve applied).
+        if (!write_pfm("out/aov_albedo.pfm", albedo_fb, W, H) ||
+            !write_pfm("out/aov_normal.pfm", normal_fb, W, H) ||
+            !write_pfm("out/aov_depth.pfm", depth_fb, W, H)) {
+            std::cerr << "aov dump failed\n";
+            return 1;
+        }
+    }
     std::uint64_t rays = bench_rays().load();
     std::cout << "wrote out/image.ppm " << W << "x" << H << " spp=" << spp
               << " threads=" << num_threads << " tile=" << tile_rows
@@ -217,6 +243,8 @@ int main(int argc, char **argv) {
               << " fog=" << fog_density << " het=" << het_density
               << " noise=" << (marble_demo ? "on" : "off")
               << " env=" << (env_demo ? "on" : "off")
+              << " sampler=" << (use_sobol ? "sobol" : "stratified")
+              << " aov=" << (dump_aov ? "on" : "off") << " seed=" << base_seed << "\n";
     std::cout << "render " << secs << "s";
     if (bench) {
         std::cout << " rays=" << rays << " (" << (rays / 1e6 / secs) << " Mrays/s)"
