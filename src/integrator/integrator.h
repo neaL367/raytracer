@@ -8,14 +8,16 @@
 #include "../geometry/light.h"
 #include "../geometry/quad.h"
 #include "../material/material.h"
+#include "pdf.h"
 #include <cmath>
 #include <memory>
 #include <vector>
 
-// Path integrator: NEE + balance-heuristic MIS + Russian roulette.
+// Path integrator: NEE + power-heuristic MIS + Russian roulette.
 // Loop (not recursion): throughput accumulates, L sums weighted emission.
-// Specular (delta) bounces skip NEE and count light hits full; diffuse
-// BSDF hits weight by MIS. Camera-ray light hits count full.
+// Delta bounces skip NEE and count light hits full; sampled materials
+// (cosine, isotropic) weight BSDF-found lights by MIS. Camera-ray light
+// hits count full. Densities live in pdf.h (single source of truth).
 // First-hit AOV query: albedo + world normal, no bounce, no RNG.
 // Guide draws never perturb the beauty stream (pure function of ray).
 inline void first_hit_aov(const ray &r, const hittable &world, vec3 &albedo, vec3 &normal,
@@ -54,24 +56,12 @@ public:
                 if (specular) {
                     L += throughput * Le;
                 } else {
-                    // MIS weight for BSDF-found light: needs direction pdf
-                    // from prev vertex to this hit point.
-                    vec3 to_hit = rec.point - prev_point;
-                    double dist = to_hit.length();
-                    vec3 wi = to_hit / dist;
-                    double pdf_l = 0;
-                    for (const auto &lt : lights) {
-                        if (light_mat(lt) == rec.mat) {
-                            double cosA = fabs(dot(light_normal_at(lt, rec.point, cur.time()), -wi));
-                            double A = light_area(lt);
-                            if (cosA > 0 && A > 0)
-                                pdf_l = dist * dist /
-                                        ((double)lights.size() * A * cosA);
-                            break;
-                        }
-                    }
+                    // MIS weight for BSDF-found light: power heuristic over
+                    // the NEE density of the same path (single source: pdf.h).
+                    double pdf_l = direction_pdf::nee_value_for_hit(
+                        lights, rec.mat, rec.point, prev_point, cur.time());
                     double w = (pdf_l <= 0) ? 1.0
-                                            : pdf_b_last / (pdf_b_last + pdf_l);
+                                            : direction_pdf::power_weight(pdf_b_last, pdf_l);
                     L += throughput * Le * w;
                 }
                 break; // emission terminates path
@@ -107,7 +97,7 @@ public:
                         double pdf_l = dist * dist /
                                        ((double)lights.size() * area * cosA);
                         double pdf_b = cosine_pdf(cosS);
-                        double w = pdf_l / (pdf_l + pdf_b);
+                        double w = direction_pdf::power_weight(pdf_l, pdf_b);
                         // f*G/pdf_area: rho*Le*cosS*cosA*A*L/(PI*dist^2)
                         L += throughput * attenuation * light_Le *
                              (cosS * cosA * (double)lights.size() * area /
@@ -123,8 +113,11 @@ public:
                 throughput = throughput * attenuation;
                 specular = false;
             } else {
+                // First-class sampling density: delta materials report 0 and
+                // keep full light counts; isotropic now MIS-weights (1/4PI).
+                pdf_b_last = rec.mat->direction_pdf(scattered.direction(), rec);
                 throughput = throughput * attenuation;
-                specular = true; // delta bounce: light hits count full
+                specular = (pdf_b_last <= 0);
             }
             prev_point = rec.point;
             scattered.set_time(cur.time()); // path shares primary time

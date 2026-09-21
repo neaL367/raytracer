@@ -20,6 +20,10 @@ public:
     virtual vec3 emitted() const { return vec3(0, 0, 0); }
     // NEE applies to diffuse only; specular paths skip explicit lights.
     virtual bool is_diffuse() const { return false; }
+    // Sampling density of the scattered direction (solid angle). Delta
+    // materials (mirror, glass) return 0: the integrator counts their light
+    // hits full instead of MIS-weighting them.
+    virtual double direction_pdf(const vec3 &, const hit_record &) const { return 0.0; }
     // First-hit albedo for AOV guides. Speculars report neutral
     // (weak guidance there: flagged limit, not wrong pixels).
     virtual vec3 surface_albedo(const hit_record &rec) const {
@@ -57,6 +61,9 @@ public:
         return true;
     }
     bool is_diffuse() const override { return true; }
+    double direction_pdf(const vec3 &wi, const hit_record &rec) const override {
+        return cosine_pdf(dot(unit_vector(wi), rec.normal));
+    }
     vec3 surface_albedo(const hit_record &rec) const override {
         return tex->value(rec.u, rec.v, rec.point);
     }
@@ -203,6 +210,11 @@ public:
         scattered = ray(rec.point, random_unit_vector());
         attenuation = albedo;
         return true;
+    }
+    // Uniform sphere: every direction has density 1/4PI, so found lights
+    // MIS-weight instead of counting full (they used to, as "specular").
+    double direction_pdf(const vec3 &, const hit_record &) const override {
+        return 1.0 / (4.0 * 3.1415926535897932385);
     }
     vec3 surface_albedo(const hit_record &) const override { return albedo; }
 

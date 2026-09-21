@@ -493,6 +493,25 @@ static void t_pdf() {
     double p3 = -1;
     vec3 d3 = direction_pdf::sample_mixture(world, none, origin, n, 0.0, p3);
     EXPECT_TRUE(p3 > 0 && dot(d3, n) > 0);
+    // Power heuristic: equal densities split half; dominant takes ~all.
+    EXPECT_NEAR(direction_pdf::power_weight(1.0, 1.0), 0.5);
+    EXPECT_NEAR(direction_pdf::power_weight(3.0, 1.0), 0.9);
+    EXPECT_NEAR(direction_pdf::power_weight(0.0, 0.0), 0.0);
+    // Traceless reverse matches the traced reverse on the same strike.
+    double traced = direction_pdf::nee_value(world, lights, origin, vec3(0, 1, 0), 0.0);
+    double direct = direction_pdf::nee_value_for_hit(lights, lamp, vec3(0, 2, 0), origin,
+                                                     0.0);
+    EXPECT_NEAR(traced, direct);
+    EXPECT_NEAR(direct, 1.0);
+    // Direction densities: lambertian cosine, isotropic uniform, delta zero.
+    hit_record mrec;
+    mrec.normal = n;
+    lambertian lamb0(vec3(0.5, 0.5, 0.5));
+    EXPECT_NEAR(lamb0.direction_pdf(vec3(0, 1, 0), mrec), 1.0 / pi);
+    isotropic iso(vec3(0.9, 0.9, 0.9));
+    EXPECT_NEAR(iso.direction_pdf(vec3(1, 0, 0), mrec), 1.0 / (4.0 * pi));
+    metal mirror(vec3(0.8, 0.8, 0.8), 0.0);
+    EXPECT_NEAR(mirror.direction_pdf(vec3(0, 1, 0), mrec), 0.0);
 }
 
 void run_shading_tests() {

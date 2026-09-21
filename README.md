@@ -98,4 +98,5 @@ M32 done: CPU QBVH-4 collapse with SSE2 slabs, bit-exact traversal.
 M33 done: instance module (translate + rotate_y + posed boxes), rotated Cornell blocks, GPU bake parity.
 M34 done: Perlin value-noise + fBm + turbulence + marble textures, opt-in `--noise` demo, type-9 GPU path.
 M35 done: direction-PDF module (cosine + NEE + 50/50 mixture) beside the integrator, zero pixel change.
+M36 done: power-heuristic MIS on CPU, first-class direction densities, isotropic found-lights MIS-weighted.
 Next: `.scratch/roadmap.md` backlog (Linux/macOS port).
