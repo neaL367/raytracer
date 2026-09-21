@@ -125,8 +125,16 @@ public:
     // GGX conductor: F0 = albedo, perceptual roughness (alpha = r^2).
     // Roughness 0 = delta mirror. VNDF sampling, weight F*G2/G1(V).
     metal(const vec3 &a, double r) : albedo(a), roughness(r < 0 ? 0 : (r > 1 ? 1 : r)) {}
+    // Anisotropic variant: per-axis roughness, TBN frame from hit tangent.
+    // Falls back to the ONB-u frame when the tangent is missing/degenerate.
+    metal(const vec3 &a, double rx, double ry)
+        : albedo(a), roughness(-1), rough_x(rx < 0 ? 0 : (rx > 1 ? 1 : rx)),
+          rough_y(ry < 0 ? 0 : (ry > 1 ? 1 : ry)) {}
+    bool is_aniso() const { return roughness < 0; }
     bool scatter(const ray &in, const hit_record &rec,
                  vec3 &attenuation, ray &scattered) const override {
+        if (is_aniso())
+            return scatter_aniso(in, rec, attenuation, scattered);
         onb frame;
         frame.build_from_w(rec.normal);
         vec3 V = unit_vector(-in.direction());
@@ -142,6 +150,33 @@ public:
         scattered = ray(rec.point, frame.local(Ll));
         return true;
     }
+    // Anisotropic scatter: T from the hit tangent (orthonormalized vs N),
+    // ONB-u fallback by the same rule the GPU mirrors.
+    bool scatter_aniso(const ray &in, const hit_record &rec, vec3 &attenuation,
+                       ray &scattered) const {
+        vec3 N = rec.normal;
+        vec3 T = rec.has_tangent ? rec.tangent - N * dot(rec.tangent, N) : vec3(0, 0, 0);
+        if (T.length_squared() <= 1e-12) {
+            onb frame;
+            frame.build_from_w(N);
+            T = frame.u;
+        } else {
+            T = unit_vector(T);
+        }
+        vec3 B = cross(N, T);
+        vec3 V = unit_vector(-in.direction());
+        vec3 Vl(dot(V, T), dot(V, B), dot(V, N));
+        double ax = ggx::alpha_of(rough_x), ay = ggx::alpha_of(rough_y);
+        vec3 H;
+        vec3 Ll = ggx::vndf_aniso(ax, ay, Vl, random_double(), random_double(), H);
+        if (Ll.z() <= 0)
+            return false;
+        double cos_vh = std::max(dot(Vl, H), 0.0);
+        double ratio = ggx::weight_ratio_aniso(ax, ay, Vl, Ll);
+        attenuation = ggx::fresnel_schlick(albedo, cos_vh) * ratio;
+        scattered = ray(rec.point, T * Ll.x() + B * Ll.y() + N * Ll.z());
+        return true;
+    }
     vec3 surface_albedo(const hit_record &) const override { return albedo; }
     bool export_gpu(float alb[4], float alb2[4], float emit[4],
                     float prm[4]) const override {
@@ -150,15 +185,23 @@ public:
         alb[2] = (float)albedo.z();
         alb2[0] = alb2[1] = alb2[2] = 0;
         emit[0] = emit[1] = emit[2] = 0;
-        prm[0] = 7; // GGX conductor (fuzz-era type 1 deleted)
-        prm[1] = (float)roughness;
-        prm[2] = prm[3] = 0;
+        if (is_aniso()) {
+            prm[0] = 10; // anisotropic conductor (ax, ay)
+            prm[1] = (float)rough_x;
+            prm[2] = (float)rough_y;
+        } else {
+            prm[0] = 7; // GGX conductor (fuzz-era type 1 deleted)
+            prm[1] = (float)roughness;
+            prm[2] = 0;
+        }
+        prm[3] = 0;
         return true;
     }
 
 private:
     vec3 albedo;
-    double roughness;
+    double roughness; // <0 = anisotropic (uses rough_x/y)
+    double rough_x = 0, rough_y = 0;
 };
 
 class dielectric : public material {

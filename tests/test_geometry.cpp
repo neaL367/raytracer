@@ -594,6 +594,35 @@ static void t_qflat() {
     EXPECT_TRUE(agree > 100);
 }
 
+static void t_tangents() {
+    test_current = "tangents";
+    auto m = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));
+    hit_record hr;
+    auto check_frame = [&](const hit_record &r) {
+        EXPECT_TRUE(r.has_tangent);
+        EXPECT_NEAR(r.tangent.length(), 1);
+        EXPECT_TRUE(fabs(dot(r.tangent, r.normal)) < 1e-9);
+    };
+    // Sphere: hit off-pole carries a unit in-plane tangent.
+    sphere sph(vec3(0, 0, -1), 0.5, m);
+    EXPECT_TRUE(sph.hit(ray(vec3(0.3, 0.2, 0), vec3(0, 0, -1)), 0.001, 1e30, hr));
+    check_frame(hr);
+    // Quad: edge-u tangent, always valid.
+    quad qd(vec3(-1, -1, -3), vec3(2, 0, 0), vec3(0, 2, 0), m);
+    EXPECT_TRUE(qd.hit(ray(vec3(0, 0, 0), vec3(0, 0, -1)), 0.001, 1e30, hr));
+    check_frame(hr);
+    EXPECT_TRUE(fabs(hr.tangent.x() - 1.0) < 1e-9); // along +x edge
+    // Triangle with corner UVs: derivative tangent in-plane.
+    triangle tr(vec3(0, 0, 0), vec3(2, 0, 0), vec3(0, 2, 0), 0, 0, 1, 0, 0, 1, m);
+    EXPECT_TRUE(tr.hit(ray(vec3(0.5, 0.5, 1), vec3(0, 0, -1)), 0.001, 1e30, hr));
+    check_frame(hr);
+    // Barycentric fallback: e1 direction.
+    triangle tb(vec3(0, 0, 0), vec3(2, 0, 0), vec3(0, 2, 0), m);
+    EXPECT_TRUE(tb.hit(ray(vec3(0.5, 0.5, 1), vec3(0, 0, -1)), 0.001, 1e30, hr));
+    check_frame(hr);
+    EXPECT_TRUE(fabs(hr.tangent.x() - 1.0) < 1e-9);
+}
+
 void run_geometry_tests() {
     t_sphere();
     t_list();
@@ -612,4 +641,5 @@ void run_geometry_tests() {
     t_hetero();
     t_hetprec();
     t_transmit();
+    t_tangents();
 }

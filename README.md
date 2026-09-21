@@ -108,4 +108,10 @@ M38 done: analytic sun+sky environment with uniform-sphere NEE + MIS on both bac
 M39 done: GPU QBVH-4 traversal (flat collapse twin, bit-exact CPU mirror), binary path deleted.
 M40 done: GPU `--aperture` thin-lens + `--exposure` film parity (pinhole streams bit-stable).
 M41 done: rotated Sobol-2D pixel sampler (`--sampler sobol`) + linear AOV trio dump (`--aov`).
-Next: `.scratch/roadmap.md` backlog (Linux/macOS port).
+M42 done: noise audit (remote value noise kept, marble parity at floor).
+M43 done: Walter rough-glass BTDF for dielectrics.
+M44 done: NEE transmittance weighting in volumes (fog parity gap open, documented).
+M45 done: GPU joint-bilateral denoise with on-device guides.
+M46 done: MTL Ns to GGX roughness mapping.
+M47 done: anisotropic GGX conductors with UV tangents, brushed-metal demo.
+Next: `.scratch/roadmap.md` backlog (port + fog hunt open).

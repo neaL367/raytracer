@@ -15,6 +15,9 @@ struct hit_record {
     bool front_face = true;
     std::shared_ptr<material> mat;
     double u = 0, v = 0; // shape UVs for textures (sphere/quad/tri fill)
+    // Shading tangent for anisotropy (shapes with UVs fill it; default off).
+    vec3 tangent{0, 0, 0};
+    bool has_tangent = false;
     // Owning shape for volume transmittance march (media set this, shapes
     // leave null). Raw pointer: lifetime owned by the scene, never stored.
     const hittable *hit_obj = nullptr;

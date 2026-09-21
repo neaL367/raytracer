@@ -215,6 +215,58 @@ static void t_ggx() {
     EXPECT_NEAR(att.x(), 0.8); // F0 at near-normal incidence
 }
 
+static void t_aniso() {
+    test_current = "aniso";
+    const double pi = 3.1415926535897932385;
+    // NDF at normal incidence: 1/(PI ax ay).
+    EXPECT_NEAR(ggx::D_aniso(0.25, 0.5, vec3(0, 0, 1)), 1.0 / (pi * 0.25 * 0.5));
+    EXPECT_NEAR(ggx::lambda_aniso(0.25, 0.5, vec3(0, 0, 1)), 0.0);
+    // ax == ay reduces bit-exactly to the isotropic formulas.
+    vec3 V = unit_vector(vec3(0.3, -0.4, 0.8660254));
+    vec3 H;
+    vec3 La = ggx::vndf_aniso(0.25, 0.25, V, 0.13, 0.71, H);
+    vec3 Ha;
+    vec3 Li2 = ggx::vndf_sample(0.25, V, 0.13, 0.71, Ha);
+    EXPECT_TRUE((La - Li2).length() == 0 && (H - Ha).length() == 0);
+    EXPECT_NEAR(ggx::D_aniso(0.25, 0.25, H), ggx::D(0.25, H.z()));
+    EXPECT_NEAR(ggx::weight_ratio_aniso(0.25, 0.25, V, Li2),
+                ggx::weight_ratio(0.25, V.z(), Li2.z()));
+    // White furnace, stretched lobe: energy conserved, none created.
+    rng_seed(98);
+    double sum = 0;
+    const int N = 20000;
+    vec3 Vz(0, 0, 1);
+    for (int i = 0; i < N; ++i) {
+        vec3 L = ggx::vndf_aniso(0.09, 0.36, Vz, random_double(), random_double(), H);
+        if (L.z() <= 0)
+            continue;
+        sum += ggx::weight_ratio_aniso(0.09, 0.36, Vz, L); // F0=1 -> F=1
+    }
+    double alb = sum / N;
+    EXPECT_TRUE(alb > 0.8 && alb <= 1.0);
+    // Aniso metal scatters with tangent frame; type-10 export.
+    metal brushed(vec3(0.8, 0.8, 0.8), 0.15, 0.5);
+    hit_record rec;
+    rec.point = vec3(0, 0, 0);
+    rec.normal = vec3(0, 0, 1);
+    rec.tangent = vec3(1, 0, 0);
+    rec.has_tangent = true;
+    vec3 att;
+    ray sc;
+    rng_seed(8);
+    EXPECT_TRUE(brushed.scatter(ray(vec3(0, 0, 1), vec3(0.2, 0, -1)), rec, att, sc));
+    EXPECT_TRUE(att.x() <= 1.0 && att.x() > 0); // bounded weight
+    EXPECT_TRUE(fabs(sc.direction().length() - 1.0) < 1e-6); // unit out
+    float alb4[4] = {}, alb24[4] = {}, emit4[4] = {}, prm4[4] = {};
+    EXPECT_TRUE(brushed.export_gpu(alb4, alb24, emit4, prm4));
+    EXPECT_TRUE(prm4[0] == 10.0f);
+    EXPECT_TRUE(fabs(prm4[1] - 0.15f) < 1e-6 && fabs(prm4[2] - 0.5f) < 1e-6);
+    // Missing tangent falls back without crashing (unit X lobe).
+    rec.has_tangent = false;
+    rng_seed(9);
+    EXPECT_TRUE(brushed.scatter(ray(vec3(0, 0, 1), vec3(0, 0, -1)), rec, att, sc));
+}
+
 static void t_emissive() {
     test_current = "emissive";
     rng_seed(21);
@@ -636,6 +688,7 @@ void run_shading_tests() {
     t_pdf();
     t_env();
     t_ggx();
+    t_aniso();
     t_glass_rough();
     t_emissive();
     t_ppm();

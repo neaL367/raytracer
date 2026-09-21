@@ -251,7 +251,8 @@ bool fog_event(vec3 o, vec3 d, float rtime, int ns, float u01, float tmax,
 // contract as the old brute loops (narrowing tmax), so kernels just swap.
 void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
               out vec4 alb, out vec4 alb2, out vec4 emit, out vec4 params,
-               out int light_idx, out int light_ty, out vec2 huv, out bool any) {
+               out int light_idx, out int light_ty, out vec2 huv,
+               out vec3 tang, out bool has_tang, out bool any) {
     int stack[32];
     int sp = 0;
     stack[sp++] = 0;
@@ -260,6 +261,7 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
     light_idx = -1;
     light_ty = -1;
     huv = vec2(0.0);
+    has_tang = false;
     while (sp > 0) {
         GPUQNode nd = nodes[stack[--sp]];
         // 4-wide slab: one interval per slot, strict miss, empty slots
@@ -297,6 +299,14 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                     emit = s.emit;
                     params = s.params;
                     huv = uv;
+                    // Spherical-UV tangent like CPU (pole fallback).
+                    vec3 st = vec3(-nn.z, 0.0, nn.x);
+                    if (dot(st, st) <= 1e-12)
+                        st = vec3(1.0, 0.0, 0.0);
+                    else
+                        st = normalize(st);
+                    tang = st;
+                    has_tang = true;
                     // Fog slot never shades; dark solids clear stale markers.
                     bool fogslot = params.x > 5.5 && params.x < 6.5;
                     bool lit = !fogslot && (emit.x + emit.y + emit.z > 0.0);
@@ -314,6 +324,10 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                     emit = q.emit;
                     params = q.params;
                     huv = uv;
+                    // Edge-u tangent like CPU (always valid: u ⊥ normal).
+                    vec3 qg = normalize(cross(q.u.xyz, q.v.xyz));
+                    tang = normalize(q.u.xyz - qg * dot(q.u.xyz, qg));
+                    has_tang = true;
                     light_idx = (emit.x + emit.y + emit.z > 0.0) ? ref.ti.y : -1;
                     light_ty = (emit.x + emit.y + emit.z > 0.0) ? 0 : -1;
                     any = true;
@@ -332,6 +346,36 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                               ? tr.tuvA.xy * (1.0 - uv.x - uv.y) + tr.tuvA.zw * uv.x +
                                     tr.tuvB.xy * uv.y
                               : uv;
+                    // UV-derivative tangent like CPU (motion-lerped verts).
+                    {
+                        float tf =
+                            (tr.tm.y > tr.tm.x)
+                                ? clamp((rtime - tr.tm.x) / (tr.tm.y - tr.tm.x), 0.0, 1.0)
+                                : 0.0;
+                        vec3 va = mix(tr.a.xyz, tr.a1.xyz, tf);
+                        vec3 vb = mix(tr.b.xyz, tr.b1.xyz, tf);
+                        vec3 vc = mix(tr.c.xyz, tr.c1.xyz, tf);
+                        vec3 te1 = vb - va, te2 = vc - va;
+                        vec2 td1, td2;
+                        if (tr.params.w > 0.5) {
+                            td1 = vec2(tr.tuvA.z - tr.tuvA.x, tr.tuvA.w - tr.tuvA.y);
+                            td2 = vec2(tr.tuvB.x - tr.tuvA.x, tr.tuvB.y - tr.tuvA.y);
+                        } else {
+                            td1 = vec2(1.0, 0.0);
+                            td2 = vec2(0.0, 1.0);
+                        }
+                        float tdet = td1.x * td2.y - td2.x * td1.y;
+                        vec3 tface = normalize(cross(te1, te2));
+                        has_tang = false;
+                        if (abs(tdet) > 1e-12) {
+                            vec3 ttv = (te1 * td2.y - te2 * td1.y) / tdet;
+                            ttv = ttv - tface * dot(ttv, tface);
+                            if (dot(ttv, ttv) > 1e-12) {
+                                tang = normalize(ttv);
+                                has_tang = true;
+                            }
+                        }
+                    }
                     bool trlit = emit.x + emit.y + emit.z > 0.0;
                     light_idx = trlit ? ref.ti.y : -1;
                     light_ty = trlit ? 2 : -1;
@@ -350,13 +394,14 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
 // absolute from o (travelled distance accumulated across passes).
 bool trace_solid(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                  out vec4 alb, out vec4 alb2, out vec4 emit, out vec4 params,
-                 out int light_idx, out int light_ty, out vec2 huv) {
+                 out int light_idx, out int light_ty, out vec2 huv, out vec3 tang,
+                 out bool has_tang) {
     vec3 oo = o;
     float trav = 0.0;
     for (int k = 0; k < 4; ++k) {
         bool any;
         traverse(oo, d, rtime, tmax - trav, t, n, alb, alb2, emit, params, light_idx,
-                 light_ty, huv, any);
+                 light_ty, huv, tang, has_tang, any);
         if (!any)
             return false;
         if (params.x != 6.0 && params.x != 8.0) {
@@ -379,10 +424,12 @@ float shadow_transmittance(vec3 o, vec3 wi, float rtime, int ns, float dist,
     vec4 alb, alb2, emit, params;
     int li, lt;
     vec2 huv;
+    vec3 tang;
+    bool has_tang;
     // Range excludes the light itself (mirrors CPU dist - 0.001).
     float tmax = dist - 0.001;
     if (trace_solid(o, wi, rtime, tmax, t, n, alb, alb2, emit, params, li, lt,
-                    huv))
+                    huv, tang, has_tang))
         return 0.0;
     float Tr = 1.0;
     for (int i = 0; i < ns; ++i) {

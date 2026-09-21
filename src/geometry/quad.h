@@ -34,6 +34,9 @@ public:
         rec.mat = mat;
         rec.u = alpha; // parametric coords double as UVs
         rec.v = beta;
+        // Edge-u orthonormalized (u ⊥ normal by construction: always valid).
+        rec.tangent = unit_vector(u - normal * dot(u, normal));
+        rec.has_tangent = true;
         return true;
     }
 

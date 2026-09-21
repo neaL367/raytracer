@@ -43,6 +43,55 @@ inline vec3 fresnel_schlick(const vec3 &F0, double cos_vh) {
     return F0 + (vec3(1, 1, 1) - F0) * f5;
 }
 
+// ---- Anisotropic GGX (M38): per-axis alpha, TBN shading frame. ----
+
+// NDF: 1/(PI*ax*ay*((x/ax)^2 + (y/ay)^2 + z^2)^2). Reduces to D() when
+// ax == ay (pinned bit-exact by unit test).
+inline double D_aniso(double ax, double ay, const vec3 &h) {
+    double x = h.x() / ax, y = h.y() / ay, z = h.z();
+    double s = x * x + y * y + z * z;
+    return 1.0 / (3.1415926535897932385 * ax * ay * s * s);
+}
+
+// Smith single-direction lambda with direction-mapped alpha.
+inline double lambda_aniso(double ax, double ay, const vec3 &w) {
+    double cz = w.z();
+    if (cz <= 0)
+        return 1e30; // below surface: fully shadowed
+    double tx = w.x() / cz, ty = w.y() / cz;
+    double a2 = (ax * tx) * (ax * tx) + (ay * ty) * (ay * ty);
+    return (std::sqrt(1.0 + a2) - 1.0) * 0.5;
+}
+
+// Height-correlated G2 over G1(V), like weight_ratio().
+inline double weight_ratio_aniso(double ax, double ay, const vec3 &V, const vec3 &L) {
+    double lv = lambda_aniso(ax, ay, V);
+    double ll = lambda_aniso(ax, ay, L);
+    return (1.0 + lv) / (1.0 + lv + ll);
+}
+
+// Heitz anisotropic VNDF: stretch view, disk-map, un-stretch. Degenerates
+// cleanly at ax=ay=0 (Ne collapses to +z, mirror).
+inline vec3 vndf_aniso(double ax, double ay, const vec3 &V, double u1, double u2,
+                        vec3 &H) {
+    const double pi = 3.1415926535897932385;
+    vec3 Vh = unit_vector(vec3(ax * V.x(), ay * V.y(), V.z()));
+    double lensq = Vh.x() * Vh.x() + Vh.y() * Vh.y();
+    vec3 T1 = lensq > 0 ? vec3(-Vh.y(), Vh.x(), 0.0) / std::sqrt(lensq)
+                        : vec3(1, 0, 0);
+    vec3 T2 = cross(Vh, T1);
+    double r = std::sqrt(u1);
+    double phi = 2.0 * pi * u2;
+    double t1 = r * std::cos(phi);
+    double t2 = r * std::sin(phi);
+    double s = 0.5 * (1.0 + Vh.z());
+    t2 = (1.0 - s) * std::sqrt(std::max(1.0 - t1 * t1, 0.0)) + s * t2;
+    vec3 Nh = T1 * t1 + T2 * t2 + Vh * std::sqrt(std::max(1.0 - t1 * t1 - t2 * t2, 0.0));
+    H = unit_vector(vec3(ax * Nh.x(), ay * Nh.y(), std::max(Nh.z(), 0.0)));
+    vec3 L = H * (2.0 * dot(V, H)) - V; // reflect incident (-V) about H
+    return L;
+}
+
 // Heitz VNDF: visible-normal sampling, 2 uniforms. Degenerates cleanly
 // at alpha=0 (Ne collapses to +z regardless of the disk draw).
 inline vec3 vndf_sample(double alpha, const vec3 &V, double u1, double u2,

@@ -105,7 +105,7 @@ inline scene_data build_default(double aspect, double aperture, double sh0 = 0,
     else
         std::cerr << "assets/photo2_test.jpg missing: checker cube\n";
     auto cube_mat = std::make_shared<lambertian>(cube_tex);
-    auto left_mat = std::make_shared<metal>(vec3(0.8, 0.8, 0.8), 0.3);
+    auto left_mat = std::make_shared<metal>(vec3(0.8, 0.8, 0.8), 0.15, 0.5);
     auto right_mat = std::make_shared<dielectric>(1.5);
     auto light_mat = std::make_shared<diffuse_light>(vec3(4, 4, 4));
 

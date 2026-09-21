@@ -52,6 +52,12 @@ public:
             double phi = std::atan2(-op.z(), op.x()) + 3.1415926535897932385;
             rec.u = phi / (2 * 3.1415926535897932385);
             rec.v = theta / 3.1415926535897932385;
+            // Tangent along increasing azimuth; pole fallback.
+            vec3 t(-op.z(), 0, op.x());
+            if (t.length_squared() <= 1e-12)
+                t = vec3(1, 0, 0);
+            rec.tangent = unit_vector(t);
+            rec.has_tangent = true;
         }
         return true;
     }

@@ -90,6 +90,28 @@ public:
             rec.u = u; // barycentric weights as UVs (sum <= 1)
             rec.v = v;
         }
+        // Tangent from UV derivatives (Mikkelsen-lite) on lerped verts;
+        // barycentric UVs reduce to e1. Degenerate -> fallback flag off.
+        {
+            vec3 duv1, duv2;
+            if (has_uv) {
+                duv1 = vec3(t1.x() - t0.x(), t1.y() - t0.y(), 0);
+                duv2 = vec3(t2.x() - t0.x(), t2.y() - t0.y(), 0);
+            } else {
+                duv1 = vec3(1, 0, 0);
+                duv2 = vec3(0, 1, 0);
+            }
+            double det = duv1.x() * duv2.y() - duv2.x() * duv1.y();
+            vec3 flat = unit_vector(cross(e1, e2));
+            if (fabs(det) > 1e-12) {
+                vec3 t = (e1 * duv2.y() - e2 * duv1.y()) / det;
+                t = t - flat * dot(t, flat);
+                if (t.length_squared() > 1e-12) {
+                    rec.tangent = unit_vector(t);
+                    rec.has_tangent = true;
+                }
+            }
+        }
         return true;
     }
 
