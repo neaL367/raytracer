@@ -45,6 +45,60 @@ static void t_materials() {
     EXPECT_NEAR(att.x(), 1.0); // no absorption
 }
 
+static void t_glass_rough() {
+    test_current = "glass_rough";
+    hit_record rec;
+    rec.point = vec3(0, 0, 0);
+    rec.normal = vec3(0, 1, 0);
+    rec.front_face = true;
+    vec3 att, att0;
+    ray sc, sc0;
+    // Roughness 0 == legacy delta path bit-exact (same seed, same draws).
+    dielectric smooth(1.5), rough0(1.5, 0.0);
+    rng_seed(55);
+    EXPECT_TRUE(rough0.scatter(ray(vec3(0, 1, 0), vec3(0, -1, 0)), rec, att, sc));
+    rng_seed(55);
+    EXPECT_TRUE(smooth.scatter(ray(vec3(0, 1, 0), vec3(0, -1, 0)), rec, att0, sc0));
+    EXPECT_TRUE((sc.direction() - sc0.direction()).length() == 0);
+    EXPECT_TRUE((att - att0).length() == 0);
+    // Rough glass: weights bounded by 1 (G2/G1), dirs valid + unit.
+    dielectric rg(1.5, 0.4);
+    rng_seed(56);
+    double wmax = 0;
+    int nref = 0, ntr = 0;
+    for (int i = 0; i < 5000; ++i) {
+        vec3 a;
+        ray s;
+        if (!rg.scatter(ray(vec3(0, 1, 0), vec3(0, -1, 0)), rec, a, s))
+            continue; // degenerate lobe absorbed
+        EXPECT_TRUE(a.x() <= 1.0 && a.x() >= 0); // energy-safe per sample
+        if (a.x() > wmax)
+            wmax = a.x();
+        EXPECT_TRUE(fabs(s.direction().length() - 1.0) < 1e-9);
+        if (s.direction().y() > 0)
+            ++nref; // reflected lobe above
+        else
+            ++ntr; // transmitted lobe below
+    }
+    EXPECT_TRUE(wmax <= 1.0 && wmax > 0.5); // nontrivial, never created
+    EXPECT_TRUE(nref > 100 && ntr > 100); // both lobes sampled
+    // TIR from inside at grazing, near-zero roughness: H ~= N forces
+    // sinT2 > 1 for every draw -> pure reflection, stays inside.
+    dielectric polished(1.5, 0.01);
+    rec.normal = vec3(0, -1, 0); // backface: against-ray, into glass
+    rec.front_face = false;
+    rng_seed(57);
+    for (int i = 0; i < 20; ++i) {
+        vec3 at2;
+        ray s2;
+        EXPECT_TRUE(polished.scatter(
+            ray(vec3(0, 0, 0), unit_vector(vec3(1, 0.05, 0))), rec, at2, s2));
+        EXPECT_TRUE(s2.direction().y() < 0); // reflected, never transmits
+    }
+    rec.normal = vec3(0, 1, 0);
+    rec.front_face = true;
+}
+
 static void t_texture() {
     test_current = "texture";
     solid_color solid(vec3(0.2, 0.4, 0.6));
@@ -578,6 +632,7 @@ void run_shading_tests() {
     t_pdf();
     t_env();
     t_ggx();
+    t_glass_rough();
     t_emissive();
     t_ppm();
     t_pfm();

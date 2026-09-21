@@ -163,9 +163,51 @@ private:
 
 class dielectric : public material {
 public:
-    dielectric(double ri) : ir(ri) {}
+    dielectric(double ri, double r = 0) : ir(ri), roughness(r < 0 ? 0 : (r > 1 ? 1 : r)) {}
     bool scatter(const ray &in, const hit_record &rec,
                  vec3 &attenuation, ray &scattered) const override {
+        if (roughness <= 0)
+            return scatter_smooth(in, rec, attenuation, scattered);
+        // Walter microfacet BTDF: H ~ VNDF, reflect w.p. F else refract.
+        // Choice probs cancel the Fresnel: both lobes weigh G2/G1(V) <= 1.
+        onb frame;
+        frame.build_from_w(rec.normal);
+        vec3 V = unit_vector(-in.direction());
+        vec3 Vl(dot(V, frame.u), dot(V, frame.v), dot(V, frame.w));
+        double alpha = ggx::alpha_of(roughness);
+        vec3 H;
+        ggx::vndf_sample(alpha, Vl, random_double(), random_double(), H);
+        double cosVH = dot(Vl, H);
+        if (cosVH <= 0)
+            return false; // degenerate microfacet: absorbed
+        double eta = rec.front_face ? (1.0 / ir) : ir; // n_i/n_o, like smooth
+        double sinT2 = eta * eta * (1.0 - cosVH * cosVH);
+        double F = (sinT2 > 1.0) ? 1.0 : reflectance(fmin(cosVH, 1.0), eta);
+        vec3 Ll;
+        if (sinT2 > 1.0 || random_double() < F) {
+            Ll = H * (2.0 * cosVH) - Vl; // reflect incident (-V) about H
+            if (Ll.z() <= 0)
+                return false;
+        } else {
+            // Refract: L = eta*I + H*(eta*cosI - sqrt(k)), I = -V.
+            double k = 1.0 - sinT2;
+            double cosI = cosVH;
+            Ll = Vl * (-eta) + H * (eta * cosI - std::sqrt(k));
+            double Llen = Ll.length();
+            if (Llen <= 0)
+                return false;
+            Ll = Ll / Llen;
+            if (Ll.z() >= 0)
+                return false; // transmitted lobe lives below
+        }
+        double w = ggx::weight_ratio(alpha, Vl.z(), fabs(Ll.z()));
+        attenuation = vec3(w, w, w); // glass absorbs nothing; weight <= 1
+        scattered = ray(rec.point, frame.local(Ll));
+        return true;
+    }
+    // Legacy delta path: bit-exact pre-roughness behavior (roughness 0).
+    bool scatter_smooth(const ray &in, const hit_record &rec, vec3 &attenuation,
+                        ray &scattered) const {
         attenuation = vec3(1, 1, 1); // glass absorbs nothing
         double ratio = rec.front_face ? (1.0 / ir) : ir;
         vec3 unit = unit_vector(in.direction());
@@ -184,7 +226,7 @@ public:
         alb2[0] = alb2[1] = alb2[2] = 0;
         emit[0] = emit[1] = emit[2] = 0;
         prm[0] = 2;
-        prm[1] = 0;
+        prm[1] = (float)roughness; // 0 = legacy delta path, bit-exact
         prm[2] = (float)ir;
         prm[3] = 0;
         return true;
@@ -192,6 +234,7 @@ public:
 
 private:
     double ir;
+    double roughness;
     // Schlick approx: grazing -> mirror, normal -> ~4% for glass.
     static double reflectance(double cos, double ref_idx) {
         double r0 = (1 - ref_idx) / (1 + ref_idx);

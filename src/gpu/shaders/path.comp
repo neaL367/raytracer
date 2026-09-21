@@ -434,16 +434,73 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase) {
             }
         } else {
             float ir = params.z;
-            float ratio = dot(d, n) < 0.0 ? (1.0 / ir) : ir;
-            vec3 unit = normalize(d);
-            vec3 nn = dot(d, n) < 0.0 ? n : -n;
-            float cosT = min(dot(-unit, nn), 1.0);
-            float sinT = sqrt(1.0 - cosT * cosT);
-            attenuation = vec3(1.0);
-            if (ratio * sinT > 1.0 || schlick(cosT, ratio) > wrandf())
-                sd = reflect(unit, nn);
-            else
-                sd = refract(unit, nn, ratio);
+            float rough = clamp(params.y, 0.0, 1.0);
+            if (rough <= 0.0) {
+                // Legacy delta path, bit-exact.
+                float ratio = dot(d, n) < 0.0 ? (1.0 / ir) : ir;
+                vec3 unit = normalize(d);
+                vec3 nn = dot(d, n) < 0.0 ? n : -n;
+                float cosT = min(dot(-unit, nn), 1.0);
+                float sinT = sqrt(1.0 - cosT * cosT);
+                attenuation = vec3(1.0);
+                if (ratio * sinT > 1.0 || schlick(cosT, ratio) > wrandf())
+                    sd = reflect(unit, nn);
+                else
+                    sd = refract(unit, nn, ratio);
+            } else {
+                // Walter microfacet BTDF (mirrors CPU): VNDF + Fresnel
+                // choice (weights cancel to G2/G1), face-forwarded frame.
+                float ratio = dot(d, n) < 0.0 ? (1.0 / ir) : ir;
+                vec3 V = -normalize(d);
+                vec3 nn = dot(n, V) < 0.0 ? -n : n;
+                vec3 u, v, w;
+                wonb(nn, u, v, w);
+                vec3 Vl = vec3(dot(V, u), dot(V, v), dot(V, w));
+                float alpha = rough * rough;
+                vec3 H;
+                ggx_vndf(alpha, Vl, wrandf(), wrandf(), H); // H carries it
+                float cosVH = dot(Vl, H);
+                float F = 1.0;
+                bool tir = true;
+                if (cosVH > 0.0) {
+                    float sinT2 = ratio * ratio * (1.0 - cosVH * cosVH);
+                    if (sinT2 <= 1.0) {
+                        tir = false;
+                        float cv = min(cosVH, 1.0);
+                        float r0 = (1.0 - ratio) / (1.0 + ratio);
+                        r0 *= r0;
+                        float f = 1.0 - cv;
+                        F = r0 + (1.0 - r0) * (f * f * f * f * f);
+                    }
+                }
+                if (cosVH <= 0.0) {
+                    ok = false; // degenerate microfacet, as CPU
+                } else {
+                    vec3 Ll;
+                    if (tir || wrandf() < F) {
+                        Ll = H * (2.0 * cosVH) - Vl;
+                        if (Ll.z <= 0.0)
+                            ok = false;
+                    } else {
+                        float k = 1.0 - ratio * ratio * (1.0 - cosVH * cosVH);
+                        Ll = Vl * (-ratio) + H * (ratio * cosVH - sqrt(max(k, 0.0)));
+                        float Llen = length(Ll);
+                        if (Llen <= 0.0)
+                            ok = false;
+                        else
+                            Ll /= Llen;
+                        if (ok && Ll.z >= 0.0)
+                            ok = false;
+                    }
+                    if (ok) {
+                        float lv = ggx_lambda(alpha, Vl.z);
+                        float gr =
+                            (1.0 + lv) / (1.0 + lv + ggx_lambda(alpha, abs(Ll.z)));
+                        attenuation = vec3(gr);
+                        sd = u * Ll.x + v * Ll.y + w * Ll.z;
+                    }
+                }
+            }
         }
         if (!ok)
             break;
