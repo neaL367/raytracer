@@ -35,7 +35,7 @@ int main(int argc, char **argv) {
     bool bench = false;
     bool use_sah = true;
     bool do_denoise = false;
-    std::string scene_name = "default";
+    std::string scene_name = "weekend";
     double shutter0 = 0, shutter1 = 0;
     double fog_density = 0;
     double het_density = 0;
@@ -45,12 +45,15 @@ int main(int argc, char **argv) {
     bool dump_aov = false; // --aov: albedo/normal/depth PFM trio next to PPM
     unsigned seed = 42; // base RNG seed; per-pixel stream = seed + pixel index
     int W = 400, H = -1; // H defaults to 16:9 unless --height given
+    bool spp_set = false;
+    bool width_set = false;
     std::string hdr_path; // empty = no float dump
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
-        if (a == "--samples" && i + 1 < argc)
+        if (a == "--samples" && i + 1 < argc) {
             spp = std::max(1, std::atoi(argv[++i]));
-        else if (a == "--aperture" && i + 1 < argc)
+            spp_set = true;
+        } else if (a == "--aperture" && i + 1 < argc)
             aperture = std::max(0.0, std::atof(argv[++i]));
         else if (a == "--threads" && i + 1 < argc)
             num_threads = (unsigned)std::max(1, std::atoi(argv[++i]));
@@ -77,9 +80,10 @@ int main(int argc, char **argv) {
             env_demo = true;
         else if (a == "--seed" && i + 1 < argc)
             seed = (unsigned)std::max(0, std::atoi(argv[++i]));
-        else if (a == "--width" && i + 1 < argc)
+        else if (a == "--width" && i + 1 < argc) {
             W = std::max(8, std::atoi(argv[++i]));
-        else if (a == "--height" && i + 1 < argc)
+            width_set = true;
+        } else if (a == "--height" && i + 1 < argc)
             H = std::max(8, std::atoi(argv[++i]));
         else if (a == "--bench")
             bench = true;
@@ -89,6 +93,14 @@ int main(int argc, char **argv) {
             use_sobol = (std::string(argv[++i]) == "sobol");
         else if (a == "--aov")
             dump_aov = true;
+    }
+    // "weekend" (Ray Tracing in One Weekend final) defaults: 1200 width, 500 spp.
+    if (scene_name == "weekend" || scene_name == "final" || scene_name == "spheres" ||
+        scene_name == "book1") {
+        if (!width_set)
+            W = 1200;
+        if (!spp_set)
+            spp = 500;
     }
     // Legacy M2 stream needs one global RNG in pixel order: single thread.
     bool legacy = (spp == 1);
