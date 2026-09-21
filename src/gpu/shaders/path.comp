@@ -41,6 +41,7 @@ layout(push_constant) uniform PC {
     float sh1; // shutter span (closed when equal)
     int nfog; // fog-ish slots present (type 6/8, gates fog RNG draws)
     int nenv; // analytic sun+sky environment on (gates env RNG draws)
+    int nblack; // black background (enclosed scenes): miss adds nothing, no RNG
 }
 pc;
 
@@ -383,9 +384,12 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             continue;
         }
         if (!solid) {
-            // Miss with no fog event: sky/env. Trace outs are stale here
-            // (solid miss), so this branch must come before any use of
-            // t/n/alb/emit/params below.
+            // Miss with no fog event: sky/env, or black for enclosed
+            // scenes (mirrors CPU black_bg: break, no RNG, no radiance).
+            // Trace outs are stale here (solid miss), so this branch must
+            // come before any use of t/n/alb/emit/params below.
+            if (pc.nblack > 0)
+                break;
             vec3 miss_L = pc.nenv > 0 ? env_radiance(d) : env_sky(d);
             if (pc.nenv > 0 && !specular) {
                 float w = power_weight(pdf_b_last, 1.0 / (4.0 * 3.14159265));

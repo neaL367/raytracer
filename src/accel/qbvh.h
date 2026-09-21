@@ -96,6 +96,19 @@ public:
         return true;
     }
 
+    // GPU flatten accessor: DFS prim expansion (same order as traversal).
+    void collect_prims(std::vector<std::shared_ptr<hittable>> &out) const {
+        for (int s = 0; s < nkids; ++s) {
+            const child &c = kids[(size_t)s];
+            if (c.leaf) {
+                for (const auto &p : c.prims)
+                    out.push_back(p);
+            } else {
+                c.node->collect_prims(out);
+            }
+        }
+    }
+
 private:
     struct child {
         aabb box;

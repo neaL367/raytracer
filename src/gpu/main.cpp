@@ -154,11 +154,12 @@ int main(int argc, char **argv) {
     for (const auto &s : scene.spheres)
         if (s.prm[0] == 6 || s.prm[0] == 8)
             nfog++;
-    uint32_t push12[12];
+    uint32_t push12[13];
     for (int k = 0; k < 10; ++k)
         push12[k] = push10[k];
     push12[10] = (uint32_t)nfog;
     push12[11] = sdata.env_light ? 1u : 0u;
+    push12[12] = sdata.black_bg ? 1u : 0u;
     std::vector<float> rgba;
     double dispatch_ms = gpu_run(gpu, shader, push12, rgba);
     double denoise_ms = 0;

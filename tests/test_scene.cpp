@@ -484,6 +484,65 @@ static void t_flatten() {
     EXPECT_TRUE(prm[0] == 7 && fabs(prm[1] - 0.3) < 1e-6);
 }
 
+static void t_expand_gpu() {
+    test_current = "expand_gpu";
+    auto m = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));
+    // qbvh under translate: baked world-space spheres, order preserved.
+    hittable_list two;
+    two.add(std::make_shared<sphere>(vec3(0, 0, -1), 0.5, m));
+    two.add(std::make_shared<sphere>(vec3(2, 0, -1), 0.5, m));
+    std::vector<std::shared_ptr<hittable>> tv = two.children();
+    bvh_node bt(tv, 0, tv.size());
+    auto qbt = std::make_shared<qbvh_node>(bt);
+    std::vector<std::shared_ptr<hittable>> prims;
+    qbt->collect_prims(prims);
+    EXPECT_TRUE((int)prims.size() == 2); // accessor mirrors traversal
+    scene_data moved;
+    moved.objs.push_back(std::make_shared<translate>(qbt, vec3(10, 0, 0)));
+    flat_scene mf;
+    EXPECT_TRUE(flatten_scene(moved, mf));
+    EXPECT_TRUE((int)mf.gs.spheres.size() == 2);
+    EXPECT_NEAR(mf.gs.spheres[0].c[0], 10.0f);
+    EXPECT_NEAR(mf.gs.spheres[1].c[0], 12.0f);
+    // book2 cluster shape: rotate_y(180deg) + translate over qbvh spheres.
+    hittable_list one;
+    one.add(std::make_shared<sphere>(vec3(3, 0, 0), 0.5, m));
+    std::vector<std::shared_ptr<hittable>> ov = one.children();
+    bvh_node bo(ov, 0, ov.size());
+    auto qbo = std::make_shared<qbvh_node>(bo);
+    auto ry = std::make_shared<rotate_y>(qbo, 180.0);
+    scene_data cl;
+    cl.objs.push_back(std::make_shared<translate>(ry, vec3(10, 0, 0)));
+    flat_scene cf;
+    EXPECT_TRUE(flatten_scene(cl, cf));
+    EXPECT_TRUE((int)cf.gs.spheres.size() == 1);
+    EXPECT_NEAR(cf.gs.spheres[0].c[0], 7.0f); // -3 + 10
+    EXPECT_NEAR(cf.gs.spheres[0].c[2], 0.0f);
+    // Moving sphere under translate: endpoints + range preserved.
+    scene_data mm2;
+    mm2.objs.push_back(std::make_shared<translate>(
+        std::make_shared<sphere>(vec3(0, 0, 0), vec3(0, 2, 0), 0.0, 1.0, 0.5, m),
+        vec3(5, 0, 0)));
+    flat_scene mf2;
+    EXPECT_TRUE(flatten_scene(mm2, mf2));
+    EXPECT_TRUE(mf2.gs.spheres[0].prm[3] == 1); // still motion-flagged
+    EXPECT_NEAR(mf2.gs.spheres[0].c[0], 5.0f);
+    EXPECT_NEAR(mf2.gs.spheres[0].c1[1], 2.0f);
+    // Transformed volume: unsupported, fails loudly (never silently wrong).
+    auto phase = std::make_shared<isotropic>(vec3(0.9, 0.9, 0.9));
+    auto border = std::make_shared<sphere>(vec3(0, 0, -1), 2.0, phase);
+    scene_data bad;
+    bad.objs.push_back(std::make_shared<translate>(
+        std::make_shared<constant_medium>(border, 0.25, phase), vec3(1, 0, 0)));
+    flat_scene bf;
+    EXPECT_TRUE(!flatten_scene(bad, bf));
+    // book2 full scene flattens (instances + qbvh + motion + media).
+    scene_data b2 = build_scene("book2", 1.0, 1.0);
+    flat_scene fb2;
+    EXPECT_TRUE(flatten_scene(b2, fb2));
+    EXPECT_TRUE(fb2.nlights == 1); // single ceiling quad (earth ball is lambertian)
+}
+
 static void t_shutter() {
     test_current = "shutter";
     // Closed shutter draws no RNG: identical rays to pre-shutter code.
@@ -515,5 +574,6 @@ void run_scene_tests() {
     t_instance();
     t_cornell();
     t_flatten();
+    t_expand_gpu();
     t_shutter();
 }

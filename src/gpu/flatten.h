@@ -5,6 +5,7 @@
 // Order: data structs, image export, detail fns, entry point.
 #include "host_scene.h"
 #include "../accel/bvh.h"
+#include "../accel/qbvh.h"
 #include "../accel/qbvh_flat.h"
 #include "../geometry/instance.h"
 #include "../scene/scene.h"
@@ -271,6 +272,97 @@ inline int flatten_qnode_at(const std::vector<flat_qnode> &all, int idx,
 
 } // namespace flat_detail
 
+// GPU instance/container expander: instances bake to world-space prims so the
+// BVH + shaders only ever see plain prims (CPU keeps true instances for exact
+// normals). Rotation-invariant spheres bake as transformed centers; quads bake
+// as rotated Q/u/v (same math as instance_detail::collect_baked_quads).
+// Containers (list, bvh_node, qbvh_node) expand to leaves. Volumes pass
+// through only untransformed (transformed media unsupported: fail loudly).
+inline bool expand_for_gpu(const std::shared_ptr<hittable> &o, double c, double s,
+                           const vec3 &T, std::vector<std::shared_ptr<hittable>> &out,
+                           std::vector<std::shared_ptr<quad>> &quad_owned,
+                           std::vector<std::shared_ptr<sphere>> &sphere_owned) {
+    // Identity: pass the original through (pointer identity preserved for
+    // the BVH id map; untransformed motion uploads natively).
+    bool ident = (c == 1.0 && s == 0.0 && T.x() == 0.0 && T.y() == 0.0 && T.z() == 0.0);
+    if (auto q = std::dynamic_pointer_cast<quad>(o)) {
+        if (ident) {
+            out.push_back(o);
+            return true;
+        }
+        vec3 Qw = instance_detail::rot_point(q->corner(), c, s) + T;
+        vec3 uw = instance_detail::rot_dir(q->edge_u(), c, s);
+        vec3 vw = instance_detail::rot_dir(q->edge_v(), c, s);
+        auto qp = std::make_shared<quad>(Qw, uw, vw, q->mat_ptr());
+        quad_owned.push_back(qp);
+        out.push_back(qp);
+        return true;
+    }
+    if (auto sp = std::dynamic_pointer_cast<sphere>(o)) {
+        if (ident) {
+            out.push_back(o);
+            return true;
+        }
+        // Rigid motion preserves linear motion: bake both endpoints + range.
+        double t0 = 0, t1 = 1;
+        sp->time_range(t0, t1);
+        vec3 C0w = instance_detail::rot_point(sp->center_ref(), c, s) + T;
+        vec3 C1w = instance_detail::rot_point(sp->center1_ref(), c, s) + T;
+        auto np = std::make_shared<sphere>(C0w, C1w, t0, t1, sp->radius_val(), sp->mat_ptr());
+        sphere_owned.push_back(np);
+        out.push_back(np);
+        return true;
+    }
+    if (auto list = std::dynamic_pointer_cast<hittable_list>(o)) {
+        for (const auto &child : list->children())
+            if (!expand_for_gpu(child, c, s, T, out, quad_owned, sphere_owned))
+                return false;
+        return true;
+    }
+    if (auto bn = std::dynamic_pointer_cast<bvh_node>(o)) {
+        if (bn->is_leaf()) {
+            for (const auto &p : bn->leaf_prims())
+                if (!expand_for_gpu(p, c, s, T, out, quad_owned, sphere_owned))
+                    return false;
+            return true;
+        }
+        return expand_for_gpu(bn->child(false), c, s, T, out, quad_owned, sphere_owned) &&
+               expand_for_gpu(bn->child(true), c, s, T, out, quad_owned, sphere_owned);
+    }
+    if (auto qn = std::dynamic_pointer_cast<qbvh_node>(o)) {
+        std::vector<std::shared_ptr<hittable>> prims;
+        qn->collect_prims(prims);
+        for (const auto &p : prims)
+            if (!expand_for_gpu(p, c, s, T, out, quad_owned, sphere_owned))
+                return false;
+        return true;
+    }
+    if (auto tr = std::dynamic_pointer_cast<triangle>(o)) {
+        if (ident) {
+            out.push_back(o); // mesh tris upload natively; instances unsupported
+            return true;
+        }
+        (void)tr;
+        return false; // transformed triangle: fail loudly (as before)
+    }
+    if (auto tr2 = std::dynamic_pointer_cast<translate>(o)) {
+        vec3 T2 = instance_detail::rot_point(tr2->offset(), c, s) + T;
+        return expand_for_gpu(tr2->inner_ref(), c, s, T2, out, quad_owned, sphere_owned);
+    }
+    if (auto ry = std::dynamic_pointer_cast<rotate_y>(o)) {
+        double ci = ry->cos_theta(), si = ry->sin_theta();
+        return expand_for_gpu(ry->inner_ref(), c * ci - s * si, s * ci + c * si, T, out,
+                              quad_owned, sphere_owned);
+    }
+    if ((std::dynamic_pointer_cast<constant_medium>(o) ||
+         std::dynamic_pointer_cast<heterogeneous_medium>(o)) &&
+        c == 1.0 && s == 0.0 && T.x() == 0.0 && T.y() == 0.0 && T.z() == 0.0) {
+        out.push_back(o); // untransformed volume: whitelist below checks border
+        return true;
+    }
+    return false; // unknown shape (or transformed volume): fail loudly
+}
+
 // Build typed arrays + SAH tree + flat nodes from a scene. False on
 // unknown shapes only. Emissive prims (any shape) register in the light
 // table; the emissive-first partition is legacy order, kept stable.
@@ -278,25 +370,14 @@ inline int flatten_qnode_at(const std::vector<flat_qnode> &all, int idx,
 // ever see plain prims (CPU keeps true instances for exact normals).
 inline bool flatten_scene(const scene_data &scene, flat_scene &out) {
     out = flat_scene{};
-    // Expand instances up front; baked quads are owned here for the call.
+    // Expand instances + containers up front; baked prims are owned here.
     std::vector<std::shared_ptr<hittable>> expanded;
-    std::vector<std::shared_ptr<quad>> baked_owned;
+    std::vector<std::shared_ptr<quad>> quad_owned;
+    std::vector<std::shared_ptr<sphere>> sphere_owned;
     for (const auto &o : scene.objs) {
-        if (std::dynamic_pointer_cast<translate>(o) ||
-            std::dynamic_pointer_cast<rotate_y>(o)) {
-            std::vector<quad> baked;
-            if (!instance_detail::collect_baked_quads(o, 1.0, 0.0, vec3(0, 0, 0),
-                                                      baked) ||
-                baked.empty())
-                return false;
-            for (auto &q : baked) {
-                auto qp = std::make_shared<quad>(q);
-                baked_owned.push_back(qp);
-                expanded.push_back(qp);
-            }
-            continue;
-        }
-        expanded.push_back(o);
+        if (!expand_for_gpu(o, 1.0, 0.0, vec3(0, 0, 0), expanded, quad_owned,
+                            sphere_owned))
+            return false;
     }
     // Reject unknown shapes up front (image textures unlimited now).
     // Fog media allowed only over sphere borders (demo scope).
