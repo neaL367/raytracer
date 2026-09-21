@@ -390,10 +390,66 @@ static void t_compare() {
     EXPECT_NEAR(s2.mean_abs, 0);
 }
 
+static void t_noise() {
+    test_current = "noise";
+    // Lattice hash is deterministic and bounded.
+    EXPECT_TRUE(value_noise::lattice_hash(3, 1, 4) == value_noise::lattice_hash(3, 1, 4));
+    EXPECT_TRUE(value_noise::lattice_hash(3, 1, 4) != value_noise::lattice_hash(4, 1, 4));
+    double u0 = value_noise::lattice_unit(0, 0, 0);
+    EXPECT_TRUE(u0 >= 0.0 && u0 <= 1.0);
+    EXPECT_NEAR(u0, 0.0); // null lattice hashes to zero by construction
+    // Negative lattice coords stay in range (no UB, no table).
+    double un = value_noise::lattice_unit(-3, -1, -4);
+    EXPECT_TRUE(un >= 0.0 && un <= 1.0);
+    // Golden probe: smoothed noise at a fixed point (implementation golden).
+    double g = value_noise::at(vec3(3.14, 4.2, 7.0));
+    EXPECT_TRUE(g >= 0.0 && g <= 1.0);
+    EXPECT_NEAR(g, 0.339232831391592);
+    EXPECT_NEAR(value_noise::at(vec3(3.14, 4.2, 7.0)), g); // replay bit-exact
+    // Depth-1 turbulence is |noise| (weight normalization exact).
+    double a = value_noise::at(vec3(1.7, 2.3, 0.4));
+    EXPECT_NEAR(value_noise::turb(vec3(1.7, 2.3, 0.4), 1), std::fabs(a));
+    EXPECT_TRUE(value_noise::turb(vec3(1.7, 2.3, 0.4), 7) >= 0.0);
+    EXPECT_TRUE(value_noise::turb(vec3(1.7, 2.3, 0.4), 7) <= 1.0);
+    // Modes: raw/turb/marble all lerp between the two colors.
+    noise_texture raw(2.0, 4, 0, vec3(0, 0, 0), vec3(1, 1, 1));
+    noise_texture tb(2.0, 4, 1, vec3(0, 0, 0), vec3(1, 1, 1));
+    noise_texture mb(2.0, 4, 2, vec3(0, 0, 0), vec3(1, 1, 1));
+    vec3 p(0.5, 1.5, 2.5);
+    for (auto *t : {&raw, &tb, &mb}) {
+        vec3 v = t->value(0, 0, p);
+        EXPECT_TRUE(v.x() >= 0.0 && v.x() <= 1.0);
+        EXPECT_TRUE(fabs(v.x() - v.y()) < 1e-12 && fabs(v.y() - v.z()) < 1e-12);
+    }
+    // Marble self-consistency: sine band over depth-7 turbulence.
+    double t7 = value_noise::turb(p * 2.0, 4);
+    double f = 0.5 * (1.0 + std::sin(2.0 * p.z() + 10.0 * t7));
+    EXPECT_NEAR(mb.value(0, 0, p).x(), f);
+    auto ntex = std::make_shared<noise_texture>(4.0, 7, 2, vec3(0.85, 0.87, 0.9),
+                                                vec3(0.05, 0.15, 0.45));
+    lambertian nl(ntex);
+    float alb[4] = {}, alb2[4] = {}, emit[4] = {}, prm[4] = {};
+    EXPECT_TRUE(nl.export_gpu(alb, alb2, emit, prm));
+    EXPECT_TRUE(prm[0] == 9 && prm[1] == 4.0f && prm[2] == 7.0f && prm[3] == 2.0f);
+    EXPECT_TRUE(fabs(alb[0] - 0.85) < 1e-6); // float export vs double literal
+    EXPECT_TRUE(fabs(alb2[2] - 0.45) < 1e-6);
+    // Scatter path tints by the noise value (not solid passthrough).
+    hit_record rec;
+    rec.point = p;
+    rec.normal = vec3(0, 1, 0);
+    rec.front_face = true;
+    vec3 att;
+    ray sc;
+    rng_seed(41);
+    EXPECT_TRUE(nl.scatter(ray(vec3(0.5, 2.5, 2.5), vec3(0, -1, 0)), rec, att, sc));
+    EXPECT_NEAR(att.x(), ntex->value(0, 0, p).x());
+}
+
 void run_shading_tests() {
     t_materials();
     t_texture();
     t_mipmaps();
+    t_noise();
     t_ggx();
     t_emissive();
     t_ppm();

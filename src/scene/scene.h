@@ -70,7 +70,7 @@ inline std::shared_ptr<hittable> make_posed_box(const vec3 &dims, double angle_d
 // left sphere drifts +0.3y (motion demo); closed => static, hashes frozen.
 inline scene_data build_default(double aspect, double aperture, double sh0 = 0,
                                 double sh1 = 0, double fog_density = 0,
-                                double het_density = 0) {
+                                double het_density = 0, bool marble = false) {
     scene_data scene;
     // Photo ground (spherical UVs); checker fallback keeps binary alive
     // when the asset is missing.
@@ -120,6 +120,14 @@ inline scene_data build_default(double aspect, double aperture, double sh0 = 0,
     else
         scene.objs.push_back(std::make_shared<sphere>(vec3(-1, 0, -1), 0.5, left_mat));
     scene.objs.push_back(std::make_shared<sphere>(vec3(1, 0, -1), 0.5, right_mat));
+    if (marble) {
+        // Opt-in marble showcase (defaults stay frozen): blue-veined sphere
+        // front-left, fBm turbulence under sine banding.
+        auto marble_tex = std::make_shared<noise_texture>(
+            4.0, 7, 2, vec3(0.85, 0.87, 0.9), vec3(0.05, 0.15, 0.45));
+        scene.objs.push_back(std::make_shared<sphere>(
+            vec3(-2.2, 0.5, 0.5), 0.5, std::make_shared<lambertian>(marble_tex)));
+    }
     auto light = std::make_shared<quad>(vec3(-1, 1.9, -2), vec3(2, 0, 0),
                                         vec3(0, 0, 2), light_mat);
     scene.objs.push_back(light);
@@ -190,8 +198,8 @@ inline scene_data build_cornell(double aspect, double aperture) {
 
 inline scene_data build_scene(const std::string &name, double aspect, double aperture,
                                double sh0 = 0, double sh1 = 0, double fog = 0,
-                               double het = 0) {
+                               double het = 0, bool marble = false) {
     if (name == "cornell")
         return build_cornell(aspect, aperture);
-    return build_default(aspect, aperture, sh0, sh1, fog, het);
+    return build_default(aspect, aperture, sh0, sh1, fog, het, marble);
 }

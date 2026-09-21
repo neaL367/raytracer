@@ -16,12 +16,13 @@ ctest --test-dir build -C Release
 build\Release\raytracer.exe [--samples 16] [--threads N] [--tile 8]
   [--split sah|median] [--exposure 1] [--denoise] [--scene default|cornell]
   [--shutter T0 T1] [--fog D] [--aperture A] [--width W] [--height H]
-  [--seed 42] [--hdr float.pfm] [--bench]
+  [--seed 42] [--hdr float.pfm] [--bench] [--noise]
 ```
 
 Renders `out/image.ppm` (400x225, 16spp stratified default,
 `--samples 1` reproduces single-sample look). `--hdr` dumps linear
 pre-exposure float (PFM) for post-workflows alongside the PPM.
+`--noise` adds an opt-in marble showcase sphere (defaults stay frozen).
 
 ```bat
 build\Release\rt_gpu.exe [path.spv] [out.ppm] [--spp N] [--seed S]
@@ -43,7 +44,7 @@ SDL3 preview: pixel inspector, diff heatmap (`D`), watcher reload (`R`).
 ## Layout
 
 ```text
-src/core/      vec3, ray, RNG, sampler, ONB, AABB, textures (+mipmaps),
+src/core/      vec3, ray, RNG, sampler, ONB, AABB, textures (+mipmaps, noise),
                OBJ/MTL loader
 src/camera/    pinhole + thin-lens defocus + shutter timing
 src/geometry/  sphere/triangle/quad, hittable list, constant-density fog
@@ -95,4 +96,5 @@ M30 done: GPU bilateral denoise post-pass (`rt_gpu --denoise`).
 M31 done: heterogeneous volumes with delta tracking (two GPU volume bugs fixed).
 M32 done: CPU QBVH-4 collapse with SSE2 slabs, bit-exact traversal.
 M33 done: instance module (translate + rotate_y + posed boxes), rotated Cornell blocks, GPU bake parity.
+M34 done: Perlin value-noise + fBm + turbulence + marble textures, opt-in `--noise` demo, type-9 GPU path.
 Next: `.scratch/roadmap.md` backlog (Linux/macOS port).

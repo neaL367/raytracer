@@ -30,6 +30,7 @@ int main(int argc, char **argv) {
     std::string hdr_path; // empty = no float dump
     bool do_denoise = false;
     double shutter0 = 0, shutter1 = 0, fog_density = 0, het_density = 0;
+    bool marble_demo = false;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--spp" && i + 1 < argc)
@@ -45,6 +46,8 @@ int main(int argc, char **argv) {
             fog_density = std::max(0.0, std::atof(argv[++i]));
         else if (a == "--het" && i + 1 < argc)
             het_density = std::max(0.0, std::atof(argv[++i]));
+        else if (a == "--noise")
+            marble_demo = true;
         else if (a == "--width" && i + 1 < argc)
             W = std::max(8, std::atoi(argv[++i]));
         else if (a == "--height" && i + 1 < argc)
@@ -66,7 +69,7 @@ int main(int argc, char **argv) {
     // same scene to typed arrays + BVH nodes instead of hardcoded data.
     scene_data sdata =
         build_scene(scene_name, (double)W / (double)H, 0.0, shutter0, shutter1, fog_density,
-                    het_density);
+                    het_density, marble_demo);
     flat_scene flat;
     if (!flatten_scene(sdata, flat)) {
         std::cerr << "scene has non-exportable shapes\n";

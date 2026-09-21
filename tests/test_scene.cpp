@@ -410,6 +410,22 @@ static void t_flatten() {
     EXPECT_TRUE(fabs(fh.gs.spheres[0].alb2[0] - 5.0f) < 1e-6);
     EXPECT_TRUE(fabs(fh.gs.spheres[0].alb2[1] - 4.0f) < 1e-6);
     EXPECT_TRUE(fabs(fh.gs.spheres[0].alb2[2] - 6.0f) < 1e-6);
+    // Noise texture exports as type-9 slot (freq, depth, mode).
+    auto ntex = std::make_shared<noise_texture>(4.0, 7, 2, vec3(0.85, 0.87, 0.9),
+                                                vec3(0.05, 0.15, 0.45));
+    scene_data noisy;
+    noisy.objs.push_back(
+        std::make_shared<sphere>(vec3(0, 0, -1), 0.5, std::make_shared<lambertian>(ntex)));
+    flat_scene fn;
+    EXPECT_TRUE(flatten_scene(noisy, fn));
+    EXPECT_TRUE(fn.gs.spheres[0].prm[0] == 9);
+    EXPECT_TRUE(fabs(fn.gs.spheres[0].prm[1] - 4.0f) < 1e-6);
+    EXPECT_TRUE(fabs(fn.gs.spheres[0].prm[3] - 2.0f) < 1e-6);
+    EXPECT_TRUE(fabs(fn.gs.spheres[0].alb[0] - 0.85f) < 1e-6);
+    // Opt-in marble sphere: off by default (frozen), one extra obj when on.
+    scene_data d0 = build_default(16.0 / 9.0, 0.0);
+    scene_data d1 = build_default(16.0 / 9.0, 0.0, 0, 0, 0, 0, true);
+    EXPECT_TRUE((int)d1.objs.size() == (int)d0.objs.size() + 1);
     auto mm = std::make_shared<metal>(vec3(0.8, 0.8, 0.8), 0.3);
     float alb[4] = {}, alb2[4] = {}, emit[4] = {}, prm[4] = {};
     EXPECT_TRUE(mm->export_gpu(alb, alb2, emit, prm));

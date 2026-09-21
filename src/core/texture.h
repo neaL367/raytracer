@@ -1,4 +1,5 @@
 #pragma once
+#include "noise.h"
 #include "vec3.h"
 #include <cmath>
 #include <memory>
@@ -159,4 +160,34 @@ private:
     double world_span = 8.0; // world units one full texture spans
     std::vector<vec3> pixels;
     std::vector<mip_level> chain;
+};
+
+// Procedural marble family (NTW Ch.5 flavor): raw smoothed noise, fBm
+// turbulence, or sine-banded marble over turbulence. World-pos like checker,
+// so any shape maps without UVs. Mode 0 = raw, 1 = turb, 2 = marble.
+class noise_texture : public texture {
+public:
+    noise_texture(double freq, int depth, int mode, const vec3 &c0, const vec3 &c1)
+        : scale(freq), octaves(depth < 1 ? 1 : (depth > 8 ? 8 : depth)),
+          kind(mode < 0 ? 0 : (mode > 2 ? 2 : mode)), col0(c0), col1(c1) {}
+    vec3 value(double, double, const vec3 &p) const override {
+        vec3 q = p * scale;
+        double f = value_noise::at(q);
+        if (kind == 1)
+            f = value_noise::turb(q, octaves);
+        else if (kind == 2)
+            f = 0.5 * (1.0 + std::sin(scale * p.z() + 10.0 * value_noise::turb(q, octaves)));
+        return col0 * (1.0 - f) + col1 * f;
+    }
+    // GPU export accessors (type-9 params, not code).
+    double freq() const { return scale; }
+    int depth() const { return octaves; }
+    int mode() const { return kind; }
+    const vec3 &color0() const { return col0; }
+    const vec3 &color1() const { return col1; }
+
+private:
+    double scale;
+    int octaves, kind;
+    vec3 col0, col1;
 };

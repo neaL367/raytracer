@@ -91,6 +91,21 @@ public:
             prm[2] = prm[3] = 0;
             return true;
         }
+        // Procedural marble family -> type 9 (freq, depth, mode in prm).
+        if (auto n = dynamic_cast<const noise_texture *>(tex.get())) {
+            alb[0] = (float)n->color0().x();
+            alb[1] = (float)n->color0().y();
+            alb[2] = (float)n->color0().z();
+            alb2[0] = (float)n->color1().x();
+            alb2[1] = (float)n->color1().y();
+            alb2[2] = (float)n->color1().z();
+            emit[0] = emit[1] = emit[2] = 0;
+            prm[0] = 9;
+            prm[1] = (float)n->freq();
+            prm[2] = (float)n->depth();
+            prm[3] = (float)n->mode();
+            return true;
+        }
         return false;
     }
 

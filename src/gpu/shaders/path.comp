@@ -152,6 +152,49 @@ vec3 checker_col(vec3 p, vec3 even, vec3 odd, float scale) {
     int s = int(floor(scale * p.x)) + int(floor(scale * p.y)) + int(floor(scale * p.z));
     return (s % 2 == 0) ? even : odd;
 }
+// Table-free value noise mirroring CPU value_noise (uint32 wrap matches).
+uint nlattice(ivec3 c) {
+    uint h = uint(c.x) * 374761393u + uint(c.y) * 668265263u + uint(c.z) * 1440662683u;
+    h = (h ^ (h >> 13u)) * 1274126177u;
+    return h ^ (h >> 16u);
+}
+float nunit(ivec3 c) {
+    return float(nlattice(c) & 0xffffu) / 65535.0;
+}
+float vnoise(vec3 p) {
+    ivec3 b = ivec3(floor(p));
+    vec3 f = fract(p);
+    vec3 u = f * f * (3.0 - 2.0 * f);
+    float c000 = nunit(b), c100 = nunit(b + ivec3(1, 0, 0));
+    float c010 = nunit(b + ivec3(0, 1, 0)), c110 = nunit(b + ivec3(1, 1, 0));
+    float c001 = nunit(b + ivec3(0, 0, 1)), c101 = nunit(b + ivec3(1, 0, 1));
+    float c011 = nunit(b + ivec3(0, 1, 1)), c111 = nunit(b + ivec3(1, 1, 1));
+    float x00 = mix(c000, c100, u.x), x10 = mix(c010, c110, u.x);
+    float x01 = mix(c001, c101, u.x), x11 = mix(c011, c111, u.x);
+    return mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z);
+}
+float vturb(vec3 p, int depth) {
+    float sum = 0.0, weight = 0.0, amp = 1.0;
+    for (int i = 0; i < 8; ++i) {
+        if (i >= depth)
+            break;
+        sum += amp * abs(vnoise(p));
+        weight += amp;
+        amp *= 0.5;
+        p *= 2.0;
+    }
+    return weight > 0.0 ? sum / weight : 0.0;
+}
+// Mode 0 = raw, 1 = turbulence, 2 = marble. Matches CPU noise_texture.
+vec3 noise_col(vec3 p, vec3 c0, vec3 c1, float freq, int depth, int mode) {
+    vec3 q = p * freq;
+    float f = vnoise(q);
+    if (mode == 1)
+        f = vturb(q, depth);
+    else if (mode == 2)
+        f = 0.5 * (1.0 + sin(freq * p.z + 10.0 * vturb(q, depth)));
+    return c0 * (1.0 - f) + c1 * f;
+}
 
 // Uniform area-light sample mirroring CPU light_point/light_area.
 // Consumes exactly 2 RNG draws per shape like the CPU.
@@ -302,18 +345,22 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase) {
         vec3 hitp0 = o + d * t;
         // Type 4 = checker diffuse: world-pos parity like CPU texture.
         // Type 5 = image diffuse: UV sample like CPU image_texture.
+        // Type 9 = procedural noise: marble family like CPU noise_texture.
         vec3 base_alb = alb.xyz;
         if (mtype == 4)
             base_alb = checker_col(hitp0, alb.xyz, alb2.xyz, params.y);
         else if (mtype == 5) {
             int img_idx = int(params.y + 0.5);
             base_alb = image_sample(huv, img_idx, t);
+        } else if (mtype == 9) {
+            base_alb = noise_col(hitp0, alb.xyz, alb2.xyz, params.y,
+                                 int(params.z + 0.5), int(params.w + 0.5));
         }
         vec3 attenuation;
         vec3 sd;
         bool ok = true;
         bool diffuse = false;
-        if (mtype == 0 || mtype == 4 || mtype == 5) {
+        if (mtype == 0 || mtype == 4 || mtype == 5 || mtype == 9) {
             vec3 u, v, w;
             wonb(n, u, v, w);
             vec3 cd = wcosine_dir();
