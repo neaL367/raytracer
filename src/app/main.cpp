@@ -102,6 +102,17 @@ int main(int argc, char **argv) {
         if (!spp_set)
             spp = 500;
     }
+    // "book2" (Ray Tracing: The Next Week final) defaults: 800x800 square, 500 spp.
+    bool is_square_scene = (scene_name == "cornell" || scene_name == "book2" ||
+                            scene_name == "nextweek" || scene_name == "boxes" ||
+                            scene_name == "final2");
+    if (scene_name == "book2" || scene_name == "nextweek" || scene_name == "boxes" ||
+        scene_name == "final2") {
+        if (!width_set)
+            W = 800;
+        if (!spp_set)
+            spp = 500;
+    }
     // Legacy M2 stream needs one global RNG in pixel order: single thread.
     bool legacy = (spp == 1);
     if (legacy && num_threads != 1) {
@@ -109,9 +120,9 @@ int main(int argc, char **argv) {
         num_threads = 1;
     }
 
-    // Square-ish scenes (cornell) pass --height explicitly; default 16:9.
+    // Square-ish scenes (cornell, book2) pass --height explicitly; default 16:9.
     if (H <= 0)
-        H = static_cast<int>(W / (16.0 / 9.0));
+        H = is_square_scene ? W : static_cast<int>(W / (16.0 / 9.0));
     const int max_depth = 50; // RR handles termination; depth is backstop
     const unsigned base_seed = seed;
     mip_render_h() = H; // LOD seam: texture minification follows output height
@@ -150,7 +161,7 @@ int main(int argc, char **argv) {
             double u = double(i) / (W - 1);
             double v = double(j) / (H - 1);
             ray primary = cam.get_ray(u, v);
-            acc = tracer.Li(primary, world, lights, max_depth, scene.env_light);
+            acc = tracer.Li(primary, world, lights, max_depth, scene.env_light, scene.black_bg);
             if (want_guides) {
                 vec3 a, n;
                 bool hit = false;
@@ -173,7 +184,7 @@ int main(int argc, char **argv) {
                 double u = (i + ox) / W;
                 double v = (j + oy) / H;
                 ray primary = cam.get_ray(u, v);
-                acc += tracer.Li(primary, world, lights, max_depth, scene.env_light);
+                acc += tracer.Li(primary, world, lights, max_depth, scene.env_light, scene.black_bg);
                 if (want_guides) {
                     vec3 a, n;
                     bool hit = false;
@@ -201,7 +212,7 @@ int main(int argc, char **argv) {
                 double u = (i + ox) / W;
                 double v = (j + oy) / H;
                 ray primary = cam.get_ray(u, v);
-                acc += tracer.Li(primary, world, lights, max_depth, scene.env_light);
+                acc += tracer.Li(primary, world, lights, max_depth, scene.env_light, scene.black_bg);
                 // Guides appended after beauty: deterministic order, and
                 // AOV uses no RNG so the beauty stream never shifts.
                 if (want_guides) {

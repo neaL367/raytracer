@@ -7,6 +7,7 @@
 // changes (rides the scatter interface; NEE correctly skips: not diffuse).
 #include "hittable.h"
 #include "../core/random.h"
+#include "../material/material.h"
 
 #include <cmath>
 #include <memory>
@@ -16,6 +17,9 @@ public:
     constant_medium(std::shared_ptr<hittable> boundary, double density,
                     std::shared_ptr<material> phase)
         : border(boundary), neg_inv_density(-1.0 / density), mat(phase) {}
+    constant_medium(std::shared_ptr<hittable> boundary, double density, const vec3 &c)
+        : border(boundary), neg_inv_density(-1.0 / density),
+          mat(std::make_shared<isotropic>(c)) {}
 
     bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const override {
         hit_record b0, b1;

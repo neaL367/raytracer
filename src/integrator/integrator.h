@@ -37,7 +37,7 @@ class integrator {
 public:
     vec3 Li(const ray &r, const hittable &world,
             const std::vector<light> &lights, int max_depth,
-            bool use_env = false) const {
+            bool use_env = false, bool black_bg = false) const {
         count_ray(); // primary
         vec3 throughput(1, 1, 1);
         vec3 L(0, 0, 0);
@@ -50,6 +50,8 @@ public:
         for (int bounce = 0; bounce < max_depth; ++bounce) {
             hit_record rec;
             if (!world.hit(cur, 0.001, 1e30, rec)) {
+                if (black_bg)
+                    break;
                 // Miss: legacy sky, or the sun+sky environment. Bounced
                 // misses MIS-weight against the env strategy (primary misses
                 // keep full count: specular path, same as legacy).

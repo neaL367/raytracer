@@ -34,6 +34,10 @@ public:
             return;
         median_split(objs, start, end, bounds, use_sah);
     }
+    explicit bvh_node(const hittable_list &list, bool use_sah = true) {
+        auto objs = list.children();
+        *this = bvh_node(objs, 0, objs.size(), use_sah);
+    }
 
     bool is_leaf() const { return !prims.empty(); }
     // GPU flatten accessors (read-only view of the built tree).

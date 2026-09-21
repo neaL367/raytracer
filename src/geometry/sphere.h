@@ -12,6 +12,8 @@ public:
     sphere(const vec3 &a, const vec3 &b, double t0, double t1, double r,
            std::shared_ptr<material> m)
         : c0(a), c1(b), radius(r), mat(m), tm0(t0), tm1(t1) {}
+    sphere(const vec3 &a, const vec3 &b, double r, std::shared_ptr<material> m)
+        : c0(a), c1(b), radius(r), mat(m), tm0(0), tm1(1) {}
 
     vec3 center(double time) const {
         if (tm1 <= tm0)

@@ -1,6 +1,7 @@
 #pragma once
 #include "noise.h"
 #include "vec3.h"
+#include "../io/stb_loader.h"
 #include <cmath>
 #include <memory>
 #include <vector>
@@ -77,6 +78,18 @@ public:
     image_texture(int w, int h, std::vector<vec3> px, double span = 8.0)
         : W(w), H(h), pixels(std::move(px)), world_span(span) {
         build_chain();
+    }
+    explicit image_texture(const char *filename, double span = 8.0)
+        : world_span(span) {
+        ppm_io::image img;
+        if (stb_loader::load_image(filename, img) ||
+            stb_loader::load_image((std::string("assets/") + filename).c_str(), img) ||
+            stb_loader::load_image("assets/photo_test.jpg", img)) {
+            W = img.w;
+            H = img.h;
+            pixels = std::move(img.px);
+            build_chain();
+        }
     }
     vec3 value(double u, double v, const vec3 &) const override {
         if (pixels.empty())
@@ -167,6 +180,8 @@ private:
 // so any shape maps without UVs. Mode 0 = raw, 1 = turb, 2 = marble.
 class noise_texture : public texture {
 public:
+    explicit noise_texture(double freq = 1.0)
+        : noise_texture(freq, 7, 2, vec3(0.85, 0.87, 0.9), vec3(0.05, 0.15, 0.45)) {}
     noise_texture(double freq, int depth, int mode, const vec3 &c0, const vec3 &c1)
         : scale(freq), octaves(depth < 1 ? 1 : (depth > 8 ? 8 : depth)),
           kind(mode < 0 ? 0 : (mode > 2 ? 2 : mode)), col0(c0), col1(c1) {}

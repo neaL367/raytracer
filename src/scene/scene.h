@@ -2,6 +2,7 @@
 // Scene builders: default NEE demo + classic Cornell box.
 // main() only wires (BVH + render); all placement lives here.
 // Quads double-sided, so wall winding never matters.
+#include "../accel/bvh.h"
 #include "../camera/camera.h"
 #include "../core/obj_loader.h"
 #include "../core/texture.h"
@@ -25,6 +26,7 @@ struct scene_data {
     std::vector<light> lights; // NEE-sampled emitters (any shape)
     camera cam;
     bool env_light = false; // analytic sun+sky environment (opt-in --env)
+    bool black_bg = false;  // black background for enclosed/dark scenes (book2)
 };
 
 // Axis box from 6 quads, returned as a list so callers can instance it
@@ -44,8 +46,14 @@ inline std::shared_ptr<hittable_list> make_box_list(const vec3 &lo, const vec3 &
     box->add(std::make_shared<quad>(vec3(lo.x(), lo.y(), hi.z()), vec3(dx, 0, 0),
                                     vec3(0, dy, 0), mat)); // z=hi
     box->add(std::make_shared<quad>(vec3(lo.x(), lo.y(), lo.z()), vec3(dx, 0, 0),
-                                    vec3(0, dy, 0), mat)); // z=lo
+                                    vec3(0, 0, dz), mat)); // z=lo
     return box;
+}
+
+// Box helper function returning hittable_list of 6 quads (Peter Shirley signature).
+inline std::shared_ptr<hittable_list> box(const vec3 &lo, const vec3 &hi,
+                                          std::shared_ptr<material> mat) {
+    return make_box_list(lo, hi, mat);
 }
 
 // Axis box from 6 quads. min/max corners, one material.
@@ -258,6 +266,86 @@ inline scene_data build_weekend(double aspect, double aperture, double sh0 = 0,
     return scene;
 }
 
+// Classic "Ray Tracing: The Next Week" final scene: 400 ground boxes,
+// ceiling area light, moving sphere, glass/metal spheres, subsurface and
+// global fog, earth texture, procedural marble, and a rotated/translated
+// cluster of 1000 spheres.
+inline scene_data build_book2(double aspect, double aperture, double sh0 = 0,
+                              double sh1 = 0, bool env = false) {
+    scene_data scene;
+    hittable_list boxes1;
+    auto ground = std::make_shared<lambertian>(color(0.48, 0.83, 0.53));
+
+    int boxes_per_side = 20;
+    for (int i = 0; i < boxes_per_side; i++) {
+        for (int j = 0; j < boxes_per_side; j++) {
+            auto w = 100.0;
+            auto x0 = -1000.0 + i * w;
+            auto z0 = -1000.0 + j * w;
+            auto y0 = 0.0;
+            auto x1 = x0 + w;
+            auto y1 = random_double(1, 101);
+            auto z1 = z0 + w;
+
+            boxes1.add(box(point3(x0, y0, z0), point3(x1, y1, z1), ground));
+        }
+    }
+
+    scene.objs.push_back(std::make_shared<bvh_node>(boxes1));
+
+    auto light = std::make_shared<diffuse_light>(color(7, 7, 7));
+    auto light_quad = std::make_shared<quad>(point3(123, 554, 147), vec3(300, 0, 0),
+                                            vec3(0, 0, 265), light);
+    scene.objs.push_back(light_quad);
+    scene.lights.push_back(light_quad);
+
+    auto center1 = point3(400, 400, 200);
+    auto center2 = center1 + vec3(30, 0, 0);
+    auto sphere_material = std::make_shared<lambertian>(color(0.7, 0.3, 0.1));
+    scene.objs.push_back(std::make_shared<sphere>(center1, center2, 50, sphere_material));
+
+    scene.objs.push_back(
+        std::make_shared<sphere>(point3(260, 150, 45), 50, std::make_shared<dielectric>(1.5)));
+    scene.objs.push_back(std::make_shared<sphere>(
+        point3(0, 150, 145), 50, std::make_shared<metal>(color(0.8, 0.8, 0.9), 1.0)));
+
+    auto boundary =
+        std::make_shared<sphere>(point3(360, 150, 145), 70, std::make_shared<dielectric>(1.5));
+    scene.objs.push_back(boundary);
+    scene.objs.push_back(std::make_shared<constant_medium>(boundary, 0.2, color(0.2, 0.4, 0.9)));
+    boundary = std::make_shared<sphere>(point3(0, 0, 0), 5000, std::make_shared<dielectric>(1.5));
+    scene.objs.push_back(std::make_shared<constant_medium>(boundary, .0001, color(1, 1, 1)));
+
+    auto emat = std::make_shared<lambertian>(std::make_shared<image_texture>("earthmap.jpg"));
+    scene.objs.push_back(std::make_shared<sphere>(point3(400, 200, 400), 100, emat));
+    auto pertext = std::make_shared<noise_texture>(0.2);
+    scene.objs.push_back(
+        std::make_shared<sphere>(point3(220, 280, 300), 80, std::make_shared<lambertian>(pertext)));
+
+    hittable_list boxes2;
+    auto white = std::make_shared<lambertian>(color(.73, .73, .73));
+    int ns = 1000;
+    for (int j = 0; j < ns; j++) {
+        boxes2.add(std::make_shared<sphere>(point3::random(0, 165), 10, white));
+    }
+
+    scene.objs.push_back(std::make_shared<translate>(
+        std::make_shared<rotate_y>(std::make_shared<bvh_node>(boxes2), 15),
+        vec3(-100, 270, 395)));
+
+    point3 lookfrom(478, 278, -600);
+    point3 lookat(278, 278, 0);
+    vec3 vup(0, 1, 0);
+    double vfov = 40.0;
+    double dist_to_focus = 10.0;
+
+    scene.cam = camera(lookfrom, lookat, vup, vfov, aspect, aperture, dist_to_focus);
+    scene.cam.set_shutter(sh0, sh1);
+    scene.env_light = env;
+    scene.black_bg = !env; // dark room unless --env explicitly requested
+    return scene;
+}
+
 inline scene_data build_scene(const std::string &name, double aspect, double aperture,
                                 double sh0 = 0, double sh1 = 0, double fog = 0,
                                 double het = 0, bool marble = false, bool env = false) {
@@ -265,5 +353,7 @@ inline scene_data build_scene(const std::string &name, double aspect, double ape
         return build_cornell(aspect, aperture, env);
     if (name == "weekend" || name == "final" || name == "spheres" || name == "book1")
         return build_weekend(aspect, aperture, sh0, sh1, env);
+    if (name == "book2" || name == "nextweek" || name == "boxes" || name == "final2")
+        return build_book2(aspect, aperture, sh0, sh1, env);
     return build_default(aspect, aperture, sh0, sh1, fog, het, marble, env);
 }
