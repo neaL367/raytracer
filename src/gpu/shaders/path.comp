@@ -331,23 +331,8 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
         bool solid =
             trace_solid(o, d, rtime, 1e30, t, n, alb, alb2, emit, params, light_idx,
                         light_ty, huv);
-        if (!solid) {
-            if (!has_fog) {
-                // Miss: legacy sky, or sun+sky env. Bounced misses MIS-weight
-                // against the env strategy; primary misses count full.
-                vec3 miss_L = pc.nenv > 0 ? env_radiance(d) : env_sky(d);
-                if (pc.nenv > 0 && !specular) {
-                    float w = power_weight(pdf_b_last, 1.0 / (4.0 * 3.14159265));
-                    L += throughput * miss_L * w;
-                } else {
-                    L += throughput * miss_L;
-                }
-                break;
-            }
-            // Solid miss inside smoke: the event still scatters (CPU finds
-            // the medium with no surface). Fall through with no solid.
+        if (!solid)
             t = 1e30;
-        }
         if (has_fog && fog_t < t) {
             // Volume event wins: isotropic continue, specular-style MIS.
             // wrand_in_sphere never returns 0 (unit fallback), so normalize
@@ -369,6 +354,19 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                 throughput /= q;
             }
             continue;
+        }
+        if (!solid) {
+            // Miss with no fog event: sky/env. Trace outs are stale here
+            // (solid miss), so this branch must come before any use of
+            // t/n/alb/emit/params below.
+            vec3 miss_L = pc.nenv > 0 ? env_radiance(d) : env_sky(d);
+            if (pc.nenv > 0 && !specular) {
+                float w = power_weight(pdf_b_last, 1.0 / (4.0 * 3.14159265));
+                L += throughput * miss_L * w;
+            } else {
+                L += throughput * miss_L;
+            }
+            break;
         }
         int mtype = int(params.x + 0.5);
         vec3 hitp0 = o + d * t;
