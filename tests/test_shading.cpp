@@ -10,6 +10,7 @@
 #include "material/material.h"
 #include "geometry/sphere.h"
 #include "integrator/integrator.h"
+#include "integrator/pdf.h"
 #include "io/ppm_image.h"
 #include "io/stb_loader.h"
 #include "io/compare.h"
@@ -445,11 +446,61 @@ static void t_noise() {
     EXPECT_NEAR(att.x(), ntex->value(0, 0, p).x());
 }
 
+static void t_pdf() {
+    test_current = "pdf";
+    auto lamp = std::make_shared<diffuse_light>(vec3(3, 3, 3));
+    auto quad_lamp =
+        std::make_shared<quad>(vec3(-1, 2, -1), vec3(2, 0, 0), vec3(0, 0, 2), lamp);
+    hittable_list world;
+    world.add(quad_lamp);
+    std::vector<light> lights{light(quad_lamp)};
+    vec3 origin(0, 0, 0), n(0, 1, 0);
+    // Straight up strikes the 2x2 lamp: dist=2, A=4, cos=1 -> pdf 1.
+    EXPECT_NEAR(direction_pdf::nee_value(world, lights, origin, vec3(0, 1, 0), 0.0), 1.0);
+    // Sideways misses everything -> 0. Downward misses -> 0.
+    EXPECT_NEAR(direction_pdf::nee_value(world, lights, origin, vec3(1, 0, 0), 0.0), 0.0);
+    EXPECT_NEAR(direction_pdf::nee_value(world, lights, origin, vec3(0, -1, 0), 0.0),
+                0.0);
+    // Matte (non-emissive) strike reports 0 even dead-on.
+    hittable_list matte_world;
+    matte_world.add(std::make_shared<quad>(vec3(-1, 2, -1), vec3(2, 0, 0), vec3(0, 0, 2),
+                                           std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5))));
+    EXPECT_NEAR(direction_pdf::nee_value(matte_world, lights, origin, vec3(0, 1, 0), 0.0),
+                0.0);
+    // Cosine lobe: normal incidence 1/PI, grazing 0.
+    const double pi = 3.1415926535897932385;
+    EXPECT_NEAR(direction_pdf::cosine_value(vec3(0, 1, 0), n), 1.0 / pi);
+    EXPECT_NEAR(direction_pdf::cosine_value(vec3(1, 0, 0), n), 0.0);
+    // Mixture is the exact 50/50 blend.
+    double c = direction_pdf::cosine_value(vec3(0, 1, 0), n);
+    double l = direction_pdf::nee_value(world, lights, origin, vec3(0, 1, 0), 0.0);
+    EXPECT_NEAR(direction_pdf::mixture_value(world, lights, origin, vec3(0, 1, 0), n, 0.0),
+                0.5 * c + 0.5 * l);
+    // Sampler: unit dirs, self-consistent pdf, deterministic replay.
+    rng_seed(101);
+    double p1 = -1;
+    vec3 d1 = direction_pdf::sample_mixture(world, lights, origin, n, 0.0, p1);
+    EXPECT_TRUE(fabs(d1.length() - 1.0) < 1e-9 && p1 > 0);
+    EXPECT_NEAR(p1, direction_pdf::mixture_value(world, lights, origin, d1, n, 0.0));
+    rng_seed(101);
+    double p2 = -1;
+    vec3 d2 = direction_pdf::sample_mixture(world, lights, origin, n, 0.0, p2);
+    EXPECT_NEAR((d1 - d2).length(), 0.0);
+    EXPECT_NEAR(p1, p2);
+    // Empty lights: pure cosine branch, still positive density upward.
+    std::vector<light> none;
+    rng_seed(102);
+    double p3 = -1;
+    vec3 d3 = direction_pdf::sample_mixture(world, none, origin, n, 0.0, p3);
+    EXPECT_TRUE(p3 > 0 && dot(d3, n) > 0);
+}
+
 void run_shading_tests() {
     t_materials();
     t_texture();
     t_mipmaps();
     t_noise();
+    t_pdf();
     t_ggx();
     t_emissive();
     t_ppm();
