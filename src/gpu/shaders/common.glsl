@@ -289,6 +289,14 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                 vec3 nn;
                 vec2 uv;
                 if (ref.ti.x == 0) {
+                    // Fog slots never shade as surfaces: volume events come
+                    // from fog_event, transmittance from the shadow march.
+                    // (M51: a co-located fog slot processed after a solid in
+                    // the same leaf run overwrote its params, making glass
+                    // shells coincident with smoke invisible. Skip up front.)
+                    if (spheres[ref.ti.y].params.x == 6.0 ||
+                        spheres[ref.ti.y].params.x == 8.0)
+                        continue;
                     if (!hit_sphere(o, d, rtime, 0.001, t, spheres[ref.ti.y], tt, nn, uv))
                         continue;
                     GPUSphere s = spheres[ref.ti.y];
