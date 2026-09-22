@@ -32,6 +32,7 @@ public:
         rec.point = p;
         rec.set_face_normal(r, normal);
         rec.mat = mat;
+        rec.hit_obj = nullptr; // clear medium tag (shared tmp reuse, M48)
         rec.u = alpha; // parametric coords double as UVs
         rec.v = beta;
         // Edge-u orthonormalized (u ⊥ normal by construction: always valid).

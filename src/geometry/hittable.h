@@ -54,6 +54,8 @@ public:
         bool any = false;
         double closest = t_max;
         for (const auto &o : objects) {
+            tmp.hit_obj = nullptr; // stale medium tags must not survive
+                                   // across children sharing tmp (M48)
             if (o->hit(r, t_min, closest, tmp)) {
                 any = true;
                 closest = tmp.t;

@@ -51,6 +51,7 @@ public:
             if (c.leaf) {
                 for (const auto &p : c.prims) {
                     ::count_prim();
+                    tmp.hit_obj = nullptr; // stale medium tags (M48)
                     if (p->hit(r, t_min, closest, tmp)) {
                         closest = tmp.t;
                         rec = tmp;

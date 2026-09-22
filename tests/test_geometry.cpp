@@ -361,6 +361,20 @@ static void t_transmit() {
     EXPECT_NEAR(
         shadow_transmittance(smoky, twomedia, vec3(0, 0, 1), vec3(0, 0, -1), 10.0, 0.0),
         std::exp(-2.0));
+    // Interior solid blocks: opaque ball inside the fog on the shadow path
+    // must give Tr 0 (M48: exit-advance skipped it, leaking Tr>0 whenever
+    // the medium event came first — ~31% per ray here, so loop it).
+    hittable_list blocked;
+    auto foggy3 = std::make_shared<constant_medium>(border, 0.5, phase);
+    blocked.add(foggy3);
+    blocked.add(std::make_shared<sphere>(vec3(0, 0, -1), 0.25, wall_mat));
+    std::vector<std::shared_ptr<hittable>> blockedmedia = {foggy3};
+    int leaks = 0;
+    for (int k = 0; k < 50; ++k)
+        if (shadow_transmittance(blocked, blockedmedia, vec3(0, 0, 1), vec3(0, 0, -1),
+                                 10.0, 0.0) > 0.0)
+            leaks++;
+    EXPECT_TRUE(leaks == 0);
     // Scene-scale chord (r=2.5 ball, chord 5, sigma 0.3): march == analytic.
     auto big = std::make_shared<sphere>(vec3(0, 0, -1), 2.5, phase);
     auto bigfog = std::make_shared<constant_medium>(big, 0.3, phase);

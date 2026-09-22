@@ -362,7 +362,11 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
         if (!solid)
             t = 1e30;
         if (has_fog && fog_t < t) {
-            // Volume event wins: isotropic continue, specular-style MIS.
+            // Volume event wins: isotropic continue mirroring CPU
+            // (integrator.h: isotropic is_diffuse=false, so no NEE fires
+            // here; continuation pdf is 1/4PI, non-specular). Stale
+            // pdf_b_last / specular=true corrupted every downstream MIS
+            // weight until the next diffuse surface (M44/M48 fog gap).
             // wrand_in_sphere never returns 0 (unit fallback), so normalize
             // is safe directly.
             // First-hit AOV mirrors CPU (phase albedo, arbitrary up normal).
@@ -374,7 +378,9 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             o = o + d * fog_t;
             prev = o;
             d = normalize(wrand_in_sphere());
-            specular = true;
+            pdf_b_last = 1.0 / (4.0 * 3.14159265);
+            specular = false;
+            // TEMP M48 A/B: revert to specular=true below for baseline
             if (bounce >= 3) {
                 float q = min(max(max(throughput.x, throughput.y), throughput.z), 0.95);
                 if (q <= 0.0 || wrandf() > q)

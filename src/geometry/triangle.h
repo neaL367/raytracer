@@ -81,6 +81,7 @@ public:
             rec.set_face_normal(r, flat);
         }
         rec.mat = mat;
+        rec.hit_obj = nullptr; // clear medium tag (shared tmp reuse, M48)
         if (has_uv) {
             // Corner-UV blend (image textures consume it directly).
             double w0 = 1 - u - v;

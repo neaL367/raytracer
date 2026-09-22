@@ -45,6 +45,8 @@ public:
         vec3 outward = (rec.point - cen) / radius;
         rec.set_face_normal(r, outward);
         rec.mat = mat;
+        rec.hit_obj = nullptr; // clear medium tag: shared tmp reuse must not
+                               // misclassify solids in the shadow march (M48)
         // Spherical UVs: azimuth -> u, polar -> v. Seam at -x, poles pinch.
         {
             vec3 op = (rec.point - cen) / radius;

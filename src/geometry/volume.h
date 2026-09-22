@@ -232,7 +232,12 @@ inline double shadow_transmittance(const hittable &world,
             dynamic_cast<const heterogeneous_medium *>(tmp.hit_obj);
         if (!cm && !hm)
             return 0.0; // solid blocks
-        tmin = medium_exit(tmp.hit_obj, shadow) + 1e-4; // pass it
+        // Advance past the EVENT, not the exit: world.hit returns the
+        // nearest, so solids before the event were already found, but
+        // exit-advance skipped solids behind it (light leak through
+        // interior solids, M48). Event t strictly exceeds the clamped
+        // entry, so tmin increases and the loop terminates.
+        tmin = tmp.t + 1e-4;
     }
     // Phase 2: every medium over its full range chord.
     double Tr = 1.0;

@@ -67,6 +67,7 @@ public:
             double closest = t_max;
             for (const auto &p : prims) {
                 ::count_prim();
+                tmp.hit_obj = nullptr; // stale medium tags (M48)
                 if (p->hit(r, t_min, closest, tmp)) {
                     any = true;
                     closest = tmp.t;
