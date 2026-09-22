@@ -14,10 +14,10 @@ ctest --test-dir build -C Release
 
 ```bat
 build\Release\raytracer.exe [--samples 16] [--threads N] [--tile 8]
-  [--split sah|median] [--exposure 1] [--denoise] [--scene default|cornell]
-  [--shutter T0 T1] [--fog D] [--aperture A] [--width W] [--height H]
+  [--split sah|median] [--exposure 1] [--denoise] [--scene default|cornell|weekend|book2]
+  [--shutter T0 T1] [--fog D] [--het D] [--aperture A] [--width W] [--height H]
   [--seed 42] [--hdr float.pfm] [--bench] [--noise] [--env]
-  [--sampler stratified|sobol] [--aov]
+  [--sampler stratified|sobol] [--aov] [--list-scenes]
 ```
 
 Renders `out/image.ppm` (400x225, 16spp stratified default,
@@ -27,16 +27,25 @@ pre-exposure float (PFM) for post-workflows alongside the PPM.
 `--env` enables the analytic sun+sky environment with MIS (off = byte-exact legacy sky).
 `--sampler sobol` swaps the pixel set for Cranley-Patterson rotated Sobol-2D (default stratified frozen).
 `--aov` dumps linear `out/aov_{albedo,normal,depth}.pfm` for denoise/ML workflows.
+`--list-scenes` prints the scene registry (default/cornell/weekend/book2
+plus book aliases). weekend/book2 default to 500spp book-style renders.
 
 ```bat
-build\Release\rt_gpu.exe [path.spv] [out.ppm] [--spp N] [--seed S]
-  [--scene NAME] [--shutter T0 T1] [--fog D] [--width W] [--height H]
-  [--hdr float.pfm] [--aperture A] [--exposure X]
+build\Release\rt_gpu.exe [path.spv] [out.ppm] [--spp N] [--chunk C] [--seed S]
+  [--scene NAME] [--shutter T0 T1] [--fog D] [--het D] [--width W] [--height H]
+  [--hdr float.pfm] [--aperture A] [--exposure X] [--denoise] [--joint]
+  [--noise] [--env] [--list-scenes]
 ```
 
 Headless Vulkan compute backend (discrete NVIDIA pick). Statistical CPU
-parity by design (wang-hash vs mt19937 RNGs); fog parity is judged against
-the same-backend different-seed floor, never an absolute threshold.
+parity by design (wang-hash vs mt19937 RNGs); see Parity below.
+
+`--chunk C` splits spp into TDR-safe dispatches (chunk k uses seed+k)
+and averages linear HDR on the host (bit-exact vs the old manual
+averaging). Without it, one big dispatch can hit Windows TDR
+(`vulkan error -4`) on heavy scenes. Rough 1650 Ti limits at 1200px:
+book2 chunk<=6, cornell chunk<=25, default chunk<=50; keep dispatch
+under ~2 s. `--denoise`/`--joint` run once on the averaged beauty.
 
 ```bat
 build\Release\rt_view.exe [image.ppm] [--diff other.ppm] [--scale N] [--stats]
@@ -45,18 +54,43 @@ build\Release\rt_view.exe [image.ppm] [--diff other.ppm] [--scale N] [--stats]
 SDL3 preview: pixel inspector, diff heatmap (`D`), watcher reload (`R`).
 `--stats` prints headless diff numbers (mean/max/over8%).
 
+## Parity
+
+Cross-backend diffs are judged against the same-backend different-seed
+floor, never an absolute threshold. Method notes from the hunt:
+
+- Compare at matched sampler structure: CPU non-square spp is pure
+  random, GPU chunks are stratified grids (CPU-CPU floor 10.4 vs GPU-GPU
+  floor 8.3 on book2/500spp is expected sampler variance, not a bug).
+  Perfect-square spp stratifies on both; `--sampler sobol` is available
+  but changes nothing for cross-backend verdicts.
+- Deterministic probes beat blind review: center-ray first-hit t/mtype,
+  analytic chord/entry/exit oracles, fixed-point NEE transmittance, event
+  rates vs 1-exp(-sL), phase-albedo exactness. All live in `.scratch/`
+  specs (M48-M51); the temp shaders/flags were reverted pre-commit.
+- Current standing (1200px/500spp unless noted): default, cornell,
+  weekend at floor; fog/het matrix at floor (M48 closed the gap);
+  book2 15.2 -> 11.5 vs ~10.4 floor proxy (residual: object-correlated
+  indirect paths, documented in M49-M51).
+
 ## Layout
 
 ```text
-src/core/      vec3, ray, RNG, sampler, ONB, AABB, textures (+mipmaps, noise),
-               OBJ/MTL loader
+src/core/      vec3, ray, RNG, sampler (stratified/Sobol), ONB, AABB, textures
+               (+mipmaps, noise), OBJ/MTL loader
 src/camera/    pinhole + thin-lens defocus + shutter timing
-src/geometry/  sphere/triangle/quad, hittable list, constant-density fog
-src/material/  lambertian/metal/dielectric/isotropic/diffuse_light
-src/integrator/ NEE + MIS path integrator, first-hit AOV guides
+src/geometry/  sphere/triangle/quad, hittable list, constant + hetero volumes,
+               instances (translate/rotate_y)
+src/material/  lambertian/metal/dielectric/isotropic/diffuse_light, GGX
+               (iso + aniso conductors, rough glass), Ns mapping
+src/integrator/ NEE + MIS path integrator (power heuristic, transmittance
+               weighting), first-hit AOV guides
 src/accel/     median + binned-SAH BVH, QBVH-4 collapse (SSE2 slabs), flat QBVH upload twin
-src/scene/     default + cornell builders (shared CPU/GPU construction order)
-src/gpu/       Vulkan compute host, flatten, shaders (grad/normal/path)
+src/scene/     per-scene modules (common/default/cornell/weekend/book2) +
+               registry, shared CPU/GPU construction order
+src/gpu/       Vulkan compute host (chunked submit, HDR average), flatten
+               (instances bake, black_bg), shaders (grad/normal/path/
+               denoise/joint), CPU-mirrored camera
 src/output/    PPM writer, ACES film, PFM float dump
 src/io/        denoise (bilateral + joint), compare/heatmap, PPM + stb images
 src/app/       CPU wiring, tile thread pool, bench counters
@@ -110,8 +144,18 @@ M40 done: GPU `--aperture` thin-lens + `--exposure` film parity (pinhole streams
 M41 done: rotated Sobol-2D pixel sampler (`--sampler sobol`) + linear AOV trio dump (`--aov`).
 M42 done: noise audit (remote value noise kept, marble parity at floor).
 M43 done: Walter rough-glass BTDF for dielectrics.
-M44 done: NEE transmittance weighting in volumes (fog parity gap open, documented).
+M44 done: NEE transmittance weighting in volumes (gap closed in M48).
 M45 done: GPU joint-bilateral denoise with on-device guides.
 M46 done: MTL Ns to GGX roughness mapping.
 M47 done: anisotropic GGX conductors with UV tangents, brushed-metal demo.
-Next: `.scratch/roadmap.md` backlog (port + fog hunt open).
+M48 done: fog parity hunt closed (GPU scatter-continuation + CPU
+shadow-march exit-advance + hit_obj staleness); fog/het matrix at floor.
+M49 done: book2 re-measure (23.4 -> 15.2); sampler-variance analysis;
+residual decomposed, documented.
+M50 done: device probes (fog geometry/sampling/upload exonerated exactly).
+M51 done: book2 residual work (traverse fog-skip for co-located shells +
+shadow bias for fp32 self-skims; 15.2 -> 11.5 vs ~10.4 floor).
+M52 done: GPU `--chunk` in-binary HDR averaging (bit-exact vs manual).
+M53 done: default showcase tune (brushed ball, key 6, studio void,
+vfov 75) + GPU camera mirrored from CPU (hardcoded drift fixed).
+Next: `.scratch/roadmap.md` backlog (port + residual forensics).
