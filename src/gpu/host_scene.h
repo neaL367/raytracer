@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "../core/vec3.h"
+
 struct GPUSphere {
     float c[4], c1[4], tm[4], alb[4], alb2[4], emit[4], prm[4]; // c.w=radius
     // prm=(type,rough,ir,motionflag); tm=(t0,t1,0,0); type 6 = fog volume
@@ -23,8 +25,7 @@ struct GPUCam {
     float lens[4]; // x = thin-lens radius (aperture/2, 0 = pinhole)
 };
 
-struct gpu_scene {
-    GPUCam cam;
+struct gpu_scene {    GPUCam cam;
     std::vector<GPUSphere> spheres;
     std::vector<GPUQuad> quads; // emissive first (NEE indexes leading quads)
     std::vector<GPUTri> tris;
@@ -126,4 +127,27 @@ inline GPUCam build_gpu_camera(int W, int H, const std::string &name,
     if (name == "book2" || name == "nextweek" || name == "boxes" || name == "final2")
         return gpu_book2_cam(W, H, aperture);
     return gpu_default_cam(W, H, aperture);
+}
+
+// Mirror of a CPU camera (origin/lower_left/horiz/vert/lens): any scene or
+// tune matches automatically, no per-scene vfov to keep in sync (M53: the
+// hardcoded default cam stayed vfov-90 after the tune moved CPU to 75).
+// Needs camera/camera.h (included by the caller, not here).
+inline GPUCam gpu_cam_from_cpu(const vec3 &origin, const vec3 &lower_left,
+                               const vec3 &horiz, const vec3 &vert, double lens_radius) {
+    GPUCam cam = {};
+    cam.o[0] = (float)origin.x();
+    cam.o[1] = (float)origin.y();
+    cam.o[2] = (float)origin.z();
+    cam.ll[0] = (float)lower_left.x();
+    cam.ll[1] = (float)lower_left.y();
+    cam.ll[2] = (float)lower_left.z();
+    cam.h[0] = (float)horiz.x();
+    cam.h[1] = (float)horiz.y();
+    cam.h[2] = (float)horiz.z();
+    cam.v[0] = (float)vert.x();
+    cam.v[1] = (float)vert.y();
+    cam.v[2] = (float)vert.z();
+    cam.lens[0] = (float)lens_radius;
+    return cam;
 }

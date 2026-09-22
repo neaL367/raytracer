@@ -380,7 +380,6 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             d = normalize(wrand_in_sphere());
             pdf_b_last = 1.0 / (4.0 * 3.14159265);
             specular = false;
-            // TEMP M48 A/B: revert to specular=true below for baseline
             if (bounce >= 3) {
                 float q = min(max(max(throughput.x, throughput.y), throughput.z), 0.95);
                 if (q <= 0.0 || wrandf() > q)

@@ -51,6 +51,11 @@ public:
 
     vec3 lens_origin() const { return origin; }
     double lens_r() const { return lens_radius; }
+    // GPU mirror accessors (M53: exact viewport copy, no vfov resync).
+    vec3 eye() const { return origin; }
+    vec3 corner() const { return lower_left; }
+    vec3 span_u() const { return horizontal; }
+    vec3 span_v() const { return vertical; }
 
 private:
     vec3 origin, lower_left, horizontal, vertical, u, v, w;

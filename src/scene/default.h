@@ -1,6 +1,6 @@
 #pragma once
-// Default showcase scene: photo ground + photo cube + brushed metal +
-// glass + quad light + warm orb, optional marble/fog/het smoke.
+// Default showcase scene: photo ground + photo cube + brushed aniso metal +
+// glass + strong key + warm orb on a studio void, optional marble/fog/het.
 // main() only wires (BVH + render); all placement lives here.
 #include "common.h"
 
@@ -33,9 +33,11 @@ inline scene_data build_default(double aspect, double aperture, double sh0 = 0,
     else
         std::cerr << "assets/photo2_test.jpg missing: checker cube\n";
     auto cube_mat = std::make_shared<lambertian>(cube_tex);
-    auto left_mat = std::make_shared<metal>(vec3(0.8, 0.8, 0.8), 0.15, 0.5);
+    // Brushed ball: tight-along-u, streaky-along-v anisotropy. Models under
+    // the strong key (M53 tune; was 0.15/0.5, nearly black before).
+    auto left_mat = std::make_shared<metal>(vec3(0.9, 0.9, 0.88), 0.08, 0.35);
     auto right_mat = std::make_shared<dielectric>(1.5);
-    auto light_mat = std::make_shared<diffuse_light>(vec3(4, 4, 4));
+    auto light_mat = std::make_shared<diffuse_light>(vec3(6, 6, 6));
 
     // ---- Objects: ground + mesh + hero spheres ----
     scene.objs.push_back(std::make_shared<sphere>(vec3(0, -100.5, -1), 100, ground_mat));
@@ -75,7 +77,7 @@ inline scene_data build_default(double aspect, double aperture, double sh0 = 0,
     scene.objs.push_back(light);
     scene.lights.push_back(light);
     // Warm orb: second emitter proves multi-shape NEE (sphere sampling).
-    auto orb_mat = std::make_shared<diffuse_light>(vec3(4, 2.2, 1.1));
+    auto orb_mat = std::make_shared<diffuse_light>(vec3(5, 2.8, 1.4));
     auto orb = std::make_shared<sphere>(vec3(2.2, 1.4, -0.6), 0.25, orb_mat);
     scene.objs.push_back(orb);
     scene.lights.push_back(orb);
@@ -98,9 +100,10 @@ inline scene_data build_default(double aspect, double aperture, double sh0 = 0,
         scene.media.push_back(het);
     }
     // ---- Camera + environment ----
-    scene.cam = camera(vec3(0, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0), 90.0, aspect,
+    scene.cam = camera(vec3(0, 0, 0), vec3(0, 0, -1), vec3(0, 1, 0), 75.0, aspect,
                        aperture, 1.0);
     scene.cam.set_shutter(sh0, sh1);
     scene.env_light = env;
+    scene.black_bg = !env; // studio void (M53 tune; was gradient sky)
     return scene;
 }

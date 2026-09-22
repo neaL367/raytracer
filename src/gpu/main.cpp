@@ -96,7 +96,11 @@ int main(int argc, char **argv) {
         return 1;
     }
     gpu_scene &scene = flat.gs;
-    scene.cam = build_gpu_camera(W, H, scene_name, aperture);
+    // Mirror the CPU camera exactly (M53): hardcoded per-scene cams drifted
+    // out of sync with scene tunes (default vfov 90 vs tuned 75).
+    scene.cam = gpu_cam_from_cpu(sdata.cam.eye(), sdata.cam.corner(),
+                                 sdata.cam.span_u(), sdata.cam.span_v(),
+                                 sdata.cam.lens_r());
     // Image table: (offset, w, h, levels) rows over the concatenated blob,
     // each followed by a (spanbits, 0, 0, 0) row for distance LOD.
     std::vector<int> img_table;
