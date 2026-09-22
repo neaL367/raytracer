@@ -29,6 +29,7 @@ int main(int argc, char **argv) {
     std::string shader = SHADER_DIR "/grad.spv";
     std::string out_path = "out/gpu_grad.ppm";
     int spp = 16, seed = 42;
+    int chunk_spp = 0; // --chunk C: spp per dispatch (TDR); 0 = one shot
     std::string scene_name = "default";
     std::string hdr_path; // empty = no float dump
     bool do_denoise = false;
@@ -40,6 +41,8 @@ int main(int argc, char **argv) {
         std::string a = argv[i];
         if (a == "--spp" && i + 1 < argc)
             spp = std::max(1, std::atoi(argv[++i]));
+        else if (a == "--chunk" && i + 1 < argc)
+            chunk_spp = std::max(0, std::atoi(argv[++i]));
         else if (a == "--seed" && i + 1 < argc)
             seed = std::atoi(argv[++i]);
         else if (a == "--scene" && i + 1 < argc)
@@ -160,8 +163,32 @@ int main(int argc, char **argv) {
     push12[10] = (uint32_t)nfog;
     push12[11] = sdata.env_light ? 1u : 0u;
     push12[12] = sdata.black_bg ? 1u : 0u;
+    // Chunked submit (M52): split spp into TDR-safe dispatches, accumulate
+    // linear HDR on the host in fp64 (same order as the old python script:
+    // v[i]/n added per chunk, so chunked output bit-matches manual runs).
+    // Chunk k uses seed+k. Chunk 0/absent == legacy single dispatch.
+    int per = (chunk_spp > 0) ? chunk_spp : spp;
+    int nchunks = (spp + per - 1) / per;
+    std::vector<double> acc((size_t)W * H * 4, 0.0);
     std::vector<float> rgba;
-    double dispatch_ms = gpu_run(gpu, shader, push12, rgba);
+    double dispatch_ms = 0;
+    int done = 0;
+    for (int c = 0; c < nchunks; ++c) {
+        int cspp = std::min(per, spp - done);
+        push12[5] = (uint32_t)cspp;
+        push12[6] = (uint32_t)(seed + c);
+        dispatch_ms += gpu_run(gpu, shader, push12, rgba);
+        // NOTE: divide (not multiply-by-reciprocal) to bit-match the old
+        // python averaging (a/n per chunk, same order).
+        for (size_t k = 0; k < acc.size(); ++k)
+            acc[k] += (double)rgba[k] / (double)nchunks;
+        done += cspp;
+    }
+    // Post-passes consume the averaged beauty (single dispatch feeds its
+    // own output through the same path, unchanged).
+    rgba.resize(acc.size());
+    for (size_t k = 0; k < acc.size(); ++k)
+        rgba[k] = (float)acc[k];
     double denoise_ms = 0;
     if (do_denoise) {
         // Bilateral post-pass on device (linear HDR); needs the denoise
@@ -182,11 +209,23 @@ int main(int argc, char **argv) {
     }
 
     // Image rows top-first -> flip for PPM writer (bottom-first).
+    // Film from the fp64 average directly (not the float round-trip):
+    // matches the old python script bit-exactly. Single dispatch feeds
+    // identical doubles (float->double is exact), so legacy output is
+    // unchanged. Post-passes replace rgba, so film those from rgba.
+    bool post = do_denoise || do_joint;
     std::vector<vec3> fb((size_t)W * H);
     for (int y = 0; y < H; ++y)
         for (int x = 0; x < W; ++x) {
-            const float *t = rgba.data() + ((size_t)y * W + x) * 4;
-            fb[((size_t)H - 1 - y) * W + x] = vec3(t[0], t[1], t[2]);
+            vec3 c;
+            if (post) {
+                const float *t = rgba.data() + ((size_t)y * W + x) * 4;
+                c = vec3(t[0], t[1], t[2]);
+            } else {
+                const double *t = acc.data() + ((size_t)y * W + x) * 4;
+                c = vec3(t[0], t[1], t[2]);
+            }
+            fb[((size_t)H - 1 - y) * W + x] = c;
         }
     gpu_shutdown(gpu);
 
@@ -203,6 +242,8 @@ int main(int argc, char **argv) {
     std::cout << "wrote " << out_path << " spp=" << spp
               << " dispatch=" << dispatch_ms << "ms wall="
               << std::chrono::duration<double>(t1 - t0).count() << "s";
+    if (nchunks > 1)
+        std::cout << " chunks=" << nchunks;
     if (do_denoise)
         std::cout << " denoise=" << denoise_ms << "ms";
     if (do_joint)

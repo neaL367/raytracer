@@ -355,7 +355,7 @@ inline double gpu_run(GpuContext &g, const std::string &spv_path, const uint32_t
     {
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        pc.size = 48;
+        pc.size = 52; // 13 words are pushed (M52: layout must cover nblack)
         VkPipelineLayoutCreateInfo li{};
         li.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         li.setLayoutCount = 1;
