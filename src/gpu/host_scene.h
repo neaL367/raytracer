@@ -47,24 +47,6 @@ inline GPUCam gpu_default_cam(int W, int H, double aperture = 0.0) {
     return cam;
 }
 
-// Cornell (278,278,-800) vfov 40: mirrors CPU cornell camera exactly.
-inline GPUCam gpu_cornell_cam(int W, int H, double aperture = 0.0) {
-    const float aspect = (float)((double)W / (double)H);
-    const float th = 40.0f * 3.14159265f / 180.0f;
-    const float hh = 2.0f * tanf(th * 0.5f) * 800.0f;
-    const float ww = hh * aspect;
-    GPUCam cam = {};
-    cam.o[0] = 278;
-    cam.o[1] = 278;
-    cam.o[2] = -800;
-    cam.ll[0] = 278 + ww * 0.5f;
-    cam.ll[1] = 278 - hh * 0.5f;
-    cam.ll[2] = 0;
-    cam.h[0] = -ww;
-    cam.v[1] = hh;
-    cam.lens[0] = (float)(aperture * 0.5);
-    return cam;
-}
 
 // Generic lookat camera: mirrors CPU camera math in fp32 (viewport scaled
 // by focus_dist once, no second multiply; see camera.h comment).
@@ -104,28 +86,9 @@ inline GPUCam gpu_lookat_cam(float fx, float fy, float fz, float tx, float ty, f
     return cam;
 }
 
-// Weekend final (book1): (13,2,3)->origin vfov 20 focus 10, aperture rule
-// mirrors CPU (explicit --aperture wins, else defocus 0.6 lens).
-inline GPUCam gpu_weekend_cam(int W, int H, double aperture = 0.0) {
-    const double pi = 3.1415926535897932385;
-    double def_ap = 2.0 * 10.0 * std::tan((0.6 / 2.0) * pi / 180.0);
-    double use_ap = (aperture > 0.0) ? aperture : def_ap;
-    return gpu_lookat_cam(13, 2, 3, 0, 0, 0, 20.0f, W, H, use_ap, 10.0);
-}
-
-// Book2 final: (478,278,-600)->(278,278,0) vfov 40 focus 10.
-inline GPUCam gpu_book2_cam(int W, int H, double aperture = 0.0) {
-    return gpu_lookat_cam(478, 278, -600, 278, 278, 0, 40.0f, W, H, aperture, 10.0);
-}
-
 inline GPUCam build_gpu_camera(int W, int H, const std::string &name,
                                double aperture = 0.0) {
-    if (name == "cornell")
-        return gpu_cornell_cam(W, H, aperture);
-    if (name == "weekend" || name == "final" || name == "spheres" || name == "book1")
-        return gpu_weekend_cam(W, H, aperture);
-    if (name == "book2" || name == "nextweek" || name == "boxes" || name == "final2")
-        return gpu_book2_cam(W, H, aperture);
+    (void)name;
     return gpu_default_cam(W, H, aperture);
 }
 

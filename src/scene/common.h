@@ -1,6 +1,6 @@
 #pragma once
 // Shared scene plumbing: data layout, box helpers, posed-box helper.
-// Per-scene builders live in default.h / cornell.h / weekend.h / book2.h;
+// Per-scene builders live in showcase.h / default.h;
 // scene.h re-exports them behind the stable build_scene() dispatcher.
 // Quads double-sided, so wall winding never matters.
 #include "../accel/bvh.h"
@@ -74,11 +74,7 @@ inline void add_box(std::vector<std::shared_ptr<hittable>> &objs, const vec3 &lo
 inline void print_scenes() {
     std::cout << "scenes (name [aliases] default WxH@spp):\n"
               << "  showcase [show demo] 1200x675@512 all engine powers (aniso, glass, SSS, smoke, marble, mesh, multi-light)\n"
-              << "  default           400x225@16  photo ground, cube, metal, glass, quad, orb\n"
-              << "  cornell           256x256@16  555 box, posed blocks, ceiling light\n"
-              << "  weekend [final spheres book1] 1200x675@500  book1 final, checker ground\n"
-              << "  book2 [nextweek boxes final2] 800x800@500  book2 final, dark room\n"
-              << "  sss             400x225@16  milk-glass SSS demo, dark room\n";
+              << "  default           400x225@16  photo ground, cube, metal, glass, quad, orb\n";
 }
 
 // Box by dimensions, rotated about Y then moved: the canonical Cornell pose

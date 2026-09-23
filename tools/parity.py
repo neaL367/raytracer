@@ -181,7 +181,7 @@ def main():
         w = args.width or 64
         h = args.height or 36
     else:
-        scenes = ["default", "cornell", "weekend", "book2", "sss"] if not args.scenes else [s.strip() for s in args.scenes.split(",")]
+        scenes = ["default", "showcase"] if not args.scenes else [s.strip() for s in args.scenes.split(",")]
         modes = [m.strip() for m in args.modes.split(",")]
         depths = [int(d.strip()) for d in args.depths.split(",")]
         rng_modes = [r.strip() for r in args.rng.split(",")]
