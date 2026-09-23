@@ -273,6 +273,7 @@ static void t_emissive() {
     rng_seed(21);
     diffuse_light lamp(vec3(4, 4, 4));
     EXPECT_NEAR(lamp.emitted().x(), 4);
+    EXPECT_TRUE(lamp.is_emissive());
     hit_record rec;
     vec3 att; ray sc;
     EXPECT_TRUE(!lamp.scatter(ray(vec3(0,0,0), vec3(0,0,-1)), rec, att, sc));
@@ -282,6 +283,62 @@ static void t_emissive() {
     vec3 p = q.sample_point();
     EXPECT_TRUE(p.x() >= -1 && p.x() <= 1 && p.y() >= 0 && p.y() <= 2);
     EXPECT_NEAR(p.z(), -3);
+}
+
+static void t_emissive_texture() {
+    test_current = "emissive_texture";
+    // 2x1 photo light: red left texel, green right texel.
+    auto img = std::make_shared<image_texture>(
+        2, 1, std::vector<vec3>{vec3(4, 0, 0), vec3(0, 2, 0)});
+    auto lamp = std::make_shared<diffuse_light>(img);
+    EXPECT_TRUE(lamp->is_emissive());
+    float alb[4]{}, alb2[4]{}, emit[4]{}, prm[4]{};
+    EXPECT_TRUE(!lamp->export_gpu(alb, alb2, emit, prm)); // image path, not flat
+
+    // Direct-hit emission follows the hit UVs, like lambertian albedo.
+    hit_record rec;
+    rec.point = vec3(0, 0, -1);
+    rec.t = 1.0;
+    rec.u = 0.0;
+    rec.v = 1.0;
+    EXPECT_NEAR(lamp->emitted(rec).x(), 4);
+    EXPECT_NEAR(lamp->surface_albedo(rec).x(), 4);
+    rec.u = 1.0;
+    EXPECT_NEAR(lamp->emitted(rec).y(), 2);
+    EXPECT_NEAR(lamp->surface_albedo(rec).y(), 2);
+
+    // NEE sample UVs match the quad hit coordinates, then sample the image.
+    auto eq = std::make_shared<quad>(vec3(-1, 0, -3), vec3(2, 0, 0),
+                                     vec3(0, 2, 0), lamp);
+    light lq(eq);
+    double u = -1, v = -1;
+    EXPECT_TRUE(light_uv(lq, 0.25, 0.5, 0.0, u, v));
+    EXPECT_NEAR(u, 0.25);
+    EXPECT_NEAR(v, 0.5);
+    vec3 lp = light_point(lq, 0.25, 0.5, 0.0);
+    vec3 le = light_emission(lq, lp, u, v, 2.0);
+    EXPECT_NEAR(le.x(), 3); // bilinear 0.75 red + 0.25 green
+    EXPECT_NEAR(le.y(), 0.5);
+
+    // Sphere NEE UVs match spherical hit UVs (north-pole sample here).
+    auto es = std::make_shared<sphere>(vec3(0, 0, -1), 0.5, lamp);
+    light ls(es);
+    EXPECT_TRUE(light_uv(ls, 0.0, 0.0, 0.0, u, v));
+    EXPECT_NEAR(u, 0.25);
+    EXPECT_NEAR(v, 0.5);
+
+    // Flatten registers the photo as an EMIT image light for the GPU.
+    scene_data sdata;
+    sdata.objs.push_back(eq);
+    sdata.lights.push_back(lq);
+    flat_scene flat;
+    EXPECT_TRUE(flatten_scene(sdata, flat));
+    EXPECT_TRUE(!flat.gs.quads.empty());
+    EXPECT_TRUE(flat.gs.quads.back().prm[0] == static_cast<float>(MatType::EMIT));
+    EXPECT_TRUE(flat.gs.quads.back().prm[1] == 1.0f); // image 0 + 1
+    EXPECT_TRUE(!flat.light_table.empty());
+    EXPECT_TRUE(flat.light_table.back().first == 0);
+    EXPECT_TRUE(flat.light_table.back().second == 0);
 }
 
 static void t_ppm() {
@@ -818,6 +875,7 @@ void run_shading_tests() {
     t_aniso();
     t_glass_rough();
     t_emissive();
+    t_emissive_texture();
     t_ppm();
     t_pfm();
     t_film();

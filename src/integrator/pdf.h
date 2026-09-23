@@ -52,7 +52,7 @@ inline double nee_value(const hittable &world, const std::vector<light> &lights,
     hit_record rec;
     if (!world.hit(ray(origin, dir, time), 0.001, 1e30, rec))
         return 0.0;
-    if (rec.mat->emitted().length_squared() <= 0)
+    if (!rec.mat->is_emissive())
         return 0.0;
     return nee_value_for_hit(lights, rec.mat, rec.point, origin, time);
 }

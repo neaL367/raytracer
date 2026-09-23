@@ -496,7 +496,8 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
             tang = st;
             has_tang = true;
             bool fogslot = params.x > 5.5 && params.x < 6.5;
-            bool lit = !fogslot && (emit.x + emit.y + emit.z > 0.0);
+            bool emit_image = params.x == float(MAT_EMIT) && params.y > 0.5;
+            bool lit = !fogslot && (emit.x + emit.y + emit.z > 0.0 || emit_image);
             light_idx = lit ? solid_idx : -1;
             light_ty = lit ? 1 : -1;
         } else if (solid_ty == 1) {
@@ -508,8 +509,10 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
             vec3 qg = normalize(cross(q.u.xyz, q.v.xyz));
             tang = normalize(q.u.xyz - qg * dot(q.u.xyz, qg));
             has_tang = true;
-            light_idx = (emit.x + emit.y + emit.z > 0.0) ? solid_idx : -1;
-            light_ty = (emit.x + emit.y + emit.z > 0.0) ? 0 : -1;
+            bool q_emit_image = params.x == float(MAT_EMIT) && params.y > 0.5;
+            bool q_lit = emit.x + emit.y + emit.z > 0.0 || q_emit_image;
+            light_idx = q_lit ? solid_idx : -1;
+            light_ty = q_lit ? 0 : -1;
         } else {
             GPUTri tr = tris[solid_idx];
             alb = tr.alb;
@@ -548,7 +551,8 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                     has_tang = true;
                 }
             }
-            bool trlit = emit.x + emit.y + emit.z > 0.0;
+            bool tr_emit_image = params.x == float(MAT_EMIT) && params.y > 0.5;
+            bool trlit = emit.x + emit.y + emit.z > 0.0 || tr_emit_image;
             light_idx = trlit ? solid_idx : -1;
             light_ty = trlit ? 2 : -1;
         }

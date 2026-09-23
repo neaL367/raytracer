@@ -81,7 +81,7 @@ public:
                 }
                 break;
             }
-            vec3 Le = rec.mat->emitted();
+            vec3 Le = rec.mat->emitted(rec);
             if (Le.length_squared() > 0) {
                 if (specular) {
                     L += throughput * Le;
@@ -139,7 +139,8 @@ public:
                 if (li >= (int)p.lights.size())
                     li = (int)p.lights.size() - 1;
                 const auto &light = p.lights[(size_t)li];
-                vec3 lp = light_point(light, random_double(), random_double(), cur.time());
+                double eu1 = random_double(), eu2 = random_double();
+                vec3 lp = light_point(light, eu1, eu2, cur.time());
                 vec3 toL = lp - rec.point;
                 double dist = toL.length();
                 vec3 wi = toL / dist;
@@ -154,7 +155,9 @@ public:
                     double Tr = shadow_transmittance(p.world, p.media, rec.point, wi, dist,
                                                      cur.time());
                     if (Tr > 0) {
-                        vec3 light_Le = light_mat(light)->emitted();
+                        double lu = 0, lv = 0;
+                        light_uv(light, eu1, eu2, cur.time(), lu, lv);
+                        vec3 light_Le = light_emission(light, lp, lu, lv, dist);
                         double pdf_l = dist * dist /
                                        ((double)p.lights.size() * area * cosA);
                         double pdf_b = cosine_pdf(cosS);
@@ -197,7 +200,8 @@ public:
                 if (li >= (int)p.lights.size())
                     li = (int)p.lights.size() - 1;
                 const auto &light = p.lights[(size_t)li];
-                vec3 lp = light_point(light, random_double(), random_double(), cur.time());
+                double eu1 = random_double(), eu2 = random_double();
+                vec3 lp = light_point(light, eu1, eu2, cur.time());
                 vec3 toL = lp - rec.point;
                 double dist = toL.length();
                 vec3 wi = toL / dist;
@@ -209,7 +213,9 @@ public:
                     double Tr = shadow_transmittance(p.world, p.media, rec.point, wi, dist,
                                                      cur.time());
                     if (Tr > 0) {
-                        vec3 light_Le = light_mat(light)->emitted();
+                        double lu = 0, lv = 0;
+                        light_uv(light, eu1, eu2, cur.time(), lu, lv);
+                        vec3 light_Le = light_emission(light, lp, lu, lv, dist);
                         double pdf_l = dist * dist /
                                        ((double)p.lights.size() * area * cosA);
                         double pdf_b = 1.0 / (4.0 * pi);

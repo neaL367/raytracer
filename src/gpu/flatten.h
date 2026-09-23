@@ -38,41 +38,64 @@ struct flat_scene {
     std::vector<GPUImage> images; // deduped by texture pointer
 };
 
+// Image registry: assign an index, upload the mip pyramid once, and reuse
+// the same index for repeated textures (dedupe, not duplication).
+inline int register_image(flat_scene &out, const std::shared_ptr<image_texture> &it) {
+    for (size_t k = 0; k < out.images.size(); ++k)
+        if (out.images[k].src == it.get())
+            return (int)k;
+    GPUImage gim;
+    gim.w = it->width();
+    gim.h = it->height();
+    gim.src = it.get();
+    gim.span = (float)it->span();
+    gim.levels = (int)it->mip_chain().size();
+    for (const auto &lv : it->mip_chain()) {
+        gim.rgba.reserve(gim.rgba.size() + (size_t)lv.w * lv.h * 4);
+        for (const vec3 &p : lv.px) {
+            gim.rgba.push_back((float)p.x());
+            gim.rgba.push_back((float)p.y());
+            gim.rgba.push_back((float)p.z());
+            gim.rgba.push_back(1.0f);
+        }
+    }
+    int idx = (int)out.images.size();
+    out.images.push_back(std::move(gim));
+    return idx;
+}
+
 // Image-backed lambertian: registry assign, emit type-5 params.
-// Same texture reuses its index (dedupe, not duplication).
 inline bool try_image_export(flat_scene &out, const std::shared_ptr<lambertian> &lamb,
                              float alb[4], float alb2[4], float emit[4], float prm[4]) {
     auto it = std::dynamic_pointer_cast<image_texture>(lamb->tex_ref());
     if (!it)
         return false;
-    int idx = -1;
-    for (size_t k = 0; k < out.images.size(); ++k)
-        if (out.images[k].src == it.get())
-            idx = (int)k;
-    if (idx < 0) {
-        GPUImage gim;
-        gim.w = it->width();
-        gim.h = it->height();
-        gim.src = it.get();
-        gim.span = (float)it->span();
-        gim.levels = (int)it->mip_chain().size();
-        for (const auto &lv : it->mip_chain()) {
-            gim.rgba.reserve(gim.rgba.size() + (size_t)lv.w * lv.h * 4);
-            for (const vec3 &p : lv.px) {
-                gim.rgba.push_back((float)p.x());
-                gim.rgba.push_back((float)p.y());
-                gim.rgba.push_back((float)p.z());
-                gim.rgba.push_back(1.0f);
-            }
-        }
-        idx = (int)out.images.size();
-        out.images.push_back(std::move(gim));
-    }
+    int idx = register_image(out, it);
     alb[0] = alb[1] = alb[2] = alb[3] = 0;
     alb2[0] = alb2[1] = alb2[2] = alb2[3] = 0;
     emit[0] = emit[1] = emit[2] = emit[3] = 0;
     prm[0] = static_cast<float>(MatType::IMAGE);
     prm[1] = (float)idx;
+    prm[2] = prm[3] = 0;
+    return true;
+}
+
+// Image-backed emitter: same registry, but stays MatType::EMIT. params.y
+// carries the image index plus one (0 keeps the legacy flat emitter,
+// avoiding an ambiguous index-0 encoding).
+inline bool try_emissive_image_export(flat_scene &out,
+                                      const std::shared_ptr<diffuse_light> &emit_mat,
+                                      float alb[4], float alb2[4], float emit[4],
+                                      float prm[4]) {
+    auto it = std::dynamic_pointer_cast<image_texture>(emit_mat->tex_ref());
+    if (!it)
+        return false;
+    int idx = register_image(out, it);
+    alb[0] = alb[1] = alb[2] = alb[3] = 0;
+    alb2[0] = alb2[1] = alb2[2] = alb2[3] = 0;
+    emit[0] = emit[1] = emit[2] = emit[3] = 0;
+    prm[0] = static_cast<float>(MatType::EMIT);
+    prm[1] = (float)(idx + 1);
     prm[2] = prm[3] = 0;
     return true;
 }
@@ -99,6 +122,8 @@ inline void fill_material(flat_scene &out, const std::shared_ptr<material> &m, f
     export_or_magenta(m, alb, alb2, emit, prm);
     if (auto l = std::dynamic_pointer_cast<lambertian>(m))
         try_image_export(out, l, alb, alb2, emit, prm);
+    if (auto e = std::dynamic_pointer_cast<diffuse_light>(m))
+        try_emissive_image_export(out, e, alb, alb2, emit, prm);
 }
 
 inline bool push_prim(flat_scene &out, std::map<const hittable *, std::pair<int, int>> &id,
@@ -174,7 +199,9 @@ inline bool push_prim(flat_scene &out, std::map<const hittable *, std::pair<int,
             g.prm[3] = 1;
         id[o.get()] = {0, (int)gs.spheres.size()};
         gs.spheres.push_back(g);
-        if (g.prm[0] != static_cast<float>(MatType::FOG) && g.emit[0] + g.emit[1] + g.emit[2] > 0)
+        if (g.prm[0] == static_cast<float>(MatType::EMIT) ||
+            (g.prm[0] != static_cast<float>(MatType::FOG) &&
+             g.emit[0] + g.emit[1] + g.emit[2] > 0))
             out.light_table.push_back({1, (int)gs.spheres.size() - 1});
         return true;
     }
@@ -193,7 +220,8 @@ inline bool push_prim(flat_scene &out, std::map<const hittable *, std::pair<int,
         fill_material(out, q->mat_ptr(), g.alb, g.alb2, g.emit, g.prm);
         id[o.get()] = {1, (int)gs.quads.size()};
         gs.quads.push_back(g);
-        if (g.emit[0] + g.emit[1] + g.emit[2] > 0)
+        if (g.prm[0] == static_cast<float>(MatType::EMIT) ||
+            g.emit[0] + g.emit[1] + g.emit[2] > 0)
             out.light_table.push_back({0, (int)gs.quads.size() - 1});
         return true;
     }
@@ -235,7 +263,8 @@ inline bool push_prim(flat_scene &out, std::map<const hittable *, std::pair<int,
         g.tm[1] = (float)t1;
         id[o.get()] = {2, (int)gs.tris.size()};
         gs.tris.push_back(g);
-        if (g.emit[0] + g.emit[1] + g.emit[2] > 0)
+        if (g.prm[0] == static_cast<float>(MatType::EMIT) ||
+            g.emit[0] + g.emit[1] + g.emit[2] > 0)
             out.light_table.push_back({2, (int)gs.tris.size() - 1});
         return true;
     }
@@ -397,10 +426,19 @@ inline bool flatten_scene(const scene_data &scene, flat_scene &out) {
     std::stable_partition(
         ordered.begin(), ordered.end(), [](const std::shared_ptr<hittable> &o) {
             auto q = std::dynamic_pointer_cast<quad>(o);
-            if (!q)
+            if (!q || !q->mat_ptr())
                 return false;
+            // Flat and image-backed emitters sort first; textured emission
+            // exports through the image path even though export_gpu refuses.
+            // Other emitter patterns stay in place and keep magenta fallback.
+            if (auto dl = std::dynamic_pointer_cast<diffuse_light>(q->mat_ptr())) {
+                float dalb[4] = {}, dalb2[4] = {}, demit[4] = {}, dprm[4] = {};
+                if (dl->export_gpu(dalb, dalb2, demit, dprm))
+                    return dprm[0] == static_cast<float>(MatType::EMIT);
+                return (bool)std::dynamic_pointer_cast<image_texture>(dl->tex_ref());
+            }
             float alb[4] = {}, alb2[4] = {}, emit[4] = {}, prm[4] = {};
-            if (!q->mat_ptr() || !q->mat_ptr()->export_gpu(alb, alb2, emit, prm))
+            if (!q->mat_ptr()->export_gpu(alb, alb2, emit, prm))
                 return false;
             return prm[0] == static_cast<float>(MatType::EMIT);
         });

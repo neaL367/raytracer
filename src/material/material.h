@@ -62,6 +62,13 @@ public:
     virtual bool scatter(const ray &in, const hit_record &rec,
                          vec3 &attenuation, ray &scattered) const = 0;
     virtual vec3 emitted() const { return vec3(0, 0, 0); }
+    // UV-aware emission: textured emitters override. The no-arg form is for
+    // flat emitters and legacy callers; textured emission needs a hit.
+    virtual vec3 emitted(const hit_record &rec) const {
+        (void)rec;
+        return emitted();
+    }
+    virtual bool is_emissive() const { return false; }
     // NEE applies to diffuse only; specular paths skip explicit lights.
     virtual bool is_diffuse() const { return false; }
     // Volume scatter (isotropic phase): fires phase-sampled NEE (M59).
@@ -377,27 +384,56 @@ private:
 };
 
 // Pure emitter: never scatters, integrator reads emitted() on hit.
+// A texture makes emission spatially varying (photo area light, gobo);
+// the hit record supplies UVs, like lambertian albedo.
 class diffuse_light : public material {
 public:
-    diffuse_light(const vec3 &c) : emit_color(c) {}
+    diffuse_light(const vec3 &c)
+        : tex(std::make_shared<solid_color>(c)) {}
+    diffuse_light(std::shared_ptr<texture> t) : tex(t) {}
+    // GPU flatten reads the pattern for image textures.
+    const std::shared_ptr<texture> &tex_ref() const { return tex; }
     bool scatter(const ray &, const hit_record &,
                  vec3 &, ray &) const override {
         return false;
     }
-    vec3 emitted() const override { return emit_color; }
-    vec3 surface_albedo(const hit_record &) const override { return emit_color; }
+    vec3 emitted() const override {
+        if (auto s = dynamic_cast<const solid_color *>(tex.get()))
+            return s->rgb();
+        return vec3(0, 0, 0); // textured emission needs hit UVs
+    }
+    vec3 emitted(const hit_record &rec) const override {
+        if (auto s = dynamic_cast<const solid_color *>(tex.get()))
+            return s->rgb();
+        if (tex)
+            return tex->sample(rec.u, rec.v, rec.point, rec.t);
+        return vec3(0, 0, 0);
+    }
+    bool is_emissive() const override { return true; }
+    vec3 surface_albedo(const hit_record &rec) const override {
+        if (auto s = dynamic_cast<const solid_color *>(tex.get()))
+            return s->rgb();
+        if (tex)
+            return tex->value(rec.u, rec.v, rec.point);
+        return vec3(0, 0, 0);
+    }
     bool export_gpu(float alb[4], float alb2[4], float emit[4],
                     float prm[4]) const override {
-        alb[0] = alb[1] = alb[2] = 0;
-        alb2[0] = alb2[1] = alb2[2] = 0;
-        emit[0] = (float)emit_color.x();
-        emit[1] = (float)emit_color.y();
-        emit[2] = (float)emit_color.z();
-        prm[0] = static_cast<float>(MatType::EMIT);
-        prm[1] = prm[2] = prm[3] = 0;
-        return true;
+        if (auto s = dynamic_cast<const solid_color *>(tex.get())) {
+            alb[0] = alb[1] = alb[2] = 0;
+            alb2[0] = alb2[1] = alb2[2] = 0;
+            emit[0] = (float)s->rgb().x();
+            emit[1] = (float)s->rgb().y();
+            emit[2] = (float)s->rgb().z();
+            prm[0] = static_cast<float>(MatType::EMIT);
+            prm[1] = prm[2] = prm[3] = 0;
+            return true;
+        }
+        // Image textures export through the flatten image path; other
+        // patterns stay host-only and fall back to loud magenta on device.
+        return false;
     }
 
 private:
-    vec3 emit_color;
+    std::shared_ptr<texture> tex;
 };
