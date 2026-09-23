@@ -110,6 +110,15 @@ int main(int argc, char **argv) {
         else if (a.ends_with(".ppm"))
             out_path = a;
     }
+    // "showcase" defaults: 1200 width, 675 height, 512 spp (unless explicitly overridden).
+    if (scene_name == "showcase" || scene_name == "show" || scene_name == "demo") {
+        if (!width_set)
+            W = 1200;
+        if (H <= 0)
+            H = 675;
+        if (!spp_set)
+            spp = 512;
+    }
     // "weekend" (Ray Tracing in One Weekend final) defaults: 1200 width, 500 spp.
     if (scene_name == "weekend" || scene_name == "final" || scene_name == "spheres" ||
         scene_name == "book1") {

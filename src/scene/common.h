@@ -73,7 +73,8 @@ inline void add_box(std::vector<std::shared_ptr<hittable>> &objs, const vec3 &lo
 // Showcase catalog for --list-scenes (name, aliases, default output).
 inline void print_scenes() {
     std::cout << "scenes (name [aliases] default WxH@spp):\n"
-              << "  default           400x225@16  photo/cube/metal/glass + quad/orb lights\n"
+              << "  showcase [show demo] 1200x675@512 all engine powers (aniso, glass, SSS, smoke, marble, mesh, multi-light)\n"
+              << "  default           400x225@16  photo ground, cube, metal, glass, quad, orb\n"
               << "  cornell           256x256@16  555 box, posed blocks, ceiling light\n"
               << "  weekend [final spheres book1] 1200x675@500  book1 final, checker ground\n"
               << "  book2 [nextweek boxes final2] 800x800@500  book2 final, dark room\n"

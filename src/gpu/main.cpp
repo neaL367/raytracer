@@ -29,6 +29,7 @@ int main(int argc, char **argv) {
     std::string shader = SHADER_DIR "/grad.spv";
     std::string out_path = "out/gpu_grad.ppm";
     int spp = 16, seed = 42;
+    bool spp_set = false, width_set = false;
     int max_depth = 50; // bounce cap (depth ladder forensics)
     bool fixed_rng = false; // --fixed-rng: deterministic 0.5 stream (M54)
     bool mix_pdf = false; // --pdf mixture: Book 3 mixture-density path
@@ -43,8 +44,10 @@ int main(int argc, char **argv) {
     bool marble_demo = false, env_demo = false;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
-        if (a == "--spp" && i + 1 < argc)
+        if (a == "--spp" && i + 1 < argc) {
             spp = std::max(1, std::atoi(argv[++i]));
+            spp_set = true;
+        }
         else if (a == "--chunk" && i + 1 < argc)
             chunk_spp = std::max(0, std::atoi(argv[++i]));
         else if (a == "--seed" && i + 1 < argc)
@@ -66,8 +69,10 @@ int main(int argc, char **argv) {
             marble_demo = true;
         else if (a == "--env")
             env_demo = true;
-        else if (a == "--width" && i + 1 < argc)
+        else if (a == "--width" && i + 1 < argc) {
             W = std::max(8, std::atoi(argv[++i]));
+            width_set = true;
+        }
         else if (a == "--height" && i + 1 < argc)
             H = std::max(8, std::atoi(argv[++i]));
         else if (a == "--hdr" && i + 1 < argc)
@@ -92,6 +97,18 @@ int main(int argc, char **argv) {
             shader = a;
         else if (a.ends_with(".ppm"))
             out_path = a;
+    }
+    bool is_showcase = (scene_name == "showcase" || scene_name == "show" ||
+                        scene_name == "demo");
+    if (is_showcase) {
+        if (!width_set)
+            W = 1200;
+        if (H <= 0)
+            H = 675;
+        if (!spp_set)
+            spp = 512;
+        if (chunk_spp == 0)
+            chunk_spp = 64;
     }
     if (H <= 0)
         H = (int)((double)W / (16.0 / 9.0)); // same default as CPU app

@@ -3,6 +3,7 @@
 // main() only wires (BVH + render); all placement lives in the per-scene
 // headers (common.h holds shared plumbing: scene_data, box helpers).
 #include "common.h"
+#include "showcase.h"
 #include "default.h"
 #include "cornell.h"
 #include "weekend.h"
@@ -20,5 +21,7 @@ inline scene_data build_scene(const std::string &name, double aspect, double ape
         return build_book2(aspect, aperture, sh0, sh1, env);
     if (name == "sss")
         return build_sss(aspect, aperture);
+    if (name == "showcase" || name == "show" || name == "demo")
+        return build_showcase(aspect, aperture, sh0, sh1, fog, het, marble, env);
     return build_default(aspect, aperture, sh0, sh1, fog, het, marble, env);
 }
