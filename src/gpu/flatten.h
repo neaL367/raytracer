@@ -201,6 +201,7 @@ inline bool push_prim(flat_scene &out, std::map<const hittable *, std::pair<int,
         gs.spheres.push_back(g);
         if (g.prm[0] == static_cast<float>(MatType::EMIT) ||
             (g.prm[0] != static_cast<float>(MatType::FOG) &&
+             g.prm[0] != static_cast<float>(MatType::DISNEY) &&
              g.emit[0] + g.emit[1] + g.emit[2] > 0))
             out.light_table.push_back({1, (int)gs.spheres.size() - 1});
         return true;
@@ -221,7 +222,8 @@ inline bool push_prim(flat_scene &out, std::map<const hittable *, std::pair<int,
         id[o.get()] = {1, (int)gs.quads.size()};
         gs.quads.push_back(g);
         if (g.prm[0] == static_cast<float>(MatType::EMIT) ||
-            g.emit[0] + g.emit[1] + g.emit[2] > 0)
+            (g.prm[0] != static_cast<float>(MatType::DISNEY) &&
+             g.emit[0] + g.emit[1] + g.emit[2] > 0))
             out.light_table.push_back({0, (int)gs.quads.size() - 1});
         return true;
     }
@@ -264,7 +266,8 @@ inline bool push_prim(flat_scene &out, std::map<const hittable *, std::pair<int,
         id[o.get()] = {2, (int)gs.tris.size()};
         gs.tris.push_back(g);
         if (g.prm[0] == static_cast<float>(MatType::EMIT) ||
-            g.emit[0] + g.emit[1] + g.emit[2] > 0)
+            (g.prm[0] != static_cast<float>(MatType::DISNEY) &&
+             g.emit[0] + g.emit[1] + g.emit[2] > 0))
             out.light_table.push_back({2, (int)gs.tris.size() - 1});
         return true;
     }

@@ -781,9 +781,10 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             else
                 guide_a = base_alb; // MAT_SOLID, MAT_CHECKER, MAT_NOISE
         }
-        vec3 emit_col = spick((emit_img >= 0) ? image_sample(huv, emit_img, t) : emit.xyz,
-                                  hero);
-        if (emit_col.x + emit_col.y + emit_col.z > 0.0) {
+        vec3 emit_col = (mtype == MAT_EMIT)
+                            ? spick((emit_img >= 0) ? image_sample(huv, emit_img, t) : emit.xyz, hero)
+                            : vec3(0.0);
+        if (mtype == MAT_EMIT && (emit_col.x + emit_col.y + emit_col.z > 0.0)) {
             if (specular) {
                 L += throughput * emit_col;
             } else if (light_ty >= 0) {
@@ -1092,73 +1093,77 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                 float w_coat = 0.25 * clearcoat;
                 float w_sum = w_diff + w_spec + w_coat;
 
-                float xi = wrandf() * w_sum;
-                vec3 Ll;
-
-                if (xi < w_diff) {
-                    diffuse = true;
-                    vec3 cd = wcosine_dir();
-                    Ll = cd;
-                    sd = u * Ll.x + v * Ll.y + w * Ll.z;
-
-                    vec3 H = normalize(Vl + Ll);
-                    float cos_theta_d = max(dot(Vl, H), 0.0);
-                    float cos_theta_l = max(Ll.z, 0.0);
-                    float cos_theta_v = max(Vl.z, 0.0);
-
-                    float fd90 = 0.5 + 2.0 * rough * cos_theta_d * cos_theta_d;
-                    float fl = 1.0 + (fd90 - 1.0) * pow(max(1.0 - cos_theta_l, 0.0), 5.0);
-                    float fv = 1.0 + (fd90 - 1.0) * pow(max(1.0 - cos_theta_v, 0.0), 5.0);
-                    vec3 fd = base_alb * (fl * fv);
-
-                    if (subsurface > 0.0) {
-                        float fss90 = rough * cos_theta_d * cos_theta_d;
-                        float fss_l = 1.0 + (fss90 - 1.0) * pow(max(1.0 - cos_theta_l, 0.0), 5.0);
-                        float fss_v = 1.0 + (fss90 - 1.0) * pow(max(1.0 - cos_theta_v, 0.0), 5.0);
-                        vec3 fss = base_alb * (1.25 * (fss_l * fss_v * (1.0 / (cos_theta_l + cos_theta_v + 1e-5) - 0.5) + 0.5));
-                        fd = mix(fd, fss, subsurface);
-                    }
-
-                    vec3 f_sheen = sheen * c_sheen * pow(max(1.0 - cos_theta_d, 0.0), 5.0);
-                    attenuation = (fd * (1.0 - metallic) + f_sheen) * (w_sum / w_diff);
-                } else if (xi < w_diff + w_spec) {
-                    float alpha = rough * rough;
-                    alpha = clamp(alpha, 0.001, 1.0);
-                    vec3 H;
-                    Ll = ggx_vndf(alpha, Vl, wrandf(), wrandf(), H);
-                    if (Ll.z <= 0.0) {
-                        ok = false;
-                    } else {
-                        sd = u * Ll.x + v * Ll.y + w * Ll.z;
-                        float cos_vh = max(dot(Vl, H), 0.0);
-                        vec3 F = c_spec0 + (vec3(1.0) - c_spec0) * pow(max(1.0 - cos_vh, 0.0), 5.0);
-
-                        float lv = ggx_lambda(alpha, Vl.z);
-                        float ll = ggx_lambda(alpha, Ll.z);
-                        float ratio = (1.0 + lv) / (1.0 + lv + ll);
-
-                        attenuation = F * ratio * (w_sum / w_spec);
-                    }
+                if (w_sum <= 1e-7) {
+                    ok = false;
                 } else {
-                    float gloss = clamp(coat_gloss, 0.0, 1.0);
-                    float alpha_g = (1.0 - gloss) * 0.1 + gloss * 0.001;
-                    float a2 = alpha_g * alpha_g;
+                    float xi = wrandf() * w_sum;
+                    vec3 Ll;
 
-                    float u1 = wrandf(), u2 = wrandf();
-                    float cos_theta_h = sqrt(max(0.0, (1.0 - pow(a2, 1.0 - u1)) / (1.0 - a2)));
-                    float sin_theta_h = sqrt(max(0.0, 1.0 - cos_theta_h * cos_theta_h));
-                    float phi_h = 6.28318530 * u2;
-
-                    vec3 H = vec3(sin_theta_h * cos(phi_h), sin_theta_h * sin(phi_h), cos_theta_h);
-                    Ll = 2.0 * dot(Vl, H) * H - Vl;
-                    if (Ll.z <= 0.0) {
-                        ok = false;
-                    } else {
+                    if (xi < w_diff && w_diff > 1e-6) {
+                        diffuse = true;
+                        vec3 cd = wcosine_dir();
+                        Ll = cd;
                         sd = u * Ll.x + v * Ll.y + w * Ll.z;
-                        float cos_vh = max(dot(Vl, H), 0.0);
-                        float F_coat = 0.04 + (1.0 - 0.04) * pow(max(1.0 - cos_vh, 0.0), 5.0);
 
-                        attenuation = vec3(0.25 * clearcoat * F_coat) * (w_sum / w_coat);
+                        vec3 H = normalize(Vl + Ll);
+                        float cos_theta_d = max(dot(Vl, H), 0.0);
+                        float cos_theta_l = max(Ll.z, 0.0);
+                        float cos_theta_v = max(Vl.z, 0.0);
+
+                        float fd90 = 0.5 + 2.0 * rough * cos_theta_d * cos_theta_d;
+                        float fl = 1.0 + (fd90 - 1.0) * pow(max(1.0 - cos_theta_l, 0.0), 5.0);
+                        float fv = 1.0 + (fd90 - 1.0) * pow(max(1.0 - cos_theta_v, 0.0), 5.0);
+                        vec3 fd = base_alb * (fl * fv);
+
+                        if (subsurface > 0.0) {
+                            float fss90 = rough * cos_theta_d * cos_theta_d;
+                            float fss_l = 1.0 + (fss90 - 1.0) * pow(max(1.0 - cos_theta_l, 0.0), 5.0);
+                            float fss_v = 1.0 + (fss90 - 1.0) * pow(max(1.0 - cos_theta_v, 0.0), 5.0);
+                            vec3 fss = base_alb * (1.25 * (fss_l * fss_v * (1.0 / (cos_theta_l + cos_theta_v + 1e-5) - 0.5) + 0.5));
+                            fd = mix(fd, fss, subsurface);
+                        }
+
+                        vec3 f_sheen = sheen * c_sheen * pow(max(1.0 - cos_theta_d, 0.0), 5.0);
+                        attenuation = (fd * (1.0 - metallic) + f_sheen) * (w_sum / max(w_diff, 1e-6));
+                    } else if (xi < w_diff + w_spec || w_coat <= 1e-4) {
+                        float alpha = rough * rough;
+                        alpha = clamp(alpha, 0.001, 1.0);
+                        vec3 H;
+                        Ll = ggx_vndf(alpha, Vl, wrandf(), wrandf(), H);
+                        if (Ll.z <= 0.0) {
+                            ok = false;
+                        } else {
+                            sd = u * Ll.x + v * Ll.y + w * Ll.z;
+                            float cos_vh = max(dot(Vl, H), 0.0);
+                            vec3 F = c_spec0 + (vec3(1.0) - c_spec0) * pow(max(1.0 - cos_vh, 0.0), 5.0);
+
+                            float lv = ggx_lambda(alpha, Vl.z);
+                            float ll = ggx_lambda(alpha, Ll.z);
+                            float ratio = (1.0 + lv) / (1.0 + lv + ll);
+
+                            attenuation = F * ratio * (w_sum / max(w_spec, 1e-6));
+                        }
+                    } else {
+                        float gloss = clamp(coat_gloss, 0.0, 1.0);
+                        float alpha_g = mix(0.1, 0.001, gloss);
+                        float a2 = alpha_g * alpha_g;
+
+                        float u1 = wrandf(), u2 = wrandf();
+                        float cos_theta_h = sqrt(max(0.0, (1.0 - pow(max(a2, 1e-6), 1.0 - u1)) / max(1.0 - a2, 1e-6)));
+                        float sin_theta_h = sqrt(max(0.0, 1.0 - cos_theta_h * cos_theta_h));
+                        float phi_h = 6.28318530 * u2;
+
+                        vec3 H = vec3(sin_theta_h * cos(phi_h), sin_theta_h * sin(phi_h), cos_theta_h);
+                        Ll = 2.0 * dot(Vl, H) * H - Vl;
+                        if (Ll.z <= 0.0) {
+                            ok = false;
+                        } else {
+                            sd = u * Ll.x + v * Ll.y + w * Ll.z;
+                            float cos_vh = max(dot(Vl, H), 0.0);
+                            float F_coat = 0.04 + (1.0 - 0.04) * pow(max(1.0 - cos_vh, 0.0), 5.0);
+
+                            attenuation = vec3(0.25 * clearcoat * F_coat) * (w_sum / max(w_coat, 1e-6));
+                        }
                     }
                 }
             }

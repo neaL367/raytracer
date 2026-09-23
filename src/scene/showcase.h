@@ -75,6 +75,14 @@ inline scene_data build_showcase(double aspect, double aperture, double sh0 = 0,
     // Hero 9: Kinetic polished chrome metal
     auto chrome_mat = std::make_shared<metal>(vec3(0.96, 0.98, 1.0), 0.02);
 
+    // Hero 10: Disney Midnight Sapphire Car Paint (Burley metallic + clearcoat)
+    auto car_paint_mat = std::make_shared<disney_material>(vec3(0.04, 0.22, 0.68), 0.85, 0.20);
+    car_paint_mat->set_clearcoat(1.0, 0.95);
+
+    // Hero 11: Disney Royal Crimson Velvet (Burley diffuse + golden sheen + SSS)
+    auto velvet_mat = std::make_shared<disney_material>(vec3(0.70, 0.04, 0.12), 0.0, 0.65);
+    velvet_mat->set_sheen(1.0, 0.85).set_subsurface(0.3);
+
     // Studio Lighting Rig: high-CRI softboxes
     auto key_light_mat = std::make_shared<diffuse_light>(vec3(7.6, 7.3, 6.8));
     auto orb_light_mat = std::make_shared<diffuse_light>(vec3(6.5, 3.8, 1.6));
@@ -140,6 +148,14 @@ inline scene_data build_showcase(double aspect, double aperture, double sh0 = 0,
     // --- FOREGROUND CENTER: Absorbing Amber Glass (Beer's Law) ---
     scene.objs.push_back(std::make_shared<sphere>(
         vec3(0.0, -0.16, 0.85), 0.30, amber_glass));
+
+    // --- FOREGROUND FLANK LEFT: Disney Midnight Sapphire Car Paint ---
+    scene.objs.push_back(std::make_shared<sphere>(
+        vec3(-2.25, -0.15, 0.45), 0.35, car_paint_mat));
+
+    // --- FOREGROUND FLANK RIGHT: Disney Royal Crimson Velvet ---
+    scene.objs.push_back(std::make_shared<sphere>(
+        vec3(2.25, -0.15, 0.45), 0.35, velvet_mat));
 
     // --- LEFT PEDESTAL: Physical Copper Conductor (M67 n/k) ---
     scene.objs.push_back(std::make_shared<sphere>(

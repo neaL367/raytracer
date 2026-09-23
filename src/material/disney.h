@@ -89,7 +89,7 @@ public:
         double xi = random_double() * w_sum;
         vec3 L;
 
-        if (xi < w_diff) {
+        if (xi < w_diff && w_diff > 1e-6) {
             // Diffuse lobe (Burley retro-reflective + optional subsurface + sheen)
             vec3 cd = random_cosine_direction();
             vec3 Ll = cd;
@@ -117,8 +117,8 @@ public:
             // Sheen term
             vec3 f_sheen = sheen * c_sheen * std::pow(std::max(1.0 - cos_theta_d, 0.0), 5.0);
 
-            attenuation = (fd * (1.0 - metallic) + f_sheen) * (w_sum / w_diff);
-        } else if (xi < w_diff + w_spec) {
+            attenuation = (fd * (1.0 - metallic) + f_sheen) * (w_sum / std::max(w_diff, 1e-6));
+        } else if (xi < w_diff + w_spec || w_coat <= 1e-4) {
             // Specular GGX lobe (VNDF sampling)
             double alpha = roughness * roughness;
             alpha = std::clamp(alpha, 0.001, 1.0);
@@ -133,7 +133,7 @@ public:
             vec3 F = c_spec0 + (vec3(1.0, 1.0, 1.0) - c_spec0) * std::pow(std::max(1.0 - cos_vh, 0.0), 5.0);
 
             double ratio = ggx::weight_ratio(alpha, Vl.z(), Ll.z());
-            attenuation = F * ratio * (w_sum / w_spec);
+            attenuation = F * ratio * (w_sum / std::max(w_spec, 1e-6));
         } else {
             // Clearcoat lobe (GTR1 distribution)
             double gloss = std::clamp(clearcoat_gloss, 0.0, 1.0);
@@ -142,7 +142,7 @@ public:
 
             // GTR1 inversion
             double u1 = random_double(), u2 = random_double();
-            double cos_theta_h = std::sqrt(std::max(0.0, (1.0 - std::pow(a2, 1.0 - u1)) / (1.0 - a2)));
+            double cos_theta_h = std::sqrt(std::max(0.0, (1.0 - std::pow(std::max(a2, 1e-6), 1.0 - u1)) / std::max(1.0 - a2, 1e-6)));
             double sin_theta_h = std::sqrt(std::max(0.0, 1.0 - cos_theta_h * cos_theta_h));
             double phi_h = 2.0 * pi_val * u2;
 
@@ -155,7 +155,7 @@ public:
             double cos_vh = std::max(dot(Vl, H_local), 0.0);
             double F_coat = 0.04 + (1.0 - 0.04) * std::pow(std::max(1.0 - cos_vh, 0.0), 5.0);
 
-            attenuation = vec3(1.0, 1.0, 1.0) * (0.25 * clearcoat * F_coat * (w_sum / w_coat));
+            attenuation = vec3(1.0, 1.0, 1.0) * (0.25 * clearcoat * F_coat * (w_sum / std::max(w_coat, 1e-6)));
         }
 
         scattered = ray(rec.point, L, in.time());
