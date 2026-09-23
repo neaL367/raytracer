@@ -43,6 +43,7 @@ int main(int argc, char **argv) {
     bool env_demo = false;
     bool use_sobol = false; // --sampler sobol: rotated Sobol pixel set
     bool mix_pdf = false; // --pdf mixture: Book 3 mixture-density path
+    bool spectral = false; // --spectrum: M67 hero-wavelength transport
     bool dump_aov = false; // --aov: albedo/normal/depth PFM trio next to PPM
     bool fixed_rng = false; // --fixed-rng: deterministic 0.5 stream (M54)
     std::string hdri_env_path; // --hdri-env <file.hdr>
@@ -102,6 +103,8 @@ int main(int argc, char **argv) {
             use_sobol = (std::string(argv[++i]) == "sobol");
         else if (a == "--pdf" && i + 1 < argc)
             mix_pdf = (std::string(argv[++i]) == "mixture");
+        else if (a == "--spectrum")
+            spectral = true;
         else if (a == "--aov")
             dump_aov = true;
         else if (a == "--fixed-rng")
@@ -159,8 +162,9 @@ int main(int argc, char **argv) {
     qbvh_node world(objs, 0, objs.size(), use_sah);
 
     integrator tracer;
-    const render_params params{world, lights, max_depth, scene.media,
-                               scene.env_light, scene.black_bg, mix_pdf};
+    const render_params params{world,   lights,    max_depth, scene.media,
+                               scene.env_light, scene.black_bg, mix_pdf,
+                               spectral};
     std::vector<vec3> fb((size_t)W * H);
     // Guide buffers only under --denoise/--aov: default pixels byte-exact.
     std::vector<vec3> albedo_fb((size_t)W * H), normal_fb((size_t)W * H);
@@ -344,6 +348,7 @@ int main(int argc, char **argv) {
               << " env=" << (env_demo ? "on" : "off")
               << " sampler=" << (use_sobol ? "sobol" : "stratified")
               << " pdf=" << (mix_pdf ? "mixture" : "mis")
+              << " spectrum=" << (spectral ? "on" : "off")
               << " aov=" << (dump_aov ? "on" : "off") << " seed=" << base_seed << "\n";
     std::cout << "render " << secs << "s";
     if (bench) {

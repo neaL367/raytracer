@@ -462,6 +462,85 @@ float power_weight(float pdf_a, float pdf_b) {
     float denom = a2 + b2;
     return denom > 0.0 ? a2 / denom : 0.0;
 }
+// Push word mixpdf carries two flags (M63 nenv precedent): bit 0 =
+// Book-3 mixture, bit 1 = M67 hero-wavelength spectral transport.
+bool use_mix() { return (pc.mixpdf & 1) != 0; }
+bool use_spectral() { return (pc.mixpdf & 2) != 0; }
+// Channel-pick (mirrors spectrum::pick): identity when spectral is off,
+// else the hero channel value. The 1/3 hero probability is compensated
+// once, by scaling the finished path x3 at the end of Li().
+vec3 spick(vec3 v, int hero) {
+    if (!use_spectral() || hero < 0)
+        return v;
+    vec3 z = vec3(0.0);
+    if (hero == 0)
+        z.x = v.x;
+    else if (hero == 1)
+        z.y = v.y;
+    else
+        z.z = v.z;
+    return z;
+}
+float hero_lambda(int hero) {
+    if (hero == 0)
+        return 650.0;
+    return (hero == 1) ? 550.0 : 450.0;
+}
+float cauchy_ior(float nref, float B, float lambda_nm) {
+    if (B == 0.0)
+        return nref;
+    float l = lambda_nm / 1000.0;
+    float lr = 0.5876;
+    return nref + B * (1.0 / (l * l) - 1.0 / (lr * lr));
+}
+// ---- vec2 complex core (mirrors spectrum.h cplx) ----
+vec2 cmul(vec2 a, vec2 b) {
+    return vec2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+vec2 cdiv(vec2 a, vec2 b) {
+    float d = dot(b, b);
+    return vec2((a.x * b.x + a.y * b.y) / d, (a.y * b.x - a.x * b.y) / d);
+}
+float cabs2(vec2 a) { return dot(a, a); }
+vec2 csqrt(vec2 a) {
+    float r = length(a);
+    float t = 0.5 * atan(a.y, a.x);
+    float s = sqrt(r);
+    return vec2(s * cos(t), s * sin(t));
+}
+// Exact unpolarized conductor Fresnel (mirrors spectrum::conductor_R).
+float conductor_R(float n0, float n, float k, float cos_ti) {
+    float c = clamp(cos_ti, 0.0, 1.0);
+    float s2 = 1.0 - c * c;
+    vec2 N = vec2(n, k);
+    vec2 cos2t = vec2(1.0, 0.0) - (n0 * n0 * s2) * cdiv(vec2(1.0, 0.0), cmul(N, N));
+    vec2 cost = csqrt(cos2t);
+    vec2 rs = cdiv(vec2(n0 * c, 0.0) - cmul(N, cost), vec2(n0 * c, 0.0) + cmul(N, cost));
+    vec2 rp = cdiv(cmul(N, vec2(c, 0.0)) - vec2(n0, 0.0) * cost,
+                   cmul(N, vec2(c, 0.0)) + vec2(n0, 0.0) * cost);
+    return 0.5 * (cabs2(rs) + cabs2(rp));
+}
+// Measured n/k presets (M67, approximate): 1 Au, 2 Ag, 3 Cu, 4 Al.
+bool nk_preset(int id, int ch, out float n, out float k) {
+    if (ch < 0 || ch > 2)
+        return false;
+    if (id == 1) {
+        n = (ch == 0) ? 0.17 : ((ch == 1) ? 0.35 : 1.45);
+        k = (ch == 0) ? 3.80 : ((ch == 1) ? 2.75 : 1.95);
+    } else if (id == 2) {
+        n = (ch == 0) ? 0.07 : ((ch == 1) ? 0.13 : 0.16);
+        k = (ch == 0) ? 4.20 : ((ch == 1) ? 4.00 : 2.60);
+    } else if (id == 3) {
+        n = (ch == 0) ? 0.28 : ((ch == 1) ? 0.95 : 1.25);
+        k = (ch == 0) ? 3.40 : ((ch == 1) ? 2.65 : 2.40);
+    } else if (id == 4) {
+        n = (ch == 0) ? 1.45 : ((ch == 1) ? 0.95 : 0.65);
+        k = (ch == 0) ? 7.60 : ((ch == 1) ? 6.00 : 5.30);
+    } else {
+        return false;
+    }
+    return true;
+}
 
 vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
          out vec3 guide_n) {
@@ -486,6 +565,13 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
     stk_id[0] = ivec2(-1, -1);
     stk_ent[0] = vec3(0.0);
     stk_abs[0] = vec3(0.0);
+    // M67: one hero channel per path (0/1/2 = 650/550/450nm), drawn once.
+    // Off = legacy RGB (no draw, streams bit-exact).
+    int hero = 1;
+    if (use_spectral()) {
+        hero = int(wrandf() * 3.0);
+        hero = clamp(hero, 0, 2);
+    }
     for (int bounce = 0; bounce < pc.maxdepth; ++bounce) {
         float t;
         vec3 n;
@@ -526,7 +612,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                 guide_a = fog_alb;
                 guide_n = vec3(0.0, 1.0, 0.0);
             }
-            throughput *= fog_alb;
+            throughput *= spick(fog_alb, hero);
             o = o + d * fog_t;
             prev = o;
             // Volume NEE (M59): direct-light in-scattering at the event,
@@ -536,7 +622,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             // (0.01 mirrors kVolumeNeeMinDensity on the host).
             // Shadow sites 3/4 (surface NEE uses 1/2): no hash cross-talk.
             bool vol_nee = fog_slot >= 0 && spheres[fog_slot].params.y >= 0.01;
-            if (pc.nlights > 0 && vol_nee && pc.mixpdf == 0) {
+            if (pc.nlights > 0 && vol_nee && !use_mix()) {
                 int li = int(wrandf() * float(pc.nlights));
                 li = min(li, pc.nlights - 1);
                 vec3 lp, ln, lemit;
@@ -553,10 +639,11 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                     if (Tr > 0.0) {
                         ivec2 le = lightTab[li];
                         int eimg = emit_image_index(le.x, le.y);
-                        vec3 vle = (eimg >= 0)
-                                       ? image_sample(light_sample_uv(le.x, le.y, eu1, eu2),
-                                                      eimg, dist)
-                                       : lemit;
+                        vec3 vle = spick((eimg >= 0)
+                                                 ? image_sample(light_sample_uv(le.x, le.y, eu1, eu2),
+                                                                eimg, dist)
+                                                 : lemit,
+                                           hero);
                         float pdf_l = dist * dist / (float(pc.nlights) * area * cosA);
                         float pdf_b = 1.0 / (4.0 * 3.14159265);
                         float w = power_weight(pdf_l, pdf_b);
@@ -566,7 +653,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                     }
                 }
             }
-            if (pc.nenv > 0 && vol_nee && pc.mixpdf == 0) {
+            if (pc.nenv > 0 && vol_nee && !use_mix()) {
                 // Environment in-scattering: sample from active env (analytic
                 // or HDRI), probe to infinity, power MIS vs uniform phase.
                 float pdf_e = 0.0;
@@ -575,7 +662,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                     float Tr = shadow_transmittance(o, edir, rtime, pc.ns, 1e30,
                                                     hbase, bounce, 4, -1, -1);
                     if (Tr > 0.0) {
-                        vec3 envLe = env_radiance(edir);
+                        vec3 envLe = spick(env_radiance(edir), hero);
                         float pdf_b = 1.0 / (4.0 * 3.14159265);
                         float w = power_weight(pdf_e, pdf_b);
                         L += throughput * envLe * (1.0 / (4.0 * 3.14159265 * pdf_e)) *
@@ -585,7 +672,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             }
             d = normalize(wrand_in_sphere());
             pdf_b_last = 1.0 / (4.0 * 3.14159265);
-            specular = (pc.mixpdf != 0); // mixture: found lights full
+            specular = use_mix(); // mixture: found lights full
             pty = -1;
             pidx = -1; // event site has no prim: next trace skips nothing
             if (bounce >= 3) {
@@ -650,7 +737,8 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             else
                 guide_a = base_alb; // MAT_SOLID, MAT_CHECKER, MAT_NOISE
         }
-        vec3 emit_col = (emit_img >= 0) ? image_sample(huv, emit_img, t) : emit.xyz;
+        vec3 emit_col = spick((emit_img >= 0) ? image_sample(huv, emit_img, t) : emit.xyz,
+                                  hero);
         if (emit_col.x + emit_col.y + emit_col.z > 0.0) {
             if (specular) {
                 L += throughput * emit_col;
@@ -707,7 +795,21 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             } else {
                 float cvh = max(dot(Vl, H), 0.0);
                 float f = 1.0 - cvh;
-                vec3 F = alb.xyz + (vec3(1.0) - alb.xyz) * (f * f * f * f * f);
+                // M67: measured n/k preset (alb2.z) -> exact complex Fresnel
+                // per channel; else Schlick-from-F0 exactly as before.
+                vec3 F;
+                int nkid = int(alb2.z + 0.5);
+                if (nkid > 0) {
+                    float n0, k0, n1, k1, n2, k2;
+                    nk_preset(nkid, 0, n0, k0);
+                    nk_preset(nkid, 1, n1, k1);
+                    nk_preset(nkid, 2, n2, k2);
+                    F = vec3(conductor_R(1.0, n0, k0, cvh),
+                             conductor_R(1.0, n1, k1, cvh),
+                             conductor_R(1.0, n2, k2, cvh));
+                } else {
+                    F = alb.xyz + (vec3(1.0) - alb.xyz) * (f * f * f * f * f);
+                }
                 float lv = ggx_lambda(alpha, Vl.z);
                 float ratio = (1.0 + lv) / (1.0 + lv + ggx_lambda(alpha, Ll.z));
                 attenuation = F * ratio;
@@ -739,7 +841,20 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             } else {
                 float cvh = max(dot(Vl, H), 0.0);
                 float f = 1.0 - cvh;
-                vec3 F = alb.xyz + (vec3(1.0) - alb.xyz) * (f * f * f * f * f);
+                // M67: measured n/k preset (alb2.z), else Schlick-from-F0.
+                vec3 F;
+                int nka = int(alb2.z + 0.5);
+                if (nka > 0) {
+                    float n0, k0, n1, k1, n2, k2;
+                    nk_preset(nka, 0, n0, k0);
+                    nk_preset(nka, 1, n1, k1);
+                    nk_preset(nka, 2, n2, k2);
+                    F = vec3(conductor_R(1.0, n0, k0, cvh),
+                             conductor_R(1.0, n1, k1, cvh),
+                             conductor_R(1.0, n2, k2, cvh));
+                } else {
+                    F = alb.xyz + (vec3(1.0) - alb.xyz) * (f * f * f * f * f);
+                }
                 float lv = ggx_lambda_aniso(ax, ay, Vl);
                 float ratio = (1.0 + lv) / (1.0 + lv + ggx_lambda_aniso(ax, ay, La));
                 attenuation = F * ratio;
@@ -747,6 +862,9 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             }
         } else {
             float ir = params.z;
+            // M67: hero-resolved IOR (Cauchy B rides alb2.x); legacy ir
+            // exactly when spectral is off.
+            float irg = use_spectral() ? cauchy_ior(ir, alb2.x, hero_lambda(hero)) : ir;
             float rough = clamp(params.y, 0.0, 1.0);
             // Nesting resolve (M57): pop on origin-prim re-hit, push on
             // higher priority, else legacy front_face eta. Mirrors the
@@ -764,9 +882,9 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                     throughput *= exp(-stk_abs[top] * chord);
                     --stk_n;
                 } else if (spri > stk_pri[top] && stk_n < 8) {
-                    nest_eta = stk_ior[top] / ir;
+                    nest_eta = stk_ior[top] / irg;
                     nest_ok = true;
-                    stk_ior[stk_n] = ir;
+                    stk_ior[stk_n] = irg;
                     stk_pri[stk_n] = spri;
                     stk_id[stk_n] = ivec2(sty, sidx);
                     stk_ent[stk_n] = hitp0;
@@ -776,7 +894,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             }
             if (rough <= 0.0) {
                 // Legacy delta path, bit-exact.
-                float ratio = nest_ok ? nest_eta : (dot(d, n) < 0.0 ? (1.0 / ir) : ir);
+                float ratio = nest_ok ? nest_eta : (dot(d, n) < 0.0 ? (1.0 / irg) : irg);
                 vec3 unit = normalize(d);
                 vec3 nn = dot(d, n) < 0.0 ? n : -n;
                 float cosT = min(dot(-unit, nn), 1.0);
@@ -789,7 +907,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             } else {
                 // Walter microfacet BTDF (mirrors CPU): VNDF + Fresnel
                 // choice (weights cancel to G2/G1), face-forwarded frame.
-                float ratio = nest_ok ? nest_eta : (dot(d, n) < 0.0 ? (1.0 / ir) : ir);
+                float ratio = nest_ok ? nest_eta : (dot(d, n) < 0.0 ? (1.0 / irg) : irg);
                 vec3 V = -normalize(d);
                 vec3 nn = dot(n, V) < 0.0 ? -n : n;
                 vec3 u, v, w;
@@ -841,9 +959,11 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                 }
             }
         }
+        // M67: channel-pick fresh attenuation (single choke point).
+        attenuation = spick(attenuation, hero);
         if (!ok)
             break;
-        if (diffuse && pc.nlights > 0 && pc.mixpdf == 0) {
+        if (diffuse && pc.nlights > 0 && !use_mix()) {
             int li = int(wrandf() * float(pc.nlights));
             li = min(li, pc.nlights - 1);
             vec3 lp, ln, lemit;
@@ -877,10 +997,11 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                 if (Tr > 0.0) {
                     ivec2 le = lightTab[li];
                     int eimg = emit_image_index(le.x, le.y);
-                    vec3 sle = (eimg >= 0)
-                                   ? image_sample(light_sample_uv(le.x, le.y, eu1, eu2),
-                                                  eimg, dist)
-                                   : lemit;
+                    vec3 sle = spick((eimg >= 0)
+                                                 ? image_sample(light_sample_uv(le.x, le.y, eu1, eu2),
+                                                                eimg, dist)
+                                                 : lemit,
+                                           hero);
                     float pdf_l = dist * dist / (float(pc.nlights) * area * cosA);
                     float pdf_b = cosS / 3.14159265;
                     float w = power_weight(pdf_l, pdf_b);
@@ -890,7 +1011,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                 }
             }
         }
-        if (pc.nenv > 0 && diffuse && pc.mixpdf == 0) {
+        if (pc.nenv > 0 && diffuse && !use_mix()) {
             // Environment NEE: sample from active env (analytic or HDRI CDF),
             // probe to infinity, power MIS vs cosine. 2 draws always consumed.
             float pdf_e = 0.0;
@@ -908,7 +1029,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                              : 1.0;
                 }
                 if (Tr > 0.0) {
-                    vec3 envLe = env_radiance(edir);
+                    vec3 envLe = spick(env_radiance(edir), hero);
                     float pdf_b = cosS / 3.14159265;
                     float w = power_weight(pdf_e, pdf_b);
                     L += throughput * attenuation * envLe *
@@ -917,7 +1038,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             }
         }
         if (diffuse) {
-            if (pc.mixpdf != 0) {
+            if (use_mix()) {
                 // Book mixture (M61): 50/50 cosine/light-aimed direction,
                 // density from the traced reverse; weight by cosine/mix.
                 // No shadow rays; emission counts full (specular below).
@@ -993,7 +1114,8 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             throughput /= q;
         }
     }
-    return L;
+    // M67: single compensation for the 1/3 hero sampling probability.
+    return use_spectral() ? L * 3.0 : L;
 }
 
 void main() {

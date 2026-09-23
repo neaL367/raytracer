@@ -5,6 +5,7 @@
 #include "core/random.h"
 #include "core/sampler.h"
 #include "core/onb.h"
+#include "core/spectrum.h"
 
 static void t_vec3() {
     test_current = "vec3";
@@ -178,6 +179,56 @@ static void t_seed_streams() {
     EXPECT_TRUE(b1 != a1); // adjacent pixel stream differs
 }
 
+static void t_spectrum() {
+    test_current = "spectrum";
+    // Hero wavelengths distinct, R/G/B ordered.
+    EXPECT_TRUE(spectrum::kHeroLambda[0] == 650.0);
+    EXPECT_TRUE(spectrum::kHeroLambda[1] == 550.0);
+    EXPECT_TRUE(spectrum::kHeroLambda[2] == 450.0);
+    // pick(): off = identity; on = hero channel value, 0 elsewhere.
+    // Weight-free: E[pick] over heroes = v/3, restored by the single x3
+    // at the end of Li (per-quantity weights would compound to 9x).
+    vec3 v(1, 2, 3);
+    vec3 id = spectrum::pick(v, 1, false);
+    EXPECT_TRUE(id.x() == 1 && id.y() == 2 && id.z() == 3);
+    vec3 pk = spectrum::pick(v, 1, true);
+    EXPECT_TRUE(pk.x() == 0 && pk.y() == 2 && pk.z() == 0);
+    vec3 mean(0, 0, 0);
+    for (int c = 0; c < 3; ++c)
+        mean = mean + spectrum::pick(v, c, true);
+    // Each channel picked exactly once across heroes: sum == v, and the
+    // single x3 in Li compensates the 1/3 sampling probability.
+    EXPECT_TRUE(mean.x() == 1 && mean.y() == 2 && mean.z() == 3);
+    // Cauchy: B=0 identity; B>0 normal dispersion (blue bends more).
+    EXPECT_NEAR(spectrum::cauchy_ior(1.5, 0.0, 450.0), 1.5);
+    double nred = spectrum::cauchy_ior(1.52, 0.0042, 650.0);
+    double nblue = spectrum::cauchy_ior(1.52, 0.0042, 450.0);
+    EXPECT_TRUE(nblue > 1.52 && 1.52 > nred); // d-line ref between red/blue
+    // Hand check: l=0.65um, lr=0.5876um.
+    double hand = 1.52 + 0.0042 * (1.0 / (0.65 * 0.65) - 1.0 / (0.5876 * 0.5876));
+    EXPECT_TRUE(fabs(nred - hand) < 1e-12);
+    // Exact conductor Fresnel: k=0 dielectric limit R0=((n-1)/(n+1))^2.
+    double r0 = spectrum::conductor_R(1.0, 1.5, 0.0, 1.0);
+    EXPECT_TRUE(fabs(r0 - 0.04) < 1e-9);
+    // Grazing -> 1, energy bounded, normal-incidence gold is reddish.
+    EXPECT_TRUE(spectrum::conductor_R(1.0, 0.35, 2.75, 0.0) > 0.99);
+    double nau, kau;
+    EXPECT_TRUE(spectrum::conductor_nk(1, 0, nau, kau)); // Au @650
+    double nau_b, kau_b;
+    EXPECT_TRUE(spectrum::conductor_nk(1, 2, nau_b, kau_b)); // Au @450
+    double r_red = spectrum::conductor_R(1.0, nau, kau, 1.0);
+    double r_blue = spectrum::conductor_R(1.0, nau_b, kau_b, 1.0);
+    EXPECT_TRUE(r_red > 0.9 && r_blue < r_red); // gold reflects red, eats blue
+    EXPECT_TRUE(!spectrum::conductor_nk(0, 1, nau, kau)); // preset 0 = none
+    EXPECT_TRUE(!spectrum::conductor_nk(5, 1, nau, kau));
+    EXPECT_TRUE(!spectrum::conductor_nk(1, 3, nau, kau));
+    // Amplitude pair consistent with intensity version.
+    std::complex<double> rs, rp;
+    spectrum::fresnel_ri(1.0, 0.0, nau, kau, 1.0, rs, rp);
+    double ramp = 0.5 * (std::norm(rs) + std::norm(rp));
+    EXPECT_TRUE(fabs(ramp - r_red) < 1e-9);
+}
+
 void run_core_tests() {
     t_vec3();
     t_ray();
@@ -187,4 +238,5 @@ void run_core_tests() {
     t_onb_cosine();
     t_rr();
     t_seed_streams();
+    t_spectrum();
 }

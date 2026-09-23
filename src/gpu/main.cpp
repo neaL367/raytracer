@@ -33,6 +33,7 @@ int main(int argc, char **argv) {
     int max_depth = 50; // bounce cap (depth ladder forensics)
     bool fixed_rng = false; // --fixed-rng: deterministic 0.5 stream (M54)
     bool mix_pdf = false; // --pdf mixture: Book 3 mixture-density path
+    bool spectral = false; // --spectrum: M67 hero-wavelength transport
     int chunk_spp = 0; // --chunk C: spp per dispatch (TDR); 0 = one shot
     std::string scene_name = "default";
     std::string hdr_path; // empty = no float dump
@@ -96,6 +97,8 @@ int main(int argc, char **argv) {
             fixed_rng = true;
         else if (a == "--pdf" && i + 1 < argc)
             mix_pdf = (std::string(argv[++i]) == "mixture");
+        else if (a == "--spectrum")
+            spectral = true;
         else if (a.ends_with(".spv"))
             shader = a;
         else if (a.ends_with(".ppm"))
@@ -226,7 +229,8 @@ int main(int argc, char **argv) {
     push.nblack = sdata.black_bg ? 1 : 0;
     push.maxdepth = max_depth;
     push.fixed_rng = fixed_rng ? 1 : 0;
-    push.mixpdf = mix_pdf ? 1 : 0;
+    // mixpdf bit 0 = mixture, bit 1 = spectral (64-byte block stays intact).
+    push.mixpdf = (mix_pdf ? 1 : 0) | (spectral ? 2 : 0);
 
     // Chunked submit (M52): split spp into TDR-safe dispatches, accumulate
     // linear HDR on the host in fp64 (same order as the old python script:

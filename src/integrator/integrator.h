@@ -46,6 +46,7 @@ struct render_params {
     bool use_env = false;
     bool black_bg = false;
     bool mix_pdf = false;
+    bool spectral = false; // M67: hero-wavelength transport (opt-in)
 };
 
 class integrator {
@@ -60,6 +61,18 @@ public:
         double pdf_b_last = 0;
         medium_stack nest; // nested-dielectric path state (M57; air bottom)
         const double pi = 3.1415926535897932385;
+        // M67: one hero channel per path (0/1/2 = 650/550/450nm), drawn once.
+        // Off = legacy RGB (no draw, streams bit-exact). pick() wraps every
+        // material/light quantity below with the 1/3 sampling weight.
+        int hero = -1;
+        if (p.spectral) {
+            hero = (int)(random_double() * 3.0);
+            if (hero < 0)
+                hero = 0;
+            if (hero > 2)
+                hero = 2;
+            spectrum::hero_channel() = hero;
+        }
 
         for (int bounce = 0; bounce < p.max_depth; ++bounce) {
             hit_record rec;
@@ -81,7 +94,7 @@ public:
                 }
                 break;
             }
-            vec3 Le = rec.mat->emitted(rec);
+            vec3 Le = spectrum::pick(rec.mat->emitted(rec), hero, p.spectral);
             if (Le.length_squared() > 0) {
                 if (specular) {
                     L += throughput * Le;
@@ -106,8 +119,10 @@ public:
             if (rec.mat->ior() != 1.0 || rec.mat->priority() != 0) {
                 double eta = 0, chord = 0;
                 vec3 exit_absorb;
+                // Hero-resolved IOR in spectral mode (dispersion-aware stack).
+                double iri = p.spectral ? rec.mat->ior_at(hero) : rec.mat->ior();
                 medium_stack::event ev =
-                    nest.resolve(rec.mat->ior(), rec.mat->priority(), rec.hit_prim,
+                    nest.resolve(iri, rec.mat->priority(), rec.hit_prim,
                                  rec.point, rec.mat->absorb(), eta, chord, exit_absorb);
                 if (ev != medium_stack::PASS) {
                     rec.nest_eta = eta;
@@ -119,6 +134,9 @@ public:
             }
             if (!rec.mat->scatter(cur, rec, attenuation, scattered))
                 break; // absorbed
+            // M67: channel-pick the fresh attenuation (single choke point:
+            // volumes ride scatter too, so phase albedos are covered).
+            attenuation = spectrum::pick(attenuation, hero, p.spectral);
             bool diffuse = rec.mat->is_diffuse();
             bool vol = rec.mat->is_volume(); // scattering event in media
             // Density gate (M60): thin media skip explicit NEE (back to
@@ -157,7 +175,8 @@ public:
                     if (Tr > 0) {
                         double lu = 0, lv = 0;
                         light_uv(light, eu1, eu2, cur.time(), lu, lv);
-                        vec3 light_Le = light_emission(light, lp, lu, lv, dist);
+                        vec3 light_Le = spectrum::pick(
+                            light_emission(light, lp, lu, lv, dist), hero, p.spectral);
                         double pdf_l = dist * dist /
                                        ((double)p.lights.size() * area * cosA);
                         double pdf_b = cosine_pdf(cosS);
@@ -182,7 +201,8 @@ public:
                     double Tr = shadow_transmittance(p.world, p.media, rec.point, edir, 1e30,
                                                      cur.time());
                     if (Tr > 0) {
-                        vec3 env_Le = env_light::radiance(edir);
+                        vec3 env_Le = spectrum::pick(env_light::radiance(edir), hero,
+                                                         p.spectral);
                         double pdf_b = cosine_pdf(cosS);
                         double w = direction_pdf::power_weight(pdf_e, pdf_b);
                         L += throughput * attenuation * env_Le *
@@ -215,7 +235,8 @@ public:
                     if (Tr > 0) {
                         double lu = 0, lv = 0;
                         light_uv(light, eu1, eu2, cur.time(), lu, lv);
-                        vec3 light_Le = light_emission(light, lp, lu, lv, dist);
+                        vec3 light_Le = spectrum::pick(
+                            light_emission(light, lp, lu, lv, dist), hero, p.spectral);
                         double pdf_l = dist * dist /
                                        ((double)p.lights.size() * area * cosA);
                         double pdf_b = 1.0 / (4.0 * pi);
@@ -238,7 +259,8 @@ public:
                     double Tr = shadow_transmittance(p.world, p.media, rec.point, edir, 1e30,
                                                      cur.time());
                     if (Tr > 0) {
-                        vec3 env_Le = env_light::radiance(edir);
+                        vec3 env_Le = spectrum::pick(env_light::radiance(edir), hero,
+                                                         p.spectral);
                         double pdf_b = 1.0 / (4.0 * pi);
                         double w = direction_pdf::power_weight(pdf_e, pdf_b);
                         L += throughput * attenuation * env_Le * (1.0 / (4.0 * pi * pdf_e)) *
@@ -298,6 +320,8 @@ public:
                 throughput = throughput / q;
             }
         }
-        return L;
+        spectrum::hero_channel() = -1; // release thread-local hero
+        // M67: single compensation for the 1/3 hero sampling probability.
+        return p.spectral ? L * 3.0 : L;
     }
 };

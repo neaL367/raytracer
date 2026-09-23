@@ -5,6 +5,7 @@
 #include "../core/sampler.h"
 #include "../core/onb.h"
 #include "../core/ggx.h"
+#include "../core/spectrum.h"
 #include "../core/texture.h"
 #include "../geometry/hittable.h"
 #include <memory>
@@ -77,6 +78,12 @@ public:
     // = unnested legacy behavior. Only dielectric overrides.
     virtual int priority() const { return 0; }
     virtual double ior() const { return 1.0; }
+    // Wavelength-resolved IOR (M67): channel 0/1/2 = 650/550/450nm hero,
+    // -1 = legacy constant. Only dispersive dielectrics override.
+    virtual double ior_at(int channel) const {
+        (void)channel;
+        return ior();
+    }
     // Absorption sigma for Beer's law (M58): default black = clear.
     virtual vec3 absorb() const { return vec3(0, 0, 0); }
     // Sampling density of the scattered direction (solid angle). Delta
@@ -184,12 +191,32 @@ public:
     // GGX conductor: F0 = albedo, perceptual roughness (alpha = r^2).
     // Roughness 0 = delta mirror. VNDF sampling, weight F*G2/G1(V).
     metal(const vec3 &a, double r) : albedo(a), roughness(r < 0 ? 0 : (r > 1 ? 1 : r)) {}
+    // Measured-data conductor (M67): n/k preset 1..4 (Au/Ag/Cu/Al, approx),
+    // exact complex Fresnel per hero channel instead of Schlick-from-F0.
+    // Works in RGB mode too (full 3-channel evaluation, no stream change).
+    metal(int nk_preset, double r)
+        : roughness(r < 0 ? 0 : (r > 1 ? 1 : r)), nk_id(nk_preset) {}
     // Anisotropic variant: per-axis roughness, TBN frame from hit tangent.
     // Falls back to the ONB-u frame when the tangent is missing/degenerate.
     metal(const vec3 &a, double rx, double ry)
         : albedo(a), roughness(-1), rough_x(rx < 0 ? 0 : (rx > 1 ? 1 : rx)),
           rough_y(ry < 0 ? 0 : (ry > 1 ? 1 : ry)) {}
+    metal(int nk_preset, double rx, double ry)
+        : roughness(-1), rough_x(rx < 0 ? 0 : (rx > 1 ? 1 : rx)),
+          rough_y(ry < 0 ? 0 : (ry > 1 ? 1 : ry)), nk_id(nk_preset) {}
     bool is_aniso() const { return roughness < 0; }
+    int nk_preset() const { return nk_id; }
+    // Exact spectral reflectance at the three hero wavelengths for n/k
+    // metals (draw-free, so RGB-mode streams stay byte-exact).
+    vec3 spectral_reflectance(double cos_vh) const {
+        vec3 R(0, 0, 0);
+        for (int c = 0; c < 3; ++c) {
+            double n = 0, k = 0;
+            if (spectrum::conductor_nk(nk_id, c, n, k))
+                R.e[c] = spectrum::conductor_R(1.0, n, k, cos_vh);
+        }
+        return R;
+    }
     bool scatter(const ray &in, const hit_record &rec,
                  vec3 &attenuation, ray &scattered) const override {
         if (is_aniso())
@@ -205,7 +232,9 @@ public:
             return false; // below-surface lobe: absorbed (as before)
         double cos_vh = std::max(dot(Vl, H), 0.0);
         double ratio = ggx::weight_ratio(alpha, Vl.z(), Ll.z());
-        attenuation = ggx::fresnel_schlick(albedo, cos_vh) * ratio;
+        vec3 F = (nk_id > 0) ? spectral_reflectance(cos_vh)
+                             : ggx::fresnel_schlick(albedo, cos_vh);
+        attenuation = F * ratio;
         scattered = ray(rec.point, frame.local(Ll));
         return true;
     }
@@ -232,17 +261,22 @@ public:
             return false;
         double cos_vh = std::max(dot(Vl, H), 0.0);
         double ratio = ggx::weight_ratio_aniso(ax, ay, Vl, Ll);
-        attenuation = ggx::fresnel_schlick(albedo, cos_vh) * ratio;
+        vec3 F = (nk_id > 0) ? spectral_reflectance(cos_vh)
+                             : ggx::fresnel_schlick(albedo, cos_vh);
+        attenuation = F * ratio;
         scattered = ray(rec.point, T * Ll.x() + B * Ll.y() + N * Ll.z());
         return true;
     }
-    vec3 surface_albedo(const hit_record &) const override { return albedo; }
+    vec3 surface_albedo(const hit_record &) const override {
+        return (nk_id > 0) ? spectral_reflectance(1.0) : albedo;
+    }
     bool export_gpu(float alb[4], float alb2[4], float emit[4],
                     float prm[4]) const override {
         alb[0] = (float)albedo.x();
         alb[1] = (float)albedo.y();
         alb[2] = (float)albedo.z();
-        alb2[0] = alb2[1] = alb2[2] = 0;
+        alb2[0] = alb2[1] = 0;
+        alb2[2] = (float)nk_id; // measured n/k preset (M67); 0 = legacy F0
         emit[0] = emit[1] = emit[2] = 0;
         if (is_aniso()) {
             prm[0] = static_cast<float>(MatType::ANISO); // anisotropic conductor (ax, ay)
@@ -258,9 +292,10 @@ public:
     }
 
 private:
-    vec3 albedo;
+    vec3 albedo{0, 0, 0};
     double roughness; // <0 = anisotropic (uses rough_x/y)
     double rough_x = 0, rough_y = 0;
+    int nk_id = 0; // measured n/k preset (M67); 0 = Schlick-from-albedo
 };
 
 class dielectric : public material {
@@ -271,10 +306,18 @@ public:
     dielectric(double ri, double r, int pri)
         : ir(ri), roughness(r < 0 ? 0 : (r > 1 ? 1 : r)), prio(pri) {}
     // Absorbing glass (M58): Beer's law over the nested exit chord.
-    dielectric(double ri, double r, int pri, const vec3 &sigma)
-        : ir(ri), roughness(r < 0 ? 0 : (r > 1 ? 1 : r)), prio(pri), sigma(sigma) {}
+    // Cauchy B (M67): dispersion for spectral hero paths, um^2; 0 = legacy.
+    dielectric(double ri, double r, int pri, const vec3 &sigma, double cauchyB = 0.0)
+        : ir(ri), roughness(r < 0 ? 0 : (r > 1 ? 1 : r)), prio(pri), sigma(sigma),
+          cauchyB(cauchyB < 0 ? 0 : cauchyB) {}
     int priority() const override { return prio; }
     double ior() const override { return ir; }
+    double ior_at(int channel) const override {
+        if (channel < 0 || channel > 2)
+            return ir;
+        return spectrum::cauchy_ior(ir, cauchyB, spectrum::kHeroLambda[channel]);
+    }
+    double dispersion() const { return cauchyB; }
     vec3 absorb() const override { return sigma; }
     bool scatter(const ray &in, const hit_record &rec,
                  vec3 &attenuation, ray &scattered) const override {
@@ -292,7 +335,9 @@ public:
         double cosVH = dot(Vl, H);
         if (cosVH <= 0)
             return false; // degenerate microfacet: absorbed
-        double eta = rec.nest_set ? rec.nest_eta : (rec.front_face ? (1.0 / ir) : ir); // n_i/n_o
+        // Hero-resolved IOR (M67): legacy ir when spectral mode is off.
+        double iri = ior_at(spectrum::hero_channel());
+        double eta = rec.nest_set ? rec.nest_eta : (rec.front_face ? (1.0 / iri) : iri); // n_i/n_o
         double sinT2 = eta * eta * (1.0 - cosVH * cosVH);
         double F = (sinT2 > 1.0) ? 1.0 : reflectance(fmin(cosVH, 1.0), eta);
         vec3 Ll;
@@ -321,7 +366,8 @@ public:
     bool scatter_smooth(const ray &in, const hit_record &rec, vec3 &attenuation,
                         ray &scattered) const {
         attenuation = vec3(1, 1, 1); // glass absorbs nothing
-        double ratio = rec.nest_set ? rec.nest_eta : (rec.front_face ? (1.0 / ir) : ir);
+        double iri = ior_at(spectrum::hero_channel());
+        double ratio = rec.nest_set ? rec.nest_eta : (rec.front_face ? (1.0 / iri) : iri);
         vec3 unit = unit_vector(in.direction());
         double cos_t = fmin(dot(-unit, rec.normal), 1.0);
         double sin_t = std::sqrt(1.0 - cos_t * cos_t);
@@ -344,6 +390,8 @@ public:
         alb[0] = (float)sigma.x(); // absorption sigma (M58); 0 = clear
         alb[1] = (float)sigma.y();
         alb[2] = (float)sigma.z();
+        alb2[0] = (float)cauchyB; // Cauchy B in um^2 (M67); 0 = no dispersion
+        alb2[1] = alb2[2] = 0;
         return true;
     }
 
@@ -352,6 +400,7 @@ public:
     double roughness;
     int prio = 0; // nesting priority (M57); 0 = legacy unnested
     vec3 sigma{0, 0, 0}; // absorption (M58); 0 = clear glass
+    double cauchyB = 0.0; // dispersion (M67); 0 = constant IOR
     // Schlick approx: grazing -> mirror, normal -> ~4% for glass.
     static double reflectance(double cos, double ref_idx) {
         double r0 = (1 - ref_idx) / (1 + ref_idx);

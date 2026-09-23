@@ -285,6 +285,80 @@ static void t_emissive() {
     EXPECT_NEAR(p.z(), -3);
 }
 
+static void t_spectral_materials() {
+    test_current = "spectral_materials";
+    // Dispersive glass: B=0 bends identically for all heroes; B>0 splits.
+    auto glass_plain = std::make_shared<dielectric>(1.5, 0.0, 0, vec3(0, 0, 0));
+    auto glass_disp = std::make_shared<dielectric>(1.5, 0.0, 0, vec3(0, 0, 0), 0.02);
+    EXPECT_NEAR(glass_disp->ior_at(-1), 1.5); // legacy slot exact
+    EXPECT_TRUE(glass_disp->ior_at(2) > glass_disp->ior_at(0)); // blue > red
+    EXPECT_NEAR(glass_disp->dispersion(), 0.02);
+    sphere s(vec3(0, 0, -1), 0.5, glass_disp);
+    // Oblique incidence (off-center aim) so dispersion visibly splits.
+    ray r(vec3(0.8, 0, 0.5), unit_vector(vec3(-0.5, 0, -1.5)));
+    hit_record hr;
+    EXPECT_TRUE(s.hit(r, 0.001, 1e30, hr));
+    EXPECT_TRUE(fabs(dot(r.direction(), hr.normal)) < 0.99); // truly oblique
+    // Find a seed that refracts (not Fresnel-reflects) for the test ray.
+    vec3 att;
+    ray sc;
+    int use_seed = -1;
+    for (int sd = 0; sd < 200; ++sd) {
+        rng_seed((unsigned)sd);
+        if (glass_disp->scatter(r, hr, att, sc) && dot(sc.direction(), hr.normal) < 0) {
+            use_seed = sd;
+            break;
+        }
+    }
+    EXPECT_TRUE(use_seed >= 0);
+    vec3 dirs[3];
+    for (int c = 0; c < 3; ++c) {
+        spectrum::hero_channel() = c;
+        rng_seed((unsigned)use_seed);
+        EXPECT_TRUE(glass_disp->scatter(r, hr, att, sc));
+        dirs[c] = sc.direction();
+    }
+    spectrum::hero_channel() = -1;
+    // Prismatic split: red bends least, blue most (distinct directions).
+    EXPECT_TRUE((dirs[0] - dirs[2]).length() > 1e-4);
+    EXPECT_TRUE(fabs(dirs[0].length() - 1.0) < 1e-9);
+    // B=0: all heroes identical (no stream-independent split).
+    vec3 plain_dirs[3];
+    sphere sp(vec3(0, 0, -1), 0.5, glass_plain);
+    hit_record hrp;
+    EXPECT_TRUE(sp.hit(r, 0.001, 1e30, hrp));
+    for (int c = 0; c < 3; ++c) {
+        spectrum::hero_channel() = c;
+        rng_seed((unsigned)use_seed);
+        EXPECT_TRUE(glass_plain->scatter(r, hrp, att, sc));
+        plain_dirs[c] = sc.direction();
+    }
+    spectrum::hero_channel() = -1;
+    EXPECT_TRUE((plain_dirs[0] - plain_dirs[1]).length() == 0);
+    EXPECT_TRUE((plain_dirs[1] - plain_dirs[2]).length() == 0);
+    // Legacy slot reproduces the B=0 hero path bit-exactly.
+    rng_seed((unsigned)use_seed);
+    EXPECT_TRUE(glass_plain->scatter(r, hrp, att, sc));
+    EXPECT_TRUE((sc.direction() - plain_dirs[0]).length() == 0);
+    // Measured gold mirror: reddish attenuation, exact-Fresnel backed.
+    metal gold(1, 0.0);
+    vec3 R = gold.spectral_reflectance(1.0);
+    EXPECT_TRUE(R.x() > 0.9 && R.x() > R.z());
+    float alb[4]{}, alb2[4]{}, emit[4]{}, prm[4]{};
+    EXPECT_TRUE(gold.export_gpu(alb, alb2, emit, prm));
+    EXPECT_TRUE(alb2[2] == 1.0f); // preset id rides alb2.z
+    // Li resets the thread-local hero even in spectral mode.
+    integrator tracer;
+    hittable_list empty;
+    std::vector<light> none;
+    std::vector<std::shared_ptr<hittable>> nomedia;
+    const render_params sparams{empty, none, 4, nomedia, false, false, false, true};
+    rng_seed(300);
+    vec3 L = tracer.Li(ray(vec3(0, 0, 0), vec3(0, 0, -1)), sparams);
+    EXPECT_TRUE(L.x() >= 0 && L.y() >= 0 && L.z() >= 0);
+    EXPECT_TRUE(spectrum::hero_channel() == -1);
+}
+
 static void t_emissive_texture() {
     test_current = "emissive_texture";
     // 2x1 photo light: red left texel, green right texel.
@@ -876,6 +950,7 @@ void run_shading_tests() {
     t_glass_rough();
     t_emissive();
     t_emissive_texture();
+    t_spectral_materials();
     t_ppm();
     t_pfm();
     t_film();
