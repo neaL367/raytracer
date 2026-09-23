@@ -979,9 +979,12 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                 float cosT = min(dot(-unit, nn), 1.0);
                 float sinT = sqrt(1.0 - cosT * cosT);
                 attenuation = vec3(1.0);
+                bool cannot_refract = ratio * sinT > 1.0;
                 float film_d_g = alb2.y, film_n_g = alb2.z;
                 float frefl;
-                if (film_d_g > 0.0) {
+                if (cannot_refract) {
+                    frefl = 1.0;
+                } else if (film_d_g > 0.0) {
                     // Film-coated glass: Airy on entry side (n0=1 entry, n0=irg exit approx).
                     bool front = dot(d, n) < 0.0;
                     float n0 = front ? 1.0 : irg;
@@ -989,7 +992,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                     // Hero-pick in spectral mode; luminance mean otherwise.
                     frefl = use_spectral() ? Rf[hero] : (Rf.r + Rf.g + Rf.b) / 3.0;
                 } else {
-                    frefl = (ratio * sinT > 1.0) ? 1.0 : schlick(cosT, ratio);
+                    frefl = schlick(cosT, ratio);
                 }
                 if (frefl > wrandf())
                     sd = reflect(unit, nn);
