@@ -13,6 +13,7 @@ const int MAT_CONDUCTOR = 7;
 const int MAT_HET       = 8;
 const int MAT_NOISE     = 9;
 const int MAT_ANISO     = 10;
+const int MAT_DISNEY    = 11;
 struct GPUSphere {
     vec4 c_r;
     vec4 c1;

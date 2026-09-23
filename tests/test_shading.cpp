@@ -882,6 +882,11 @@ static void t_material_completeness() {
                 prim = std::make_shared<sphere>(point3(0, 0, -1), 0.5, mat);
                 break;
             }
+            case MatType::DISNEY: {
+                mat = std::make_shared<disney_material>(vec3(0.8, 0.4, 0.2), 0.5, 0.3);
+                prim = std::make_shared<sphere>(point3(0, 0, -1), 0.5, mat);
+                break;
+            }
             case MatType::RESERVED:
                 break;
         }
@@ -934,10 +939,82 @@ static void t_material_completeness() {
         EXPECT_TRUE(!std::isnan(L.x()) && !std::isnan(L.y()) && !std::isnan(L.z()));
         EXPECT_TRUE(L.x() >= 0.0 && L.y() >= 0.0 && L.z() >= 0.0);
     }
-    EXPECT_TRUE(count_tested == 10);
+    EXPECT_TRUE(count_tested == 11);
+}
+
+
+static void t_disney() {
+    test_current = "disney";
+    const double pi = 3.1415926535897932385;
+    // 1. Parameter defaults and builder
+    disney_material dm(vec3(0.9, 0.6, 0.3), 0.7, 0.2);
+    dm.set_specular(0.6)
+      .set_specular_tint(0.3)
+      .set_sheen(0.4, 0.8)
+      .set_clearcoat(0.5, 0.9)
+      .set_subsurface(0.2);
+    EXPECT_NEAR(dm.metallic, 0.7);
+    EXPECT_NEAR(dm.roughness, 0.2);
+    EXPECT_NEAR(dm.specular, 0.6);
+    EXPECT_NEAR(dm.specular_tint, 0.3);
+    EXPECT_NEAR(dm.sheen, 0.4);
+    EXPECT_NEAR(dm.sheen_tint, 0.8);
+    EXPECT_NEAR(dm.clearcoat, 0.5);
+    EXPECT_NEAR(dm.clearcoat_gloss, 0.9);
+    EXPECT_NEAR(dm.subsurface, 0.2);
+
+    // 2. GPU Export packing
+    float alb[4]{}, alb2[4]{}, emit[4]{}, prm[4]{};
+    EXPECT_TRUE(dm.export_gpu(alb, alb2, emit, prm));
+    EXPECT_NEAR(alb[0], 0.9f);
+    EXPECT_NEAR(alb[1], 0.6f);
+    EXPECT_NEAR(alb[2], 0.3f);
+    EXPECT_NEAR(alb[3], 0.7f); // metallic
+    EXPECT_NEAR(prm[0], static_cast<float>(MatType::DISNEY));
+    EXPECT_NEAR(prm[1], 0.2f); // roughness
+    EXPECT_NEAR(alb2[0], 0.6f); // specular
+    EXPECT_NEAR(alb2[1], 0.3f); // specular_tint
+    EXPECT_NEAR(alb2[2], 0.4f); // sheen
+    EXPECT_NEAR(alb2[3], 0.8f); // sheen_tint
+    EXPECT_NEAR(emit[0], 0.5f); // clearcoat
+    EXPECT_NEAR(emit[1], 0.9f); // clearcoat_gloss
+    EXPECT_NEAR(emit[2], 0.2f); // subsurface
+
+    // 3. Scattering verification (no NaNs, valid output ray)
+    hit_record rec;
+    rec.point = point3(0, 0, 0);
+    rec.normal = vec3(0, 0, 1);
+    rec.t = 1.0;
+    ray r_in(point3(0, 1, 1), unit_vector(vec3(0, -1, -1)));
+
+    rng_seed(42);
+    int valid_scatters = 0;
+    for (int i = 0; i < 100; ++i) {
+        vec3 atten;
+        ray r_scat;
+        if (dm.scatter(r_in, rec, atten, r_scat)) {
+            EXPECT_TRUE(!std::isnan(atten.x()) && !std::isnan(atten.y()) && !std::isnan(atten.z()));
+            EXPECT_TRUE(atten.x() >= 0.0 && atten.y() >= 0.0 && atten.z() >= 0.0);
+            EXPECT_TRUE(dot(rec.normal, r_scat.direction()) > 0.0); // upper hemisphere
+            valid_scatters++;
+        }
+    }
+    EXPECT_TRUE(valid_scatters > 80);
+
+    // 4. Pure dielectric limit vs pure metallic limit
+    disney_material dielectric_d(vec3(0.8, 0.8, 0.8), 0.0, 0.5);
+    EXPECT_TRUE(dielectric_d.is_diffuse()); // non-metal has diffuse component
+
+    disney_material metal_d(vec3(0.9, 0.9, 0.9), 1.0, 0.1);
+    EXPECT_TRUE(!metal_d.is_diffuse()); // pure metal is non-diffuse
+
+    // 5. Direction PDF non-negative and properly normalized
+    double pdf = dm.direction_pdf(vec3(0, 0, 1), rec);
+    EXPECT_NEAR(pdf, 1.0 / pi);
 }
 
 void run_shading_tests() {
+    t_disney();
     t_materials();
     t_material_completeness();
     t_texture();

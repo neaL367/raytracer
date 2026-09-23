@@ -22,7 +22,8 @@ enum class MatType : int {
     CONDUCTOR = 7,
     HET       = 8,
     NOISE     = 9,
-    ANISO     = 10
+    ANISO     = 10,
+    DISNEY    = 11
 };
 
 inline constexpr MatType kAllActiveMatTypes[] = {
@@ -35,7 +36,8 @@ inline constexpr MatType kAllActiveMatTypes[] = {
     MatType::CONDUCTOR,
     MatType::HET,
     MatType::NOISE,
-    MatType::ANISO
+    MatType::ANISO,
+    MatType::DISNEY
 };
 
 inline const char *mat_type_name(MatType t) {
@@ -51,6 +53,7 @@ inline const char *mat_type_name(MatType t) {
         case MatType::HET:       return "HET";
         case MatType::NOISE:     return "NOISE";
         case MatType::ANISO:     return "ANISO";
+        case MatType::DISNEY:    return "DISNEY";
     }
     return "UNKNOWN";
 }

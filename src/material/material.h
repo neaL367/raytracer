@@ -13,3 +13,4 @@
 #include "dielectric.h"
 #include "diffuse_light.h"
 #include "isotropic.h"
+#include "disney.h"

@@ -938,7 +938,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                 attenuation = F * ratio;
                 sd = T * La.x + B * La.y + nn * La.z;
             }
-        } else {
+        } else if (mtype == MAT_GLASS) {
             float ir = params.z;
             // M67: hero-resolved IOR (Cauchy B rides alb2.x); legacy ir
             // exactly when spectral is off.
@@ -1058,6 +1058,107 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                             (1.0 + lv) / (1.0 + lv + ggx_lambda(alpha, abs(Ll.z)));
                         attenuation = vec3(gr);
                         sd = u * Ll.x + v * Ll.y + w * Ll.z;
+                    }
+                }
+            }
+        } else if (mtype == MAT_DISNEY) {
+            float metallic = alb.w;
+            float rough = clamp(params.y, 0.0, 1.0);
+            float specular = alb2.x;
+            float spec_tint = alb2.y;
+            float sheen = alb2.z;
+            float sheen_tint = alb2.w;
+            float clearcoat = emit.x;
+            float coat_gloss = emit.y;
+            float subsurface = emit.z;
+
+            vec3 V = -normalize(d);
+            vec3 nn = dot(n, V) < 0.0 ? -n : n;
+            vec3 u, v, w;
+            wonb(nn, u, v, w);
+            vec3 Vl = vec3(dot(V, u), dot(V, v), dot(V, w));
+
+            if (Vl.z <= 1e-6) {
+                ok = false;
+            } else {
+                float lum = 0.3 * base_alb.x + 0.6 * base_alb.y + 0.1 * base_alb.z;
+                vec3 c_tint = lum > 0.0 ? base_alb / lum : vec3(1.0);
+                vec3 c_spec0 = (1.0 - metallic) * (0.08 * specular * mix(vec3(1.0), c_tint, spec_tint)) +
+                               metallic * base_alb;
+                vec3 c_sheen = mix(vec3(1.0), c_tint, sheen_tint);
+
+                float w_diff = (1.0 - metallic) * 0.5;
+                float w_spec = metallic + (1.0 - metallic) * 0.5;
+                float w_coat = 0.25 * clearcoat;
+                float w_sum = w_diff + w_spec + w_coat;
+
+                float xi = wrandf() * w_sum;
+                vec3 Ll;
+
+                if (xi < w_diff) {
+                    diffuse = true;
+                    vec3 cd = wcosine_dir();
+                    Ll = cd;
+                    sd = u * Ll.x + v * Ll.y + w * Ll.z;
+
+                    vec3 H = normalize(Vl + Ll);
+                    float cos_theta_d = max(dot(Vl, H), 0.0);
+                    float cos_theta_l = max(Ll.z, 0.0);
+                    float cos_theta_v = max(Vl.z, 0.0);
+
+                    float fd90 = 0.5 + 2.0 * rough * cos_theta_d * cos_theta_d;
+                    float fl = 1.0 + (fd90 - 1.0) * pow(max(1.0 - cos_theta_l, 0.0), 5.0);
+                    float fv = 1.0 + (fd90 - 1.0) * pow(max(1.0 - cos_theta_v, 0.0), 5.0);
+                    vec3 fd = base_alb * (fl * fv);
+
+                    if (subsurface > 0.0) {
+                        float fss90 = rough * cos_theta_d * cos_theta_d;
+                        float fss_l = 1.0 + (fss90 - 1.0) * pow(max(1.0 - cos_theta_l, 0.0), 5.0);
+                        float fss_v = 1.0 + (fss90 - 1.0) * pow(max(1.0 - cos_theta_v, 0.0), 5.0);
+                        vec3 fss = base_alb * (1.25 * (fss_l * fss_v * (1.0 / (cos_theta_l + cos_theta_v + 1e-5) - 0.5) + 0.5));
+                        fd = mix(fd, fss, subsurface);
+                    }
+
+                    vec3 f_sheen = sheen * c_sheen * pow(max(1.0 - cos_theta_d, 0.0), 5.0);
+                    attenuation = (fd * (1.0 - metallic) + f_sheen) * (w_sum / w_diff);
+                } else if (xi < w_diff + w_spec) {
+                    float alpha = rough * rough;
+                    alpha = clamp(alpha, 0.001, 1.0);
+                    vec3 H;
+                    Ll = ggx_vndf(alpha, Vl, wrandf(), wrandf(), H);
+                    if (Ll.z <= 0.0) {
+                        ok = false;
+                    } else {
+                        sd = u * Ll.x + v * Ll.y + w * Ll.z;
+                        float cos_vh = max(dot(Vl, H), 0.0);
+                        vec3 F = c_spec0 + (vec3(1.0) - c_spec0) * pow(max(1.0 - cos_vh, 0.0), 5.0);
+
+                        float lv = ggx_lambda(alpha, Vl.z);
+                        float ll = ggx_lambda(alpha, Ll.z);
+                        float ratio = (1.0 + lv) / (1.0 + lv + ll);
+
+                        attenuation = F * ratio * (w_sum / w_spec);
+                    }
+                } else {
+                    float gloss = clamp(coat_gloss, 0.0, 1.0);
+                    float alpha_g = (1.0 - gloss) * 0.1 + gloss * 0.001;
+                    float a2 = alpha_g * alpha_g;
+
+                    float u1 = wrandf(), u2 = wrandf();
+                    float cos_theta_h = sqrt(max(0.0, (1.0 - pow(a2, 1.0 - u1)) / (1.0 - a2)));
+                    float sin_theta_h = sqrt(max(0.0, 1.0 - cos_theta_h * cos_theta_h));
+                    float phi_h = 6.28318530 * u2;
+
+                    vec3 H = vec3(sin_theta_h * cos(phi_h), sin_theta_h * sin(phi_h), cos_theta_h);
+                    Ll = 2.0 * dot(Vl, H) * H - Vl;
+                    if (Ll.z <= 0.0) {
+                        ok = false;
+                    } else {
+                        sd = u * Ll.x + v * Ll.y + w * Ll.z;
+                        float cos_vh = max(dot(Vl, H), 0.0);
+                        float F_coat = 0.04 + (1.0 - 0.04) * pow(max(1.0 - cos_vh, 0.0), 5.0);
+
+                        attenuation = vec3(0.25 * clearcoat * F_coat) * (w_sum / w_coat);
                     }
                 }
             }
