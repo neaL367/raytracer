@@ -87,8 +87,9 @@ inline void build_flat_qbvh(const bvh_node &root, std::vector<flat_qnode> &nodes
 }
 
 // CPU traversal mirror of the GLSL QBVH walk: mask once per node over
-// (t_min, t_max), then scan slots low-to-high with closest narrowing —
-// the same order qbvh_node::hit uses.
+// (t_min, t_max), then scan live slots near-first by slab entry with
+// closest narrowing — the same order qbvh_node::hit uses. The sort is
+// stable, so equal entries keep DFS slot order.
 inline bool flat_qbvh_hit(const std::vector<flat_qnode> &nodes, const ray &r,
                           double t_min, double t_max, hit_record &rec) {
     if (nodes.empty())
@@ -102,23 +103,46 @@ inline bool flat_qbvh_hit(const std::vector<flat_qnode> &nodes, const ray &r,
     while (sp > 0) {
         const flat_qnode &qn = nodes[(size_t)stack[--sp]];
         unsigned mask = 0;
+        double entry[4] = {t_max, t_max, t_max, t_max};
         for (int s = 0; s < qn.nslots; ++s)
-            if (qn.slot[s].box.hit(r, t_min, t_max))
+            if (qn.slot[s].box.hit_entry(r, t_min, t_max, entry[s]))
                 mask |= 1u << (unsigned)s;
-        // Push high-to-low so slot 0 pops first (DFS order).
-        for (int s = qn.nslots - 1; s >= 0; --s) {
-            if (!(mask & (1u << (unsigned)s)))
-                continue;
+        // Stable near-first order over the live slots.
+        int order[4] = {0, 1, 2, 3};
+        int norder = 0;
+        for (int s = 0; s < qn.nslots; ++s)
+            if (mask & (1u << (unsigned)s))
+                order[norder++] = s;
+        for (int i = 1; i < norder; ++i) {
+            int key = order[i];
+            int j = i - 1;
+            while (j >= 0 && entry[order[j]] > entry[key]) {
+                order[j + 1] = order[j];
+                --j;
+            }
+            order[j + 1] = key;
+        }
+        // Traverse leaves near-first so earlier hits narrow later slots.
+        // Push inner nodes far-to-near so the nearest pops first.
+        for (int oi = 0; oi < norder; ++oi) {
+            int s = order[oi];
             const flat_qslot &sl = qn.slot[s];
-            if (sl.leaf) {
-                for (const auto &p : sl.prims) {
-                    if (p->hit(r, t_min, closest, tmp)) {
-                        closest = tmp.t;
-                        rec = tmp;
-                        any = true;
-                    }
+            if (!sl.leaf)
+                continue;
+            for (const auto &p : sl.prims) {
+                if (p->hit(r, t_min, closest, tmp)) {
+                    closest = tmp.t;
+                    rec = tmp;
+                    any = true;
                 }
-            } else if (sp < 32) {
+            }
+        }
+        for (int oi = norder - 1; oi >= 0; --oi) {
+            int s = order[oi];
+            const flat_qslot &sl = qn.slot[s];
+            if (sl.leaf)
+                continue;
+            if (sp < 32) {
                 stack[sp++] = sl.node;
             }
         }

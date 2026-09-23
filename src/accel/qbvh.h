@@ -38,15 +38,19 @@ public:
         count_box();
         count_box();
         count_box();
-        unsigned mask = box_mask(r, t_min, t_max);
+        unsigned mask = 0;
+        double entry[4] = {t_max, t_max, t_max, t_max};
+        mask = box_mask(r, t_min, t_max, entry);
         if (!mask)
             return false;
         hit_record tmp;
         bool any = false;
         double closest = t_max;
-        for (int s = 0; s < nkids; ++s) {
-            if (!(mask & (1u << (unsigned)s)))
-                continue;
+        int order[4] = {0, 1, 2, 3};
+        int norder = 0;
+        order_by_entry(entry, mask, order, norder);
+        for (int oi = 0; oi < norder; ++oi) {
+            int s = order[oi];
             const child &c = kids[(size_t)s];
             if (c.leaf) {
                 for (const auto &p : c.prims) {
@@ -72,12 +76,16 @@ public:
         ::count_box();
         ::count_box();
         ::count_box();
-        unsigned mask = box_mask(r, t_min, t_max);
+        unsigned mask = 0;
+        double entry[4] = {t_max, t_max, t_max, t_max};
+        mask = box_mask(r, t_min, t_max, entry);
         if (!mask)
             return false;
-        for (int s = 0; s < nkids; ++s) {
-            if (!(mask & (1u << (unsigned)s)))
-                continue;
+        int order[4] = {0, 1, 2, 3};
+        int norder = 0;
+        order_by_entry(entry, mask, order, norder);
+        for (int oi = 0; oi < norder; ++oi) {
+            int s = order[oi];
             const child &c = kids[(size_t)s];
             if (c.leaf) {
                 for (const auto &p : c.prims) {
@@ -182,11 +190,32 @@ private:
         }
     }
 
+    // Slots are visited near-first by slab entry. The insertion sort is
+    // stable: equal entries keep DFS slot order.
+    static void order_by_entry(const double entry[4], unsigned mask, int order[4],
+                               int &count) {
+        count = 0;
+        for (int s = 0; s < 4; ++s)
+            if (mask & (1u << (unsigned)s))
+                order[count++] = s;
+        for (int i = 1; i < count; ++i) {
+            int key = order[i];
+            int j = i - 1;
+            while (j >= 0 && entry[order[j]] > entry[key]) {
+                order[j + 1] = order[j];
+                --j;
+            }
+            order[j + 1] = key;
+        }
+    }
+
     // 4-wide slab test in fp64 lane math, identical to scalar aabb::hit:
     // per-axis scalar invD sign swap, compare+blend narrowing (NaN keeps
     // the old bound, like scalar), strict miss. Two __m128d passes.
     // (_mm_blendv avoided: SSE4.1; and/or + andnot is SSE2.)
-    unsigned box_mask(const ray &r, double t_min, double t_max) const {
+    // Entry distances are the narrowed t_min values already computed by the
+    // slab test, so callers can sort slots without repeating box tests.
+    unsigned box_mask(const ray &r, double t_min, double t_max, double entry[4]) const {
 #ifdef QBVH_SSE2
         const vec3 &o = r.origin();
         const vec3 &d = r.direction();
@@ -216,6 +245,7 @@ private:
                 __m128d lt1 = _mm_cmplt_pd(t1, tmx);
                 tmx = _mm_or_pd(_mm_and_pd(lt1, t1), _mm_andnot_pd(lt1, tmx));
             }
+            _mm_storeu_pd(entry + half * 2, tmn);
             mask |= (unsigned)_mm_movemask_pd(_mm_cmpgt_pd(tmx, tmn)) << (half * 2);
         }
         return mask & 0xF;
@@ -223,7 +253,7 @@ private:
         unsigned mask = 0;
         for (int s = 0; s < nkids; ++s) {
             aabb b(vec3(mnx[s], mny[s], mnz[s]), vec3(mxx[s], mxy[s], mxz[s]));
-            if (b.hit(r, t_min, t_max))
+            if (b.hit_entry(r, t_min, t_max, entry[s]))
                 mask |= 1u << (unsigned)s;
         }
         return mask;

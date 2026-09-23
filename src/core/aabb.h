@@ -15,6 +15,14 @@ public:
     aabb(const vec3 &a, const vec3 &b) : minimum(a), maximum(b) {}
 
     bool hit(const ray &r, double t_min, double t_max) const {
+        double entry = t_min;
+        return hit_entry(r, t_min, t_max, entry);
+    }
+
+    // Slab test that also reports the narrowed entry distance. Entry is the
+    // value already computed while narrowing, so callers can order children
+    // without repeating the box test.
+    bool hit_entry(const ray &r, double t_min, double t_max, double &entry) const {
         for (int a = 0; a < 3; ++a) {
             double invD = 1.0 / r.direction().e[a];
             double t0 = (minimum.e[a] - r.origin().e[a]) * invD;
@@ -26,6 +34,7 @@ public:
             if (t_max <= t_min)
                 return false;
         }
+        entry = t_min;
         return true;
     }
 

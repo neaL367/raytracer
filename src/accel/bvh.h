@@ -77,17 +77,24 @@ public:
             return any;
         }
         // Near-first: test the child whose box opens earlier.
-        bool hl = left && left->box.hit(r, t_min, t_max);
-        bool hr = right && right->box.hit(r, t_min, t_max);
+        double entry_l = t_min, entry_r = t_min;
+        bool hl = left && left->box.hit_entry(r, t_min, t_max, entry_l);
+        bool hr = right && right->box.hit_entry(r, t_min, t_max, entry_r);
         hit_record lrec, rrec;
         bool gl = false, gr = false;
-        // Order by entry distance would need slab t; two extra box tests
-        // are cheap vs primitive tests, so probe-then-order.
+        // Entries come from the slab probes above; only two scalar compares
+        // order the children. Ties stay left-first, preserving legacy order.
         if (hl && hr) {
-            // Both open: go left first, narrow t_max for right.
-            gl = left->hit(r, t_min, t_max, lrec);
-            double tmax2 = gl ? lrec.t : t_max;
-            gr = right->hit(r, t_min, tmax2, rrec);
+            if (entry_l <= entry_r) {
+                // Near child first, narrow t_max for the far child.
+                gl = left->hit(r, t_min, t_max, lrec);
+                double tmax2 = gl ? lrec.t : t_max;
+                gr = right->hit(r, t_min, tmax2, rrec);
+            } else {
+                gr = right->hit(r, t_min, t_max, rrec);
+                double tmax2 = gr ? rrec.t : t_max;
+                gl = left->hit(r, t_min, tmax2, lrec);
+            }
         } else if (hl) {
             gl = left->hit(r, t_min, t_max, lrec);
         } else if (hr) {
