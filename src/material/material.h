@@ -24,6 +24,8 @@ public:
     // = unnested legacy behavior. Only dielectric overrides.
     virtual int priority() const { return 0; }
     virtual double ior() const { return 1.0; }
+    // Absorption sigma for Beer's law (M58): default black = clear.
+    virtual vec3 absorb() const { return vec3(0, 0, 0); }
     // Sampling density of the scattered direction (solid angle). Delta
     // materials (mirror, glass) return 0: the integrator counts their light
     // hits full instead of MIS-weighting them.
@@ -215,8 +217,12 @@ public:
     // Default 0 reproduces legacy single-level front_face behavior exactly.
     dielectric(double ri, double r, int pri)
         : ir(ri), roughness(r < 0 ? 0 : (r > 1 ? 1 : r)), prio(pri) {}
+    // Absorbing glass (M58): Beer's law over the nested exit chord.
+    dielectric(double ri, double r, int pri, const vec3 &sigma)
+        : ir(ri), roughness(r < 0 ? 0 : (r > 1 ? 1 : r)), prio(pri), sigma(sigma) {}
     int priority() const override { return prio; }
     double ior() const override { return ir; }
+    vec3 absorb() const override { return sigma; }
     bool scatter(const ray &in, const hit_record &rec,
                  vec3 &attenuation, ray &scattered) const override {
         if (roughness <= 0)
@@ -282,6 +288,9 @@ public:
         prm[1] = (float)roughness; // 0 = legacy delta path, bit-exact
         prm[2] = (float)ir;
         prm[3] = (float)prio; // nesting priority (M57); 0 = legacy
+        alb[0] = (float)sigma.x(); // absorption sigma (M58); 0 = clear
+        alb[1] = (float)sigma.y();
+        alb[2] = (float)sigma.z();
         return true;
     }
 
@@ -289,6 +298,7 @@ public:
     double ir;
     double roughness;
     int prio = 0; // nesting priority (M57); 0 = legacy unnested
+    vec3 sigma{0, 0, 0}; // absorption (M58); 0 = clear glass
     // Schlick approx: grazing -> mirror, normal -> ~4% for glass.
     static double reflectance(double cos, double ref_idx) {
         double r0 = (1 - ref_idx) / (1 + ref_idx);

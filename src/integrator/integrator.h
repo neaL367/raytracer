@@ -93,11 +93,17 @@ public:
             // set, else legacy front_face. Non-dielectrics skip (the virtuals
             // default to vacuum, so only true glass routes here).
             if (rec.mat->ior() != 1.0 || rec.mat->priority() != 0) {
-                double eta = 0;
-                if (nest.resolve(rec.mat->ior(), rec.mat->priority(), rec.hit_prim,
-                                 eta) != medium_stack::PASS) {
+                double eta = 0, chord = 0;
+                vec3 exit_absorb;
+                medium_stack::event ev =
+                    nest.resolve(rec.mat->ior(), rec.mat->priority(), rec.hit_prim,
+                                 rec.point, rec.mat->absorb(), eta, chord, exit_absorb);
+                if (ev != medium_stack::PASS) {
                     rec.nest_eta = eta;
                     rec.nest_set = true;
+                    // Beer's law on the exit chord (M58): ENTER only stamps.
+                    if (ev == medium_stack::EXIT)
+                        throughput = throughput * beer_transmittance(exit_absorb, chord);
                 }
             }
             if (!rec.mat->scatter(cur, rec, attenuation, scattered))

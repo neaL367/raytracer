@@ -644,52 +644,80 @@ static void t_nesting() {
     medium_stack st;
     EXPECT_TRUE(st.depth() == 1);
     EXPECT_NEAR(st.top().ior, 1.0);
-    double eta = 0;
+    double eta = 0, chord = -1;
+    vec3 xabs;
+    vec3 p0(0, 0, -100), p1(0, 0, -30), p2(0, 0, 30), p3(0, 0, 100);
+    vec3 clear(0, 0, 0), amber(0.05, 0.12, 0.3);
     int glass = 1, milk = 2, other = 3; // stand-in prim ids
-    EXPECT_TRUE(st.resolve(1.5, 1, &glass, eta) == medium_stack::ENTER);
+    EXPECT_TRUE(st.resolve(1.5, 1, &glass, p0, clear, eta, chord, xabs) ==
+                medium_stack::ENTER);
     EXPECT_NEAR(eta, 1.0 / 1.5);
     EXPECT_TRUE(st.depth() == 2);
-    EXPECT_TRUE(st.resolve(1.33, 2, &milk, eta) == medium_stack::ENTER);
+    EXPECT_TRUE(st.resolve(1.33, 2, &milk, p1, amber, eta, chord, xabs) ==
+                medium_stack::ENTER);
     EXPECT_NEAR(eta, 1.5 / 1.33);
     EXPECT_TRUE(st.depth() == 3);
     EXPECT_TRUE(st.top().pri == 2);
-    // Exit inner first (identity), then outer: etas invert exactly.
-    EXPECT_TRUE(st.resolve(1.33, 2, &milk, eta) == medium_stack::EXIT);
+    // Exit inner first (identity), then outer: etas invert exactly,
+    // chords span entry->exit, exited sigma reported.
+    EXPECT_TRUE(st.resolve(1.33, 2, &milk, p2, amber, eta, chord, xabs) ==
+                medium_stack::EXIT);
     EXPECT_NEAR(eta, 1.33 / 1.5);
+    EXPECT_NEAR(chord, 60.0);
+    EXPECT_NEAR(xabs.z(), 0.3);
     EXPECT_TRUE(st.depth() == 2);
-    EXPECT_TRUE(st.resolve(1.5, 1, &glass, eta) == medium_stack::EXIT);
+    EXPECT_TRUE(st.resolve(1.5, 1, &glass, p3, clear, eta, chord, xabs) ==
+                medium_stack::EXIT);
     EXPECT_NEAR(eta, 1.5 / 1.0);
+    EXPECT_NEAR(chord, 200.0);
     EXPECT_TRUE(st.depth() == 1);
     // Other ball while inside glass: same pri, different id -> PASS.
     medium_stack st2;
-    EXPECT_TRUE(st2.resolve(1.5, 1, &glass, eta) == medium_stack::ENTER);
-    EXPECT_TRUE(st2.resolve(1.5, 1, &other, eta) == medium_stack::PASS);
+    EXPECT_TRUE(st2.resolve(1.5, 1, &glass, p0, clear, eta, chord, xabs) ==
+                medium_stack::ENTER);
+    EXPECT_TRUE(st2.resolve(1.5, 1, &other, p1, clear, eta, chord, xabs) ==
+                medium_stack::PASS);
     EXPECT_TRUE(st2.depth() == 2); // untouched
     EXPECT_TRUE(st2.top().id == &glass);
     // Lower-pri dielectric from inside higher medium -> PASS.
-    EXPECT_TRUE(st2.resolve(1.5, 0, &other, eta) == medium_stack::PASS);
+    EXPECT_TRUE(st2.resolve(1.5, 0, &other, p1, clear, eta, chord, xabs) ==
+                medium_stack::PASS);
     EXPECT_TRUE(st2.depth() == 2);
     // Overflow past CAP: 8th push refuses, stack intact.
     medium_stack st3;
     int ids[9] = {0};
     for (int k = 0; k < 7; ++k)
-        EXPECT_TRUE(st3.resolve(1.5, k, &ids[k], eta) == medium_stack::ENTER);
+        EXPECT_TRUE(st3.resolve(1.5, k, &ids[k], p0, clear, eta, chord, xabs) ==
+                    medium_stack::ENTER);
     EXPECT_TRUE(st3.depth() == 8);
-    EXPECT_TRUE(st3.resolve(1.5, 8, &ids[8], eta) == medium_stack::PASS);
+    EXPECT_TRUE(st3.resolve(1.5, 8, &ids[8], p0, clear, eta, chord, xabs) ==
+                medium_stack::PASS);
     EXPECT_TRUE(st3.depth() == 8);
     // Pri-0 default reproduces legacy front_face etas (enter 1/ir, exit ir).
     medium_stack st4;
     int g0 = 7;
-    EXPECT_TRUE(st4.resolve(1.5, 0, &g0, eta) == medium_stack::ENTER);
+    EXPECT_TRUE(st4.resolve(1.5, 0, &g0, p0, clear, eta, chord, xabs) ==
+                medium_stack::ENTER);
     EXPECT_NEAR(eta, 1.0 / 1.5);
-    EXPECT_TRUE(st4.resolve(1.5, 0, &g0, eta) == medium_stack::EXIT);
+    EXPECT_TRUE(st4.resolve(1.5, 0, &g0, p3, clear, eta, chord, xabs) ==
+                medium_stack::EXIT);
     EXPECT_NEAR(eta, 1.5 / 1.0);
+    // Beer's law: black sigma -> 1, per-channel exp falloff.
+    vec3 t0 = beer_transmittance(clear, 123.0);
+    EXPECT_NEAR(t0.x(), 1.0);
+    vec3 t1 = beer_transmittance(vec3(0.1, 0.2, 0.3), 10.0);
+    EXPECT_NEAR(t1.x(), std::exp(-1.0));
+    EXPECT_NEAR(t1.y(), std::exp(-2.0));
+    EXPECT_NEAR(t1.z(), std::exp(-3.0));
     // Material + record defaults.
     auto d = std::make_shared<dielectric>(1.5);
     EXPECT_TRUE(d->priority() == 0);
     EXPECT_NEAR(d->ior(), 1.5);
+    EXPECT_NEAR(d->absorb().x(), 0);
     auto dp = std::make_shared<dielectric>(1.5, 0.0, 2);
     EXPECT_TRUE(dp->priority() == 2);
+    auto da = std::make_shared<dielectric>(1.5, 0.0, 0, vec3(0.05, 0.12, 0.3));
+    EXPECT_NEAR(da->absorb().z(), 0.3);
     auto lam = std::make_shared<lambertian>(vec3(1, 1, 1));
     EXPECT_TRUE(lam->priority() == 0);
     hit_record rec;

@@ -31,6 +31,12 @@ inline scene_data build_sss(double aspect, double aperture) {
     scene.objs.push_back(milk);
     scene.media.push_back(milk);
 
+    // ---- Amber ball: lone tinted glass (M58: Beer's law demo) ----
+    auto amber = std::make_shared<sphere>(
+        point3(160, 35, 60), 35,
+        std::make_shared<dielectric>(1.5, 0.0, 0, vec3(0.004, 0.01, 0.025)));
+    scene.objs.push_back(amber);
+
     // ---- Camera + environment ----
     point3 lookfrom(0, 160, -330);
     point3 lookat(0, 90, 0);
