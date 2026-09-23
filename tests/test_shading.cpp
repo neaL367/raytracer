@@ -662,21 +662,20 @@ static void t_env() {
     hittable_list empty;
     std::vector<light> none;
     std::vector<std::shared_ptr<hittable>> nomedia;
+    const render_params params{empty, none, 50, nomedia, false};
+    const render_params env_params{empty, none, 50, nomedia, true};
     rng_seed(200);
-    vec3 miss = tracer.Li(ray(vec3(0, 0, 0), vec3(0, 0.5, -1)), empty, none, 50,
-                           nomedia, false);
+    vec3 miss = tracer.Li(ray(vec3(0, 0, 0), vec3(0, 0.5, -1)), params);
     vec3 expect = env_light::sky(vec3(0, 0.5, -1));
     EXPECT_NEAR(miss.x(), expect.x());
     EXPECT_NEAR(miss.y(), expect.y());
     EXPECT_NEAR(miss.z(), expect.z());
     // Env-on primary miss sees the sun when aimed at it.
     rng_seed(201);
-    vec3 sunshot =
-        tracer.Li(ray(vec3(0, 0, 0), sun), empty, none, 50, nomedia, true);
+    vec3 sunshot = tracer.Li(ray(vec3(0, 0, 0), sun), env_params);
     EXPECT_TRUE(sunshot.x() > 20.0);
     rng_seed(202);
-    vec3 antishot =
-        tracer.Li(ray(vec3(0, 0, 0), -sun), empty, none, 50, nomedia, true);
+    vec3 antishot = tracer.Li(ray(vec3(0, 0, 0), -sun), env_params);
     EXPECT_NEAR(antishot.x(), env_light::sky(-sun).x());
     // Scene flag defaults off (frozen), opts in.
     scene_data s0 = build_default(16.0 / 9.0, 0.0);
@@ -798,8 +797,9 @@ static void t_material_completeness() {
         // 4. 1-pixel Li execution check: hits the material branch without NaN
         qbvh_node world(sdata.objs, 0, sdata.objs.size());
         integrator tracer;
+        const render_params params{world, sdata.lights, 4, sdata.media, false, false};
         rng_seed(100 + static_cast<int>(type));
-        vec3 L = tracer.Li(r, world, sdata.lights, 4, sdata.media, false, false);
+        vec3 L = tracer.Li(r, params);
         EXPECT_TRUE(!std::isnan(L.x()) && !std::isnan(L.y()) && !std::isnan(L.z()));
         EXPECT_TRUE(L.x() >= 0.0 && L.y() >= 0.0 && L.z() >= 0.0);
     }

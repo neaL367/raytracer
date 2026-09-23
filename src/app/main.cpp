@@ -159,6 +159,8 @@ int main(int argc, char **argv) {
     qbvh_node world(objs, 0, objs.size(), use_sah);
 
     integrator tracer;
+    const render_params params{world, lights, max_depth, scene.media,
+                               scene.env_light, scene.black_bg, mix_pdf};
     std::vector<vec3> fb((size_t)W * H);
     // Guide buffers only under --denoise/--aov: default pixels byte-exact.
     std::vector<vec3> albedo_fb((size_t)W * H), normal_fb((size_t)W * H);
@@ -180,7 +182,7 @@ int main(int argc, char **argv) {
             double u = double(i) / (W - 1);
             double v = double(j) / (H - 1);
             ray primary = cam.get_ray(u, v);
-            acc = tracer.Li(primary, world, lights, max_depth, scene.media, scene.env_light, scene.black_bg, mix_pdf);
+            acc = tracer.Li(primary, params);
             if (want_guides) {
                 vec3 a, n;
                 bool hit = false;
@@ -203,7 +205,7 @@ int main(int argc, char **argv) {
                 double u = (i + ox) / W;
                 double v = (j + oy) / H;
                 ray primary = cam.get_ray(u, v);
-                acc += tracer.Li(primary, world, lights, max_depth, scene.media, scene.env_light, scene.black_bg, mix_pdf);
+                acc += tracer.Li(primary, params);
                 if (want_guides) {
                     vec3 a, n;
                     bool hit = false;
@@ -232,7 +234,7 @@ int main(int argc, char **argv) {
                 double u = (i + ox) / W;
                 double v = (j + oy) / H;
                 ray primary = cam.get_ray(u, v);
-                acc += tracer.Li(primary, world, lights, max_depth, scene.media, scene.env_light, scene.black_bg, mix_pdf);
+                acc += tracer.Li(primary, params);
                 // Guides appended after beauty: deterministic order, and
                 // AOV uses no RNG so the beauty stream never shifts.
                 if (want_guides) {
