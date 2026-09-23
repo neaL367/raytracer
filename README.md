@@ -66,14 +66,11 @@ Linux/macOS build the same CMake tree (C++20, no Win32 API anywhere).
 Per-OS setup:
 
 ```sh
-# Ubuntu: LunarG repo for the SDK + SDL3 system deps + Lavapipe
-CODENAME=$(lsb_release -cs)
-wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg-signing-key-pub.asc > /dev/null
-sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-$CODENAME.list https://packages.lunarg.com/vulkan/$CODENAME/vulkan-$CODENAME.list
-sudo apt-get update -qq && sudo apt-get install -y vulkan-sdk mesa-vulkan-drivers \
-  libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev \
-  libxinerama-dev libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
-  libpipewire-0.3-dev libpulse-dev libasound2-dev libudev-dev
+# Ubuntu: archive Vulkan packages + SDL3 system deps + Lavapipe
+sudo apt-get update -qq && sudo apt-get install -y glslc libvulkan-dev \
+  mesa-vulkan-drivers libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+  libxi-dev libxss-dev libxinerama-dev libwayland-dev libxkbcommon-dev \
+  libegl1-mesa-dev libpipewire-0.3-dev libpulse-dev libasound2-dev libudev-dev
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
 ctest --test-dir build --output-on-failure
 

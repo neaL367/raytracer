@@ -36,15 +36,11 @@ jobs:
       - name: Install Vulkan SDK (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
         run: |
-          CODENAME=$(lsb_release -cs)
-          # Retry: runner<->lunarg links flap occasionally (silent -q exit 8).
-          for i in 1 2 3; do
-            wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg-signing-key-pub.asc > /dev/null && \
-            sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-$CODENAME.list https://packages.lunarg.com/vulkan/$CODENAME/vulkan-$CODENAME.list && break || sleep 10
-          done
-          test -s /etc/apt/trusted.gpg.d/lunarg-signing-key-pub.asc
+          # Ubuntu archive only (no LunarG repo: version title claims and
+          # meta-package names drift; CI builds + tests, never anchors).
+          # glslc = shaderc binary pkg; libvulkan-dev = headers + loader.
           sudo apt-get update -qq
-          sudo apt-get install -y vulkan-sdk mesa-vulkan-drivers
+          sudo apt-get install -y glslc libvulkan-dev mesa-vulkan-drivers
           # SDL3 static-build system deps (X11/Wayland/audio/udev).
           sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
             libxi-dev libxss-dev libxinerama-dev libwayland-dev libxkbcommon-dev \
@@ -54,11 +50,13 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: |
           # Pinned to the local SDK (verified 200); resolve the installed
-          # dir since the pkg may drift.
+          # dir since the pkg may drift. Verbose mount: a silent -quiet
+          # failure here is undiagnosable.
           curl -L -o /tmp/vulkansdk.dmg https://sdk.lunarg.com/sdk/download/1.4.350.0/mac/vulkan-sdk.dmg
-          hdiutil attach /tmp/vulkansdk.dmg -mountpoint /Volumes/vulkan -nobrowse -quiet
-          sudo installer -pkg /Volumes/vulkan/InstallVulkan*.pkg -target /
-          hdiutil detach /Volumes/vulkan -quiet
+          hdiutil attach /tmp/vulkansdk.dmg -mountpoint /Volumes/vulkan -nobrowse
+          ls /Volumes/vulkan
+          sudo installer -verbose -pkg /Volumes/vulkan/*.pkg -target /
+          hdiutil detach /Volumes/vulkan
           VULKAN_SDK=$(ls -d $HOME/VulkanSDK/*/macOS | tail -1)
           echo "VULKAN_SDK=$VULKAN_SDK" >> $GITHUB_ENV
           "$VULKAN_SDK/bin/glslc" --version
