@@ -66,10 +66,14 @@ inline double power_weight(double pdf_a, double pdf_b) {
 }
 
 // 50/50 mixture of the two strategies, evaluated for one direction.
+// Empty lights degenerate to pure cosine (not half-cosine: the sampler
+// below always takes the cosine branch then, so the pdf must match).
 inline double mixture_value(const hittable &world, const std::vector<light> &lights,
                             const vec3 &origin, const vec3 &dir, const vec3 &normal,
                             double time) {
     double c = cosine_value(unit_vector(dir), normal);
+    if (lights.empty())
+        return c;
     double l = nee_value(world, lights, origin, unit_vector(dir), time);
     return 0.5 * c + 0.5 * l;
 }

@@ -40,7 +40,8 @@ public:
     vec3 Li(const ray &r, const hittable &world,
             const std::vector<light> &lights, int max_depth,
             const std::vector<std::shared_ptr<hittable>> &media,
-            bool use_env = false, bool black_bg = false) const {
+            bool use_env = false, bool black_bg = false,
+            bool mix_pdf = false) const {
         count_ray(); // primary
         vec3 throughput(1, 1, 1);
         vec3 L(0, 0, 0);
@@ -122,7 +123,7 @@ public:
                 vol_nee = volume_nee_fires(dens);
             }
 
-            if (diffuse && !lights.empty()) {
+            if (diffuse && !lights.empty() && !mix_pdf) {
                 // Next-event estimation: uniform light + uniform point.
                 int li = (int)(random_double() * lights.size());
                 if (li >= (int)lights.size())
@@ -156,7 +157,7 @@ public:
                 }
             }
 
-            if (use_env && diffuse) {
+            if (use_env && diffuse && !mix_pdf) {
                 // Environment NEE: uniform-sphere sample, shadow probe to
                 // infinity, power MIS against the cosine strategy. Draws RNG
                 // only when opted in, so env-off streams stay byte-exact.
@@ -177,7 +178,7 @@ public:
                 }
             }
 
-            if (vol_nee && !lights.empty()) {
+            if (vol_nee && !lights.empty() && !mix_pdf) {
                 // Volume NEE (M59): direct-light in-scattering at the event.
                 // Phase is uniform (no cosS gate, no cosS in the weight);
                 // MIS against the 1/4PI continuation, like surface NEE.
@@ -211,7 +212,7 @@ public:
                 }
             }
 
-            if (use_env && vol_nee) {
+            if (use_env && vol_nee && !mix_pdf) {
                 // Environment in-scattering: uniform sphere, probe to
                 // infinity, power MIS against the uniform continuation.
                 vec3 edir = env_light::sample_dir(random_double(), random_double());
@@ -229,17 +230,37 @@ public:
             }
 
             if (diffuse) {
-                // Cosine sampling: f*cos/pdf = rho exact, no division.
-                vec3 wi = unit_vector(scattered.direction());
-                pdf_b_last = cosine_pdf(dot(wi, rec.normal));
-                throughput = throughput * attenuation;
-                specular = false;
+                if (mix_pdf) {
+                    // Book mixture path (M61): direction + density from the
+                    // 50/50 blend, weight by cosine/mixture, no shadow rays.
+                    // Emission counts full (specular=true below): the blend
+                    // already importance-samples lights, no MIS weights.
+                    double pdf_mix = 0;
+                    vec3 mdir = direction_pdf::sample_mixture(world, lights, rec.point,
+                                                              rec.normal, cur.time(),
+                                                              pdf_mix);
+                    double cval =
+                        direction_pdf::cosine_value(unit_vector(mdir), rec.normal);
+                    if (pdf_mix <= 0)
+                        break; // degenerate: absorbed
+                    throughput = throughput * attenuation * (cval / pdf_mix);
+                    scattered = ray(rec.point, mdir);
+                } else {
+                    // Cosine sampling: f*cos/pdf = rho exact, no division.
+                    vec3 wi = unit_vector(scattered.direction());
+                    pdf_b_last = cosine_pdf(dot(wi, rec.normal));
+                    throughput = throughput * attenuation;
+                }
+                specular = mix_pdf; // mixture: full counts, no MIS anywhere
             } else {
                 // First-class sampling density: delta materials report 0 and
                 // keep full light counts; isotropic now MIS-weights (1/4PI).
                 pdf_b_last = rec.mat->direction_pdf(scattered.direction(), rec);
                 throughput = throughput * attenuation;
                 specular = (pdf_b_last <= 0);
+                // Mixture mode: volumes continue pure, found lights full.
+                if (mix_pdf)
+                    specular = true;
             }
             prev_point = rec.point;
             scattered.set_time(cur.time()); // path shares primary time

@@ -42,6 +42,7 @@ int main(int argc, char **argv) {
     bool marble_demo = false;
     bool env_demo = false;
     bool use_sobol = false; // --sampler sobol: rotated Sobol pixel set
+    bool mix_pdf = false; // --pdf mixture: Book 3 mixture-density path
     bool dump_aov = false; // --aov: albedo/normal/depth PFM trio next to PPM
     bool fixed_rng = false; // --fixed-rng: deterministic 0.5 stream (M54)
     unsigned seed = 42; // base RNG seed; per-pixel stream = seed + pixel index
@@ -97,6 +98,8 @@ int main(int argc, char **argv) {
             hdr_path = argv[++i];
         else if (a == "--sampler" && i + 1 < argc)
             use_sobol = (std::string(argv[++i]) == "sobol");
+        else if (a == "--pdf" && i + 1 < argc)
+            mix_pdf = (std::string(argv[++i]) == "mixture");
         else if (a == "--aov")
             dump_aov = true;
         else if (a == "--fixed-rng")
@@ -170,7 +173,7 @@ int main(int argc, char **argv) {
             double u = double(i) / (W - 1);
             double v = double(j) / (H - 1);
             ray primary = cam.get_ray(u, v);
-            acc = tracer.Li(primary, world, lights, max_depth, scene.media, scene.env_light, scene.black_bg);
+            acc = tracer.Li(primary, world, lights, max_depth, scene.media, scene.env_light, scene.black_bg, mix_pdf);
             if (want_guides) {
                 vec3 a, n;
                 bool hit = false;
@@ -193,7 +196,7 @@ int main(int argc, char **argv) {
                 double u = (i + ox) / W;
                 double v = (j + oy) / H;
                 ray primary = cam.get_ray(u, v);
-                acc += tracer.Li(primary, world, lights, max_depth, scene.media, scene.env_light, scene.black_bg);
+                acc += tracer.Li(primary, world, lights, max_depth, scene.media, scene.env_light, scene.black_bg, mix_pdf);
                 if (want_guides) {
                     vec3 a, n;
                     bool hit = false;
@@ -222,7 +225,7 @@ int main(int argc, char **argv) {
                 double u = (i + ox) / W;
                 double v = (j + oy) / H;
                 ray primary = cam.get_ray(u, v);
-                acc += tracer.Li(primary, world, lights, max_depth, scene.media, scene.env_light, scene.black_bg);
+                acc += tracer.Li(primary, world, lights, max_depth, scene.media, scene.env_light, scene.black_bg, mix_pdf);
                 // Guides appended after beauty: deterministic order, and
                 // AOV uses no RNG so the beauty stream never shifts.
                 if (want_guides) {
@@ -325,6 +328,7 @@ int main(int argc, char **argv) {
               << " noise=" << (marble_demo ? "on" : "off")
               << " env=" << (env_demo ? "on" : "off")
               << " sampler=" << (use_sobol ? "sobol" : "stratified")
+              << " pdf=" << (mix_pdf ? "mixture" : "mis")
               << " aov=" << (dump_aov ? "on" : "off") << " seed=" << base_seed << "\n";
     std::cout << "render " << secs << "s";
     if (bench) {

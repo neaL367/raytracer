@@ -611,6 +611,10 @@ static void t_pdf() {
     double p3 = -1;
     vec3 d3 = direction_pdf::sample_mixture(world, none, origin, n, 0.0, p3);
     EXPECT_TRUE(p3 > 0 && dot(d3, n) > 0);
+    // Empty mixture pdf equals the cosine lobe exactly (not half).
+    EXPECT_NEAR(direction_pdf::mixture_value(world, none, origin, vec3(0, 1, 0), n,
+                                             0.0),
+                direction_pdf::cosine_value(vec3(0, 1, 0), n));
     // Power heuristic: equal densities split half; dominant takes ~all.
     EXPECT_NEAR(direction_pdf::power_weight(1.0, 1.0), 0.5);
     EXPECT_NEAR(direction_pdf::power_weight(3.0, 1.0), 0.9);

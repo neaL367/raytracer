@@ -44,6 +44,7 @@ layout(push_constant) uniform PC {
     int nblack; // black background (enclosed scenes): miss adds nothing, no RNG
     int maxdepth; // bounce cap (depth ladder forensics; prod = 50)
     int fixed_rng; // forensics hatch: wrandf returns 0.5 (deterministic)
+    int mixpdf; // Book 3 mixture-density path (M61): 0 = power-MIS default
 }
 pc;
 
@@ -404,7 +405,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             // (0.01 mirrors kVolumeNeeMinDensity on the host).
             // Shadow sites 3/4 (surface NEE uses 1/2): no hash cross-talk.
             bool vol_nee = fog_slot >= 0 && spheres[fog_slot].params.y >= 0.01;
-            if (pc.nlights > 0 && vol_nee) {
+            if (pc.nlights > 0 && vol_nee && pc.mixpdf == 0) {
                 int li = int(wrandf() * float(pc.nlights));
                 li = min(li, pc.nlights - 1);
                 vec3 lp, ln, lemit;
@@ -427,7 +428,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                     }
                 }
             }
-            if (pc.nenv > 0 && vol_nee) {
+            if (pc.nenv > 0 && vol_nee && pc.mixpdf == 0) {
                 // Environment in-scattering mirrors the CPU: uniform sphere,
                 // probe to infinity, power MIS vs uniform continuation.
                 vec3 edir = env_sample_dir(wrandf(), wrandf());
@@ -444,7 +445,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             }
             d = normalize(wrand_in_sphere());
             pdf_b_last = 1.0 / (4.0 * 3.14159265);
-            specular = false;
+            specular = (pc.mixpdf != 0); // mixture: found lights full
             pty = -1;
             pidx = -1; // event site has no prim: next trace skips nothing
             if (bounce >= 3) {
@@ -694,7 +695,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
         }
         if (!ok)
             break;
-        if (diffuse && pc.nlights > 0) {
+        if (diffuse && pc.nlights > 0 && pc.mixpdf == 0) {
             int li = int(wrandf() * float(pc.nlights));
             li = min(li, pc.nlights - 1);
             vec3 lp, ln, lemit;
@@ -743,7 +744,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                 }
             }
         }
-        if (pc.nenv > 0 && diffuse) {
+        if (pc.nenv > 0 && diffuse && pc.mixpdf == 0) {
             // Environment NEE mirrors CPU: uniform sphere, probe to
             // infinity, power MIS vs cosine. RNG only when opted in.
             vec3 edir = env_sample_dir(wrandf(), wrandf());
@@ -779,10 +780,65 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             }
         }
         if (diffuse) {
-            vec3 wdir = normalize(sd);
-            pdf_b_last = max(dot(wdir, n), 0.0) / 3.14159265;
-            throughput *= attenuation;
-            specular = false;
+            if (pc.mixpdf != 0) {
+                // Book mixture (M61): 50/50 cosine/light-aimed direction,
+                // density from the traced reverse; weight by cosine/mix.
+                // No shadow rays; emission counts full (specular below).
+                vec3 md;
+                // Branch order mirrors the host sample_mixture exactly
+                // (cosine iff empty or coin<0.5): identical streams.
+                if (pc.nlights == 0 || wrandf() < 0.5) {
+                    vec3 u, v, w;
+                    wonb(n, u, v, w);
+                    vec3 cd = wcosine_dir();
+                    md = u * cd.x + v * cd.y + w * cd.z;
+                } else {
+                    int mli = int(wrandf() * float(pc.nlights));
+                    mli = min(mli, pc.nlights - 1);
+                    vec3 mlp, mln, mlemit;
+                    float marea;
+                    light_sample(mli, rtime, wrandf(), wrandf(), mlp, mln, marea,
+                                 mlemit);
+                    md = normalize(mlp - hitp0);
+                }
+                vec3 mud = normalize(md);
+                float cosb = max(dot(mud, n), 0.0) / 3.14159265;
+                float pl = 0.0;
+                if (pc.nlights > 0) {
+                    // Reverse density: geometric pdf if md finds an emitter.
+                    float ft;
+                    vec3 fn;
+                    vec4 fa, fab, fe, fp;
+                    int fli, flt;
+                    vec2 fuv;
+                    vec3 ftg;
+                    bool fht;
+                    int fsy, fsi;
+                    if (trace_solid(hitp0, mud, rtime, 1e30, ft, fn, fa, fab, fe,
+                                    fp, fli, flt, fuv, ftg, fht, sty, sidx, 1e30,
+                                    fsy, fsi) &&
+                        flt >= 0) {
+                        // mud is unit: ft is the distance, mud the direction.
+                        vec3 fln;
+                        float farea;
+                        found_light(flt, fli, hitp0 + mud * ft, rtime, fln, farea);
+                        float fcosA = abs(dot(fln, -mud));
+                        if (fcosA > 0.0 && farea > 0.0)
+                            pl = ft * ft / (float(pc.nlights) * farea * fcosA);
+                    }
+                }
+                float pdf_mix = (pc.nlights > 0) ? 0.5 * (cosb + pl) : cosb;
+                if (pdf_mix <= 0.0)
+                    break; // degenerate: absorbed (mirrors CPU)
+                throughput *= attenuation * (cosb / pdf_mix);
+                sd = md;
+                specular = true; // mixture: full counts, no MIS anywhere
+            } else {
+                vec3 wdir = normalize(sd);
+                pdf_b_last = max(dot(wdir, n), 0.0) / 3.14159265;
+                throughput *= attenuation;
+                specular = false;
+            }
         } else {
             throughput *= attenuation;
             specular = true;

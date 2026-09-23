@@ -18,7 +18,7 @@ build\Release\raytracer.exe [--samples 16] [--threads N] [--tile 8]
   [--shutter T0 T1] [--fog D] [--het D] [--aperture A] [--width W] [--height H]
   [--seed 42] [--hdr float.pfm] [--bench] [--noise] [--env]
   [--sampler stratified|sobol] [--aov] [--list-scenes]
-  [--maxdepth 50] [--fixed-rng]
+  [--maxdepth 50] [--fixed-rng] [--pdf mis|mixture]
 ```
 
 Renders `out/image.ppm` (400x225, 16spp stratified default,
@@ -32,13 +32,16 @@ pre-exposure float (PFM) for post-workflows alongside the PPM.
 plus book aliases). weekend/book2 default to 500spp book-style renders.
 `--maxdepth` caps bounces (depth-ladder forensics; prod 50). `--fixed-rng`
 forces a deterministic 0.5 stream (pixel centers, center light samples)
-for exact cross-backend debugging.
+for exact cross-backend debugging. `--pdf mixture` selects the Book 3
+mixture-density path (no shadow rays, full light counts); default `mis`
+(power-heuristic MIS) supersedes it on variance (~2.2x on cornell).
 
 ```bat
 build\Release\rt_gpu.exe [path.spv] [out.ppm] [--spp N] [--chunk C] [--seed S]
   [--scene NAME] [--shutter T0 T1] [--fog D] [--het D] [--width W] [--height H]
   [--hdr float.pfm] [--aperture A] [--exposure X] [--denoise] [--joint]
   [--noise] [--env] [--list-scenes] [--maxdepth 50] [--fixed-rng] [--aov]
+  [--pdf mis|mixture]
 ```
 
 Headless Vulkan compute backend (discrete NVIDIA pick). Statistical CPU
@@ -54,6 +57,7 @@ under ~2 s. `--denoise`/`--joint` run once on the averaged beauty.
 dispatches; the table is advisory, watch the dispatch ms.)
 `--maxdepth`/`--fixed-rng` mirror the CPU forensics hatches. `--aov`
 downloads the albedo/normal guides as PFM (last chunk wins when chunked).
+`--pdf mixture` selects the Book 3 path; default `mis`.
 
 ```bat
 build\Release\rt_view.exe [image.ppm] [--diff other.ppm] [--scale N] [--stats]
@@ -218,4 +222,8 @@ M60 done: density-gated volume NEE (fire >= 0.01 majorant: haze skips
 back to walks, milk/smoke fire; unbiased, sample-independent gate).
 book2 d1k floor recovered to 0.55, full cross 3.56 vs 2.98 floor signed
 ~0; sss bit-identical to M59. Anchors IX (book2 only).
+M61 done: Book 3 mixture-density path as `--pdf mixture` alternate (both
+backends; no shadow rays, full light counts; fixed-RNG exact; cornell
+converges to MIS mean at 2.2x the noise). Default stays power-MIS.
+Trilogy mapping complete: every chapter implemented or superseded.
 Next: MoltenVK verify (blocked, no hardware).

@@ -31,6 +31,7 @@ int main(int argc, char **argv) {
     int spp = 16, seed = 42;
     int max_depth = 50; // bounce cap (depth ladder forensics)
     bool fixed_rng = false; // --fixed-rng: deterministic 0.5 stream (M54)
+    bool mix_pdf = false; // --pdf mixture: Book 3 mixture-density path
     int chunk_spp = 0; // --chunk C: spp per dispatch (TDR); 0 = one shot
     std::string scene_name = "default";
     std::string hdr_path; // empty = no float dump
@@ -85,6 +86,8 @@ int main(int argc, char **argv) {
             max_depth = std::max(1, std::atoi(argv[++i]));
         else if (a == "--fixed-rng")
             fixed_rng = true;
+        else if (a == "--pdf" && i + 1 < argc)
+            mix_pdf = (std::string(argv[++i]) == "mixture");
         else if (a.ends_with(".spv"))
             shader = a;
         else if (a.ends_with(".ppm"))
@@ -170,14 +173,15 @@ int main(int argc, char **argv) {
     for (const auto &s : scene.spheres)
         if (s.prm[0] == 6 || s.prm[0] == 8)
             nfog++;
-    uint32_t push15[15];
+    uint32_t push16[16];
     for (int k = 0; k < 10; ++k)
-        push15[k] = push10[k];
-    push15[10] = (uint32_t)nfog;
-    push15[11] = sdata.env_light ? 1u : 0u;
-    push15[12] = sdata.black_bg ? 1u : 0u;
-    push15[13] = (uint32_t)max_depth;
-    push15[14] = fixed_rng ? 1u : 0u;
+        push16[k] = push10[k];
+    push16[10] = (uint32_t)nfog;
+    push16[11] = sdata.env_light ? 1u : 0u;
+    push16[12] = sdata.black_bg ? 1u : 0u;
+    push16[13] = (uint32_t)max_depth;
+    push16[14] = fixed_rng ? 1u : 0u;
+    push16[15] = mix_pdf ? 1u : 0u;
     // Chunked submit (M52): split spp into TDR-safe dispatches, accumulate
     // linear HDR on the host in fp64 (same order as the old python script:
     // v[i]/n added per chunk, so chunked output bit-matches manual runs).
@@ -190,9 +194,9 @@ int main(int argc, char **argv) {
     int done = 0;
     for (int c = 0; c < nchunks; ++c) {
         int cspp = std::min(per, spp - done);
-        push15[5] = (uint32_t)cspp;
-        push15[6] = (uint32_t)(seed + c);
-        dispatch_ms += gpu_run(gpu, shader, push15, rgba);
+        push16[5] = (uint32_t)cspp;
+        push16[6] = (uint32_t)(seed + c);
+        dispatch_ms += gpu_run(gpu, shader, push16, rgba);
         // NOTE: divide (not multiply-by-reciprocal) to bit-match the old
         // python averaging (a/n per chunk, same order).
         for (size_t k = 0; k < acc.size(); ++k)
