@@ -21,6 +21,15 @@ struct hit_record {
     // Owning shape for volume transmittance march (media set this, shapes
     // leave null). Raw pointer: lifetime owned by the scene, never stored.
     const hittable *hit_obj = nullptr;
+    // Hit prim identity for nesting (M57): shapes stamp `this`, media leave
+    // whatever the boundary set. Fresh per query (traversals overwrite rec
+    // wholesale on hit); never consulted after a miss.
+    const hittable *hit_prim = nullptr;
+    // Nesting interface ratio (M57): the integrator resolves the medium
+    // stack before scatter() and stamps eta here; dielectric uses it when
+    // set, else legacy front_face behavior (unit tests hit the legacy path).
+    double nest_eta = 0;
+    bool nest_set = false;
 
     // Outward vs inward decided by ray dir. Glass needs true normal side.
     inline void set_face_normal(const ray &r, const vec3 &outward) {

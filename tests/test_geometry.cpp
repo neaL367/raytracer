@@ -13,6 +13,7 @@
 #include "accel/qbvh.h"
 #include "accel/qbvh_flat.h"
 #include "material/material.h"
+#include "integrator/nesting.h"
 
 #include <cmath>
 #include <memory>
@@ -637,6 +638,65 @@ static void t_tangents() {
     EXPECT_TRUE(fabs(hr.tangent.x() - 1.0) < 1e-9);
 }
 
+static void t_nesting() {
+    test_current = "nesting";
+    // Air-glass-milk-glass-air round trip through concentric shells.
+    medium_stack st;
+    EXPECT_TRUE(st.depth() == 1);
+    EXPECT_NEAR(st.top().ior, 1.0);
+    double eta = 0;
+    int glass = 1, milk = 2, other = 3; // stand-in prim ids
+    EXPECT_TRUE(st.resolve(1.5, 1, &glass, eta) == medium_stack::ENTER);
+    EXPECT_NEAR(eta, 1.0 / 1.5);
+    EXPECT_TRUE(st.depth() == 2);
+    EXPECT_TRUE(st.resolve(1.33, 2, &milk, eta) == medium_stack::ENTER);
+    EXPECT_NEAR(eta, 1.5 / 1.33);
+    EXPECT_TRUE(st.depth() == 3);
+    EXPECT_TRUE(st.top().pri == 2);
+    // Exit inner first (identity), then outer: etas invert exactly.
+    EXPECT_TRUE(st.resolve(1.33, 2, &milk, eta) == medium_stack::EXIT);
+    EXPECT_NEAR(eta, 1.33 / 1.5);
+    EXPECT_TRUE(st.depth() == 2);
+    EXPECT_TRUE(st.resolve(1.5, 1, &glass, eta) == medium_stack::EXIT);
+    EXPECT_NEAR(eta, 1.5 / 1.0);
+    EXPECT_TRUE(st.depth() == 1);
+    // Other ball while inside glass: same pri, different id -> PASS.
+    medium_stack st2;
+    EXPECT_TRUE(st2.resolve(1.5, 1, &glass, eta) == medium_stack::ENTER);
+    EXPECT_TRUE(st2.resolve(1.5, 1, &other, eta) == medium_stack::PASS);
+    EXPECT_TRUE(st2.depth() == 2); // untouched
+    EXPECT_TRUE(st2.top().id == &glass);
+    // Lower-pri dielectric from inside higher medium -> PASS.
+    EXPECT_TRUE(st2.resolve(1.5, 0, &other, eta) == medium_stack::PASS);
+    EXPECT_TRUE(st2.depth() == 2);
+    // Overflow past CAP: 8th push refuses, stack intact.
+    medium_stack st3;
+    int ids[9] = {0};
+    for (int k = 0; k < 7; ++k)
+        EXPECT_TRUE(st3.resolve(1.5, k, &ids[k], eta) == medium_stack::ENTER);
+    EXPECT_TRUE(st3.depth() == 8);
+    EXPECT_TRUE(st3.resolve(1.5, 8, &ids[8], eta) == medium_stack::PASS);
+    EXPECT_TRUE(st3.depth() == 8);
+    // Pri-0 default reproduces legacy front_face etas (enter 1/ir, exit ir).
+    medium_stack st4;
+    int g0 = 7;
+    EXPECT_TRUE(st4.resolve(1.5, 0, &g0, eta) == medium_stack::ENTER);
+    EXPECT_NEAR(eta, 1.0 / 1.5);
+    EXPECT_TRUE(st4.resolve(1.5, 0, &g0, eta) == medium_stack::EXIT);
+    EXPECT_NEAR(eta, 1.5 / 1.0);
+    // Material + record defaults.
+    auto d = std::make_shared<dielectric>(1.5);
+    EXPECT_TRUE(d->priority() == 0);
+    EXPECT_NEAR(d->ior(), 1.5);
+    auto dp = std::make_shared<dielectric>(1.5, 0.0, 2);
+    EXPECT_TRUE(dp->priority() == 2);
+    auto lam = std::make_shared<lambertian>(vec3(1, 1, 1));
+    EXPECT_TRUE(lam->priority() == 0);
+    hit_record rec;
+    EXPECT_TRUE(!rec.nest_set);
+    EXPECT_NEAR(rec.nest_eta, 0);
+}
+
 void run_geometry_tests() {
     t_sphere();
     t_list();
@@ -656,4 +716,5 @@ void run_geometry_tests() {
     t_hetprec();
     t_transmit();
     t_tangents();
+    t_nesting();
 }

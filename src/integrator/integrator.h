@@ -11,6 +11,7 @@
 #include "../geometry/volume.h"
 #include "../material/material.h"
 #include "pdf.h"
+#include "nesting.h"
 #include <cmath>
 #include <memory>
 #include <vector>
@@ -47,6 +48,7 @@ public:
         vec3 prev_point = r.origin();
         bool specular = true; // camera path: direct light views count full
         double pdf_b_last = 0;
+        medium_stack nest; // nested-dielectric path state (M57; air bottom)
         const double pi = 3.1415926535897932385;
 
         for (int bounce = 0; bounce < max_depth; ++bounce) {
@@ -86,6 +88,18 @@ public:
 
             ray scattered;
             vec3 attenuation;
+            // Nested interfaces (M57): resolve the medium stack for
+            // transmissive hits; dielectric::scatter consumes nest_eta when
+            // set, else legacy front_face. Non-dielectrics skip (the virtuals
+            // default to vacuum, so only true glass routes here).
+            if (rec.mat->ior() != 1.0 || rec.mat->priority() != 0) {
+                double eta = 0;
+                if (nest.resolve(rec.mat->ior(), rec.mat->priority(), rec.hit_prim,
+                                 eta) != medium_stack::PASS) {
+                    rec.nest_eta = eta;
+                    rec.nest_set = true;
+                }
+            }
             if (!rec.mat->scatter(cur, rec, attenuation, scattered))
                 break; // absorbed
             bool diffuse = rec.mat->is_diffuse();

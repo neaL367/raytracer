@@ -341,6 +341,14 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
     guide_a = vec3(0.0);
     guide_n = vec3(0.0);
     int pty = -1, pidx = -1; // previous-bounce prim (bounce trace skips it)
+    // Nesting stack (M57): air bottom; mirrors medium_stack (host).
+    float stk_ior[8];
+    int stk_pri[8];
+    ivec2 stk_id[8];
+    int stk_n = 1;
+    stk_ior[0] = 1.0;
+    stk_pri[0] = -1;
+    stk_id[0] = ivec2(-1, -1);
     for (int bounce = 0; bounce < pc.maxdepth; ++bounce) {
         float t;
         vec3 n;
@@ -540,9 +548,30 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
         } else {
             float ir = params.z;
             float rough = clamp(params.y, 0.0, 1.0);
+            // Nesting resolve (M57): pop on origin-prim re-hit, push on
+            // higher priority, else legacy front_face eta. Mirrors the
+            // host medium_stack exactly (pri lives in params.w).
+            float nest_eta = 0.0;
+            bool nest_ok = false;
+            {
+                int spri = int(params.w + 0.5);
+                int top = stk_n - 1;
+                if (stk_n > 1 && sty == stk_id[top].x && sidx == stk_id[top].y) {
+                    nest_eta = stk_ior[top] / stk_ior[top - 1];
+                    nest_ok = true;
+                    --stk_n;
+                } else if (spri > stk_pri[top] && stk_n < 8) {
+                    nest_eta = stk_ior[top] / ir;
+                    nest_ok = true;
+                    stk_ior[stk_n] = ir;
+                    stk_pri[stk_n] = spri;
+                    stk_id[stk_n] = ivec2(sty, sidx);
+                    ++stk_n;
+                }
+            }
             if (rough <= 0.0) {
                 // Legacy delta path, bit-exact.
-                float ratio = dot(d, n) < 0.0 ? (1.0 / ir) : ir;
+                float ratio = nest_ok ? nest_eta : (dot(d, n) < 0.0 ? (1.0 / ir) : ir);
                 vec3 unit = normalize(d);
                 vec3 nn = dot(d, n) < 0.0 ? n : -n;
                 float cosT = min(dot(-unit, nn), 1.0);
@@ -555,7 +584,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             } else {
                 // Walter microfacet BTDF (mirrors CPU): VNDF + Fresnel
                 // choice (weights cancel to G2/G1), face-forwarded frame.
-                float ratio = dot(d, n) < 0.0 ? (1.0 / ir) : ir;
+                float ratio = nest_ok ? nest_eta : (dot(d, n) < 0.0 ? (1.0 / ir) : ir);
                 vec3 V = -normalize(d);
                 vec3 nn = dot(n, V) < 0.0 ? -n : n;
                 vec3 u, v, w;

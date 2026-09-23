@@ -82,6 +82,7 @@ public:
         }
         rec.mat = mat;
         rec.hit_obj = nullptr; // clear medium tag (shared tmp reuse, M48)
+        rec.hit_prim = this; // nesting identity (M57)
         if (has_uv) {
             // Corner-UV blend (image textures consume it directly).
             double w0 = 1 - u - v;

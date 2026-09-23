@@ -7,6 +7,7 @@
 #include "cornell.h"
 #include "weekend.h"
 #include "book2.h"
+#include "sss.h"
 
 inline scene_data build_scene(const std::string &name, double aspect, double aperture,
                                 double sh0 = 0, double sh1 = 0, double fog = 0,
@@ -17,5 +18,7 @@ inline scene_data build_scene(const std::string &name, double aspect, double ape
         return build_weekend(aspect, aperture, sh0, sh1, env);
     if (name == "book2" || name == "nextweek" || name == "boxes" || name == "final2")
         return build_book2(aspect, aperture, sh0, sh1, env);
+    if (name == "sss")
+        return build_sss(aspect, aperture);
     return build_default(aspect, aperture, sh0, sh1, fog, het, marble, env);
 }

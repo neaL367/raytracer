@@ -76,7 +76,8 @@ inline void print_scenes() {
               << "  default           400x225@16  photo/cube/metal/glass + quad/orb lights\n"
               << "  cornell           256x256@16  555 box, posed blocks, ceiling light\n"
               << "  weekend [final spheres book1] 1200x675@500  book1 final, checker ground\n"
-              << "  book2 [nextweek boxes final2] 800x800@500  book2 final, dark room\n";
+              << "  book2 [nextweek boxes final2] 800x800@500  book2 final, dark room\n"
+              << "  sss             400x225@16  milk-glass SSS demo, dark room\n";
 }
 
 // Box by dimensions, rotated about Y then moved: the canonical Cornell pose

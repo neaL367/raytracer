@@ -20,6 +20,10 @@ public:
     virtual vec3 emitted() const { return vec3(0, 0, 0); }
     // NEE applies to diffuse only; specular paths skip explicit lights.
     virtual bool is_diffuse() const { return false; }
+    // Nesting priority + IOR for transmissive interfaces (M57): default 0
+    // = unnested legacy behavior. Only dielectric overrides.
+    virtual int priority() const { return 0; }
+    virtual double ior() const { return 1.0; }
     // Sampling density of the scattered direction (solid angle). Delta
     // materials (mirror, glass) return 0: the integrator counts their light
     // hits full instead of MIS-weighting them.
@@ -207,6 +211,12 @@ private:
 class dielectric : public material {
 public:
     dielectric(double ri, double r = 0) : ir(ri), roughness(r < 0 ? 0 : (r > 1 ? 1 : r)) {}
+    // Nesting priority (M57): contained shells order by pri (outer < inner).
+    // Default 0 reproduces legacy single-level front_face behavior exactly.
+    dielectric(double ri, double r, int pri)
+        : ir(ri), roughness(r < 0 ? 0 : (r > 1 ? 1 : r)), prio(pri) {}
+    int priority() const override { return prio; }
+    double ior() const override { return ir; }
     bool scatter(const ray &in, const hit_record &rec,
                  vec3 &attenuation, ray &scattered) const override {
         if (roughness <= 0)
@@ -223,7 +233,7 @@ public:
         double cosVH = dot(Vl, H);
         if (cosVH <= 0)
             return false; // degenerate microfacet: absorbed
-        double eta = rec.front_face ? (1.0 / ir) : ir; // n_i/n_o, like smooth
+        double eta = rec.nest_set ? rec.nest_eta : (rec.front_face ? (1.0 / ir) : ir); // n_i/n_o
         double sinT2 = eta * eta * (1.0 - cosVH * cosVH);
         double F = (sinT2 > 1.0) ? 1.0 : reflectance(fmin(cosVH, 1.0), eta);
         vec3 Ll;
@@ -252,7 +262,7 @@ public:
     bool scatter_smooth(const ray &in, const hit_record &rec, vec3 &attenuation,
                         ray &scattered) const {
         attenuation = vec3(1, 1, 1); // glass absorbs nothing
-        double ratio = rec.front_face ? (1.0 / ir) : ir;
+        double ratio = rec.nest_set ? rec.nest_eta : (rec.front_face ? (1.0 / ir) : ir);
         vec3 unit = unit_vector(in.direction());
         double cos_t = fmin(dot(-unit, rec.normal), 1.0);
         double sin_t = std::sqrt(1.0 - cos_t * cos_t);
@@ -271,13 +281,14 @@ public:
         prm[0] = 2;
         prm[1] = (float)roughness; // 0 = legacy delta path, bit-exact
         prm[2] = (float)ir;
-        prm[3] = 0;
+        prm[3] = (float)prio; // nesting priority (M57); 0 = legacy
         return true;
     }
 
-private:
+ private:
     double ir;
     double roughness;
+    int prio = 0; // nesting priority (M57); 0 = legacy unnested
     // Schlick approx: grazing -> mirror, normal -> ~4% for glass.
     static double reflectance(double cos, double ref_idx) {
         double r0 = (1 - ref_idx) / (1 + ref_idx);

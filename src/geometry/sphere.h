@@ -47,6 +47,7 @@ public:
         rec.mat = mat;
         rec.hit_obj = nullptr; // clear medium tag: shared tmp reuse must not
                                // misclassify solids in the shadow march (M48)
+        rec.hit_prim = this; // nesting identity (M57)
         // Spherical UVs: azimuth -> u, polar -> v. Seam at -x, poles pinch.
         {
             vec3 op = (rec.point - cen) / radius;

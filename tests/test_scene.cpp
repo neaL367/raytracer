@@ -356,6 +356,35 @@ static void t_cornell() {
     EXPECT_TRUE((int)def.objs.size() >= 17); // ground+12mesh+2sph+quad+orb
 }
 
+static void t_sss() {
+    test_current = "sss";
+    scene_data s = build_scene("sss", 16.0 / 9.0, 0.0);
+    EXPECT_TRUE((int)s.lights.size() == 1); // ceiling quad
+    EXPECT_TRUE((int)s.media.size() == 1); // milk interior
+    EXPECT_TRUE(s.black_bg); // dark room
+    // Center ray hits the milk-glass ball (shell/glass/skin/milk).
+    hittable_list world;
+    for (auto &o : s.objs)
+        world.add(o);
+    hit_record hr;
+    EXPECT_TRUE(world.hit(s.cam.get_ray(0.5, 0.5), 0.001, 1e30, hr));
+    // GPU: flattens (static spheres + quads + untransformed medium).
+    flat_scene fb;
+    EXPECT_TRUE(flatten_scene(s, fb));
+    EXPECT_TRUE(fb.nlights == 1);
+    // Shell pri 1 + skin pri 2 ride prm[3] (0 = legacy unnested).
+    int n1 = 0, n2 = 0;
+    for (const auto &sp : fb.gs.spheres) {
+        if (sp.prm[0] != 2.0f)
+            continue;
+        if (sp.prm[3] == 1.0f)
+            ++n1;
+        if (sp.prm[3] == 2.0f)
+            ++n2;
+    }
+    EXPECT_TRUE(n1 == 1 && n2 == 1);
+}
+
 static void t_flatten() {
     test_current = "flatten";
     scene_data def = build_scene("default", 16.0 / 9.0, 0.0);
@@ -1478,6 +1507,7 @@ void run_scene_tests() {
     t_flatten();
     t_expand_gpu();
     t_shutter();
+    t_sss();
     t_nee_shadow_census();
     t_hotpixel();
     t_hotpixel2();
