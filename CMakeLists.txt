@@ -26,7 +26,9 @@ add_test(NAME unit_tests COMMAND raytracer_tests WORKING_DIRECTORY ${CMAKE_SOURC
 
 # GPU backend: headless Vulkan compute. CPU binary untouched.
 find_package(Vulkan REQUIRED)
-find_program(GLSLC_EXECUTABLE glslc HINTS "$ENV{VULKAN_SDK}/Bin" REQUIRED)
+# SDK layouts differ: Windows uses Bin/, Linux/macOS use bin/.
+find_program(GLSLC_EXECUTABLE glslc
+    HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin" REQUIRED)
 
 set(GPU_SHADER_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${GPU_SHADER_DIR})

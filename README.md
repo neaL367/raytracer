@@ -60,6 +60,35 @@ build\Release\rt_view.exe [image.ppm] [--diff other.ppm] [--scale N] [--stats]
 SDL3 preview: pixel inspector, diff heatmap (`D`), watcher reload (`R`).
 `--stats` prints headless diff numbers (mean/max/over8%).
 
+## Porting
+
+Linux/macOS build the same CMake tree (C++20, no Win32 API anywhere).
+Per-OS setup:
+
+```sh
+# Ubuntu: LunarG repo for the SDK + SDL3 system deps + Lavapipe
+CODENAME=$(lsb_release -cs)
+wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg-signing-key-pub.asc > /dev/null
+sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-$CODENAME.list https://packages.lunarg.com/vulkan/$CODENAME/vulkan-$CODENAME.list
+sudo apt-get update -qq && sudo apt-get install -y vulkan-sdk mesa-vulkan-drivers \
+  libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev \
+  libxinerama-dev libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
+  libpipewire-0.3-dev libpulse-dev libasound2-dev libudev-dev
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build
+ctest --test-dir build --output-on-failure
+
+# macOS: official SDK installer, then the same three cmake lines.
+```
+
+Notes: the app requests Vulkan 1.0 (max compatibility, incl. old
+MoltenVK); shaders are SPIR-V 1.0; no Float64 anywhere. Device pick
+prefers discrete NVIDIA and degrades to the first compute device
+(Lavapipe/Apple Silicon) — the `gpu: <name>` log line names the pick.
+CI (`.github/workflows/ci.yml`) builds all three OSes, runs unit tests,
+and does a tiny Lavapipe `rt_gpu` smoke render on Ubuntu. MoltenVK
+hardware verification is still open (no Apple device here): timestamps
+and RGBA32F storage are the two things to eyeball first.
+
 ## Parity
 
 Cross-backend diffs are judged against the same-backend different-seed

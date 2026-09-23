@@ -1,0 +1,69 @@
+# Cross-platform build + headless tests. GPU renders need a real device
+# and are NOT in CI, except a tiny Lavapipe software-Vulkan smoke render
+# on Ubuntu (proves the pipeline end-to-end without hardware).
+name: ci
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---- Vulkan SDK (local pins 1.4.350.0; CI takes latest: only the
+      # ---- build + unit tests run here, never showcase anchors).
+      - name: Install Vulkan SDK (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          if (-not $env:VULKAN_SDK) { Write-Error 'runner has no VULKAN_SDK'; exit 1 }
+          & "$env:VULKAN_SDK/Bin/glslc.exe" --version
+
+      - name: Install Vulkan SDK (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          CODENAME=$(lsb_release -cs)
+          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg-signing-key-pub.asc > /dev/null
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-$CODENAME.list https://packages.lunarg.com/vulkan/$CODENAME/vulkan-$CODENAME.list
+          sudo apt-get update -qq
+          sudo apt-get install -y vulkan-sdk mesa-vulkan-drivers
+          # SDL3 static-build system deps (X11/Wayland/audio/udev).
+          sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+            libxi-dev libxss-dev libxinerama-dev libwayland-dev libxkbcommon-dev \
+            libegl1-mesa-dev libpipewire-0.3-dev libpulse-dev libasound2-dev libudev-dev
+
+      - name: Install Vulkan SDK (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          curl -L -o /tmp/vulkansdk.dmg https://sdk.lunarvg.com/sdk/download/latest/mac/vulkan-sdk.dmg
+          hdiutil attach /tmp/vulkansdk.dmg -mountpoint /Volumes/vulkan -nobrowse -quiet
+          sudo installer -pkg /Volumes/vulkan/InstallVulkan*.pkg -target /
+          hdiutil detach /Volumes/vulkan -quiet
+          # Installed version drifts from the local pin; resolve it.
+          VULKAN_SDK=$(ls -d $HOME/VulkanSDK/*/macOS | tail -1)
+          echo "VULKAN_SDK=$VULKAN_SDK" >> $GITHUB_ENV
+          "$VULKAN_SDK/bin/glslc" --version
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Unit tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      # ---- Software-Vulkan smoke: Lavapipe has no discrete GPU, but the
+      # ---- full dispatch path (scene upload, path trace, download) runs.
+      - name: Lavapipe smoke render (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          ./build/rt_gpu --list-scenes
+          ./build/rt_gpu build/shaders/path.spv /tmp/smoke.ppm --scene default \
+            --width 64 --spp 4 --seed 7
+          test -s /tmp/smoke.ppm

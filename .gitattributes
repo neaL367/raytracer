@@ -1,0 +1,12 @@
+# Normalize line endings cross-platform (Windows CRLF working copy
+# would otherwise poison Linux/macOS checkouts). Sources build either
+# way (glslc/CMake tolerate CRLF), but diffs and CI stay clean.
+* text=auto
+
+# Binary assets: never convert.
+*.jpg binary
+*.png binary
+*.ppm binary
+*.pfm binary
+*.spv binary
+*.obj binary

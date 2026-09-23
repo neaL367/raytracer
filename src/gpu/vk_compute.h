@@ -75,7 +75,9 @@ inline void gpu_init(GpuContext &g, int W, int H) {
     VkApplicationInfo app{};
     app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app.pApplicationName = "rt_gpu";
-    app.apiVersion = VK_API_VERSION_1_3;
+    // 1.0 maximum compatibility (old MoltenVK caps at 1.1/1.2): every used
+    // entry point + struct is Vulkan 1.0, shaders are SPIR-V 1.0.
+    app.apiVersion = VK_API_VERSION_1_0;
     VkInstanceCreateInfo ici{};
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &app;
