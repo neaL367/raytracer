@@ -60,11 +60,28 @@ downloads the albedo/normal guides as PFM (last chunk wins when chunked).
 `--pdf mixture` selects the Book 3 path; default `mis`.
 
 ```bat
+build\Release\rt_view.exe [--scene showcase|default|...] [--gpu|--cpu]
+  [--width W] [--height H] [--scale N] [--exposure E]
+```
+
+Interactive real-time previewer with 6-DOF fly camera and progressive path tracing:
+- **WASD**: Fly forward, backward, strafe left/right
+- **Space / C** (or **E / Q**): Fly up / down along world axis
+- **Shift / Ctrl**: Sprint (3x speed) / Slow precision sneak (0.25x speed)
+- **Right Drag / F**: Look around (pitch & yaw) / Toggle captured mouse look
+- **Mouse Wheel**: Adjust movement speed
+- **G**: Toggle GPU compute vs CPU multi-threading in real time
+- **T**: Toggle ACES tonemapping vs standard sRGB gamma
+- **[ / ]**: Decrease / Increase exposure multiplier
+- **R**: Reset camera to initial scene view
+- **P**: Print camera code snippet to console & save snapshot to `out/viewport.ppm`
+- **Esc**: Release mouse cursor lock / Quit
+
+```bat
 build\Release\rt_view.exe [image.ppm] [--diff other.ppm] [--scale N] [--stats]
 ```
 
-SDL3 preview: pixel inspector, diff heatmap (`D`), watcher reload (`R`).
-`--stats` prints headless diff numbers (mean/max/over8%).
+PPM inspector mode: pixel inspector (hover coordinates & RGB), diff heatmap (`D`), file watcher reload on disk change (`R`). `--stats` prints headless diff numbers (mean/max/over8%) without opening a window.
 
 ## Porting
 
@@ -245,5 +262,19 @@ book2 d1k floor recovered to 0.55, full cross 3.56 vs 2.98 floor signed
 M61 done: Book 3 mixture-density path as `--pdf mixture` alternate (both
 backends; no shadow rays, full light counts; fixed-RNG exact; cornell
 converges to MIS mean at 2.2x the noise). Default stays power-MIS.
+M63 done: HDRI environment map importance sampling (separable 2D luminance CDF,
+stb_image HDR load, MIS-correct miss + env NEE for surface & volume, GPU bindings 12/13).
+M67 done: spectral hero transport (hero-wavelength pick per path, Cauchy dispersion,
+exact conductor Fresnel from measured n/k, 3xLi compensation; GPU mirrors CPU).
+M68 done: physical thin-film interference (Airy equations, multi-layer reflection
+for metals and dielectrics, iridescent soap bubble and oxide sheen).
+M69 done: correctness deepening & layout audit (alb2 layout audit, GPU glass delta +
+rough thin-film Fresnel fix, unit tests).
+M70 done: Disney Principled BRDF (retro-reflective diffuse, GGX VNDF specular,
+grazing sheen, GTR1 clearcoat, subsurface) on CPU & GPU pipelines with 15,630 checks;
+integrated Midnight Sapphire Car Paint and Royal Crimson Velvet into showcase masterpiece.
+M71 done: interactive real-time previewer in rt_view with 6-DOF fly-camera (WASD +
+mouse look), progressive path tracing with instant accumulation reset on motion, and
+real-time GPU/CPU dual-engine switching.
 Trilogy mapping complete: every chapter implemented or superseded.
 Next: MoltenVK verify (blocked, no hardware).
