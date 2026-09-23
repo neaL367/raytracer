@@ -520,7 +520,51 @@ float conductor_R(float n0, float n, float k, float cos_ti) {
                    cmul(N, vec2(c, 0.0)) + vec2(n0, 0.0) * cost);
     return 0.5 * (cabs2(rs) + cabs2(rp));
 }
-// Measured n/k presets (M67, approximate): 1 Au, 2 Ag, 3 Cu, 4 Al.
+// Amplitude Fresnel pair for one interface (mirrors spectrum::fresnel_ri).
+void fresnel_ri_glsl(float n0re, float n0im, float n1re, float n1im, float cos_ti,
+                     out vec2 rs, out vec2 rp) {
+    float c = clamp(cos_ti, 0.0, 1.0);
+    float s2 = 1.0 - c * c;
+    vec2 N0 = vec2(n0re, n0im), N1 = vec2(n1re, n1im);
+    vec2 cos2t = vec2(1.0, 0.0) - s2 * cdiv(cmul(N0, N0), cmul(N1, N1));
+    vec2 cost = csqrt(cos2t);
+    rs = cdiv(N0 * c - cmul(N1, cost), N0 * c + cmul(N1, cost));
+    rp = cdiv(cmul(N1, vec2(c, 0.0)) - N0 * cost, cmul(N1, vec2(c, 0.0)) + N0 * cost);
+}
+// Thin-film Airy reflectance, one wavelength (mirrors thinfilm::film_R).
+float film_R(float n0, float nf, float d_nm, float ns_n, float ns_k,
+             float cos_ti, float lambda_nm) {
+    float c = clamp(cos_ti, 0.0, 1.0);
+    if (d_nm <= 0.0) {
+        if (ns_k == 0.0) {
+            vec2 rs, rp;
+            fresnel_ri_glsl(n0, 0.0, ns_n, 0.0, c, rs, rp);
+            return 0.5 * (cabs2(rs) + cabs2(rp));
+        }
+        return conductor_R(n0, ns_n, ns_k, c);
+    }
+    float s2 = 1.0 - c * c;
+    float sin2t1 = (n0 * n0 / (nf * nf)) * s2;
+    if (sin2t1 >= 1.0)
+        return 1.0;
+    float cost1 = sqrt(1.0 - sin2t1);
+    float rs12 = (n0 * c - nf * cost1) / (n0 * c + nf * cost1);
+    float rp12 = (nf * c - n0 * cost1) / (nf * c + n0 * cost1);
+    vec2 rs23, rp23;
+    fresnel_ri_glsl(nf, 0.0, ns_n, ns_k, cost1, rs23, rp23);
+    float delta = 2.0 * 3.14159265 * nf * d_nm * cost1 / lambda_nm;
+    vec2 e = vec2(cos(2.0 * delta), sin(2.0 * delta));
+    vec2 nums = vec2(rs12, 0.0) + cmul(rs23, e);
+    vec2 dens = vec2(1.0, 0.0) + rs12 * cmul(rs23, e);
+    vec2 nump = vec2(rp12, 0.0) + cmul(rp23, e);
+    vec2 denp = vec2(1.0, 0.0) + rp12 * cmul(rp23, e);
+    return 0.5 * (cabs2(cdiv(nums, dens)) + cabs2(cdiv(nump, denp)));
+}
+vec3 film_R_rgb(float n0, float nf, float d_nm, float ns_n, float ns_k, float cos_ti) {
+    return vec3(film_R(n0, nf, d_nm, ns_n, ns_k, cos_ti, 650.0),
+                film_R(n0, nf, d_nm, ns_n, ns_k, cos_ti, 550.0),
+                film_R(n0, nf, d_nm, ns_n, ns_k, cos_ti, 450.0));
+}
 bool nk_preset(int id, int ch, out float n, out float k) {
     if (ch < 0 || ch > 2)
         return false;
@@ -795,11 +839,28 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             } else {
                 float cvh = max(dot(Vl, H), 0.0);
                 float f = 1.0 - cvh;
-                // M67: measured n/k preset (alb2.z) -> exact complex Fresnel
-                // per channel; else Schlick-from-F0 exactly as before.
+                // M67 measured n/k (alb2.z) -> exact Fresnel; M68 film
+                // overcoat (alb2.x/y) -> Airy; else Schlick-from-F0.
                 vec3 F;
+                float film_d = alb2.x;
                 int nkid = int(alb2.z + 0.5);
-                if (nkid > 0) {
+                if (film_d > 0.0) {
+                    float film_n = alb2.y;
+                    if (nkid > 0) {
+                        float n0, k0, n1, k1, n2, k2;
+                        nk_preset(nkid, 0, n0, k0);
+                        nk_preset(nkid, 1, n1, k1);
+                        nk_preset(nkid, 2, n2, k2);
+                        F = vec3(film_R(1.0, film_n, film_d, n0, k0, cvh, 650.0),
+                                 film_R(1.0, film_n, film_d, n1, k1, cvh, 550.0),
+                                 film_R(1.0, film_n, film_d, n2, k2, cvh, 450.0));
+                    } else {
+                        float r0 = (alb.x + alb.y + alb.z) / 3.0;
+                        float sq = sqrt(clamp(r0, 0.0, 1.0));
+                        float sub_n = (1.0 + sq) / (1.0 - sq + 1e-6);
+                        F = film_R_rgb(1.0, film_n, film_d, sub_n, 0.0, cvh);
+                    }
+                } else if (nkid > 0) {
                     float n0, k0, n1, k1, n2, k2;
                     nk_preset(nkid, 0, n0, k0);
                     nk_preset(nkid, 1, n1, k1);
@@ -841,10 +902,27 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             } else {
                 float cvh = max(dot(Vl, H), 0.0);
                 float f = 1.0 - cvh;
-                // M67: measured n/k preset (alb2.z), else Schlick-from-F0.
+                // M67 n/k (alb2.z), M68 film overcoat (alb2.x/y).
                 vec3 F;
+                float film_da = alb2.x;
                 int nka = int(alb2.z + 0.5);
-                if (nka > 0) {
+                if (film_da > 0.0) {
+                    float film_na = alb2.y;
+                    if (nka > 0) {
+                        float n0, k0, n1, k1, n2, k2;
+                        nk_preset(nka, 0, n0, k0);
+                        nk_preset(nka, 1, n1, k1);
+                        nk_preset(nka, 2, n2, k2);
+                        F = vec3(film_R(1.0, film_na, film_da, n0, k0, cvh, 650.0),
+                                 film_R(1.0, film_na, film_da, n1, k1, cvh, 550.0),
+                                 film_R(1.0, film_na, film_da, n2, k2, cvh, 450.0));
+                    } else {
+                        float r0a = (alb.x + alb.y + alb.z) / 3.0;
+                        float sqa = sqrt(clamp(r0a, 0.0, 1.0));
+                        float sub_na = (1.0 + sqa) / (1.0 - sqa + 1e-6);
+                        F = film_R_rgb(1.0, film_na, film_da, sub_na, 0.0, cvh);
+                    }
+                } else if (nka > 0) {
                     float n0, k0, n1, k1, n2, k2;
                     nk_preset(nka, 0, n0, k0);
                     nk_preset(nka, 1, n1, k1);
@@ -894,13 +972,26 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             }
             if (rough <= 0.0) {
                 // Legacy delta path, bit-exact.
+                // M68: thin-film Fresnel when film_d > 0 (alb2.y=film_d, alb2.z=film_n).
                 float ratio = nest_ok ? nest_eta : (dot(d, n) < 0.0 ? (1.0 / irg) : irg);
                 vec3 unit = normalize(d);
                 vec3 nn = dot(d, n) < 0.0 ? n : -n;
                 float cosT = min(dot(-unit, nn), 1.0);
                 float sinT = sqrt(1.0 - cosT * cosT);
                 attenuation = vec3(1.0);
-                if (ratio * sinT > 1.0 || schlick(cosT, ratio) > wrandf())
+                float film_d_g = alb2.y, film_n_g = alb2.z;
+                float frefl;
+                if (film_d_g > 0.0) {
+                    // Film-coated glass: Airy on entry side (n0=1 entry, n0=irg exit approx).
+                    bool front = dot(d, n) < 0.0;
+                    float n0 = front ? 1.0 : irg;
+                    vec3 Rf = film_R_rgb(n0, film_n_g, film_d_g, irg, 0.0, cosT);
+                    // Hero-pick in spectral mode; luminance mean otherwise.
+                    frefl = use_spectral() ? Rf[hero] : (Rf.r + Rf.g + Rf.b) / 3.0;
+                } else {
+                    frefl = (ratio * sinT > 1.0) ? 1.0 : schlick(cosT, ratio);
+                }
+                if (frefl > wrandf())
                     sd = reflect(unit, nn);
                 else
                     sd = refract(unit, nn, ratio);
@@ -917,6 +1008,8 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                 vec3 H;
                 ggx_vndf(alpha, Vl, wrandf(), wrandf(), H); // H carries it
                 float cosVH = dot(Vl, H);
+                // M68: film Fresnel for rough glass when film_d > 0.
+                float film_d_gr = alb2.y, film_n_gr = alb2.z;
                 float F = 1.0;
                 bool tir = true;
                 if (cosVH > 0.0) {
@@ -924,10 +1017,17 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                     if (sinT2 <= 1.0) {
                         tir = false;
                         float cv = min(cosVH, 1.0);
-                        float r0 = (1.0 - ratio) / (1.0 + ratio);
-                        r0 *= r0;
-                        float f = 1.0 - cv;
-                        F = r0 + (1.0 - r0) * (f * f * f * f * f);
+                        if (film_d_gr > 0.0) {
+                            bool front2 = dot(d, n) < 0.0;
+                            float n0gr = front2 ? 1.0 : irg;
+                            vec3 Rfr = film_R_rgb(n0gr, film_n_gr, film_d_gr, irg, 0.0, cv);
+                            F = use_spectral() ? Rfr[hero] : (Rfr.r + Rfr.g + Rfr.b) / 3.0;
+                        } else {
+                            float r0 = (1.0 - ratio) / (1.0 + ratio);
+                            r0 *= r0;
+                            float f = 1.0 - cv;
+                            F = r0 + (1.0 - r0) * (f * f * f * f * f);
+                        }
                     }
                 }
                 if (cosVH <= 0.0) {

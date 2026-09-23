@@ -6,6 +6,7 @@
 #include "../core/onb.h"
 #include "../core/ggx.h"
 #include "../core/spectrum.h"
+#include "../core/thinfilm.h"
 #include "../core/texture.h"
 #include "../geometry/hittable.h"
 #include <memory>
@@ -206,6 +207,14 @@ public:
           rough_y(ry < 0 ? 0 : (ry > 1 ? 1 : ry)), nk_id(nk_preset) {}
     bool is_aniso() const { return roughness < 0; }
     int nk_preset() const { return nk_id; }
+    // Thin-film overcoat (M68): d_nm = 0 (default) disables. Set before
+    // sharing; draw-free so RGB streams stay byte-exact.
+    void set_film(double d_nm, double n_film = 1.5) {
+        film_d = d_nm < 0 ? 0 : d_nm;
+        film_n = n_film;
+    }
+    double film_thickness() const { return film_d; }
+    double film_ior() const { return film_n; }
     // Exact spectral reflectance at the three hero wavelengths for n/k
     // metals (draw-free, so RGB-mode streams stay byte-exact).
     vec3 spectral_reflectance(double cos_vh) const {
@@ -216,6 +225,26 @@ public:
                 R.e[c] = spectrum::conductor_R(1.0, n, k, cos_vh);
         }
         return R;
+    }
+    // Film-modulated reflectance (M68): Airy overcoat on the substrate,
+    // evaluated per hero channel. Substrate = measured n/k when present,
+    // else F0-as-dielectric-n (documented approximation).
+    vec3 film_reflectance(double cos_vh) const {
+        if (nk_id > 0) {
+            vec3 R(0, 0, 0);
+            for (int c = 0; c < 3; ++c) {
+                double n = 0, k = 0;
+                spectrum::conductor_nk(nk_id, c, n, k);
+                R.e[c] = thinfilm::film_R(1.0, film_n, film_d, n, k, cos_vh,
+                                          spectrum::kHeroLambda[c]);
+            }
+            return R;
+        }
+        // Legacy F0 metal: substrate n from R0, k = 0 (documented approx).
+        double r0 = (albedo.x() + albedo.y() + albedo.z()) / 3.0;
+        double sq = r0 < 0 ? 0 : std::sqrt(r0 > 1 ? 1 : r0);
+        double sub_n = (1.0 + sq) / (1.0 - sq + 1e-6);
+        return thinfilm::film_R_rgb(1.0, film_n, film_d, sub_n, 0.0, cos_vh);
     }
     bool scatter(const ray &in, const hit_record &rec,
                  vec3 &attenuation, ray &scattered) const override {
@@ -232,8 +261,9 @@ public:
             return false; // below-surface lobe: absorbed (as before)
         double cos_vh = std::max(dot(Vl, H), 0.0);
         double ratio = ggx::weight_ratio(alpha, Vl.z(), Ll.z());
-        vec3 F = (nk_id > 0) ? spectral_reflectance(cos_vh)
-                             : ggx::fresnel_schlick(albedo, cos_vh);
+        vec3 F = (film_d > 0) ? film_reflectance(cos_vh)
+                 : (nk_id > 0) ? spectral_reflectance(cos_vh)
+                               : ggx::fresnel_schlick(albedo, cos_vh);
         attenuation = F * ratio;
         scattered = ray(rec.point, frame.local(Ll));
         return true;
@@ -261,8 +291,9 @@ public:
             return false;
         double cos_vh = std::max(dot(Vl, H), 0.0);
         double ratio = ggx::weight_ratio_aniso(ax, ay, Vl, Ll);
-        vec3 F = (nk_id > 0) ? spectral_reflectance(cos_vh)
-                             : ggx::fresnel_schlick(albedo, cos_vh);
+        vec3 F = (film_d > 0) ? film_reflectance(cos_vh)
+                 : (nk_id > 0) ? spectral_reflectance(cos_vh)
+                               : ggx::fresnel_schlick(albedo, cos_vh);
         attenuation = F * ratio;
         scattered = ray(rec.point, T * Ll.x() + B * Ll.y() + N * Ll.z());
         return true;
@@ -275,7 +306,8 @@ public:
         alb[0] = (float)albedo.x();
         alb[1] = (float)albedo.y();
         alb[2] = (float)albedo.z();
-        alb2[0] = alb2[1] = 0;
+        alb2[0] = (float)film_d; // thin-film thickness nm (M68); 0 = off
+        alb2[1] = (float)film_n; // film IOR (M68)
         alb2[2] = (float)nk_id; // measured n/k preset (M67); 0 = legacy F0
         emit[0] = emit[1] = emit[2] = 0;
         if (is_aniso()) {
@@ -296,6 +328,8 @@ private:
     double roughness; // <0 = anisotropic (uses rough_x/y)
     double rough_x = 0, rough_y = 0;
     int nk_id = 0; // measured n/k preset (M67); 0 = Schlick-from-albedo
+    double film_d = 0.0; // thin-film thickness in nm (M68); 0 = off
+    double film_n = 1.5; // thin-film IOR (M68)
 };
 
 class dielectric : public material {
@@ -318,6 +352,23 @@ public:
         return spectrum::cauchy_ior(ir, cauchyB, spectrum::kHeroLambda[channel]);
     }
     double dispersion() const { return cauchyB; }
+    // Thin-film overcoat, entry side (M68): d_nm = 0 (default) disables.
+    void set_film(double d_nm, double n_film = 1.5) {
+        film_d = d_nm < 0 ? 0 : d_nm;
+        film_n = n_film;
+    }
+    double film_thickness() const { return film_d; }
+    double film_ior() const { return film_n; }
+    // Film reflect prob at cos incidence, hero-resolved in spectral mode
+    // (else luminance-mean). n0 = air on entry, glass on exit (approx).
+    double film_prob(double cos_ti, double iri, bool front_face) const {
+        double n0 = front_face ? 1.0 : iri;
+        vec3 R = thinfilm::film_R_rgb(n0, film_n, film_d, iri, 0.0, cos_ti);
+        int hero = spectrum::hero_channel();
+        if (hero >= 0 && hero <= 2)
+            return R.e[hero];
+        return (R.x() + R.y() + R.z()) / 3.0;
+    }
     vec3 absorb() const override { return sigma; }
     bool scatter(const ray &in, const hit_record &rec,
                  vec3 &attenuation, ray &scattered) const override {
@@ -339,7 +390,13 @@ public:
         double iri = ior_at(spectrum::hero_channel());
         double eta = rec.nest_set ? rec.nest_eta : (rec.front_face ? (1.0 / iri) : iri); // n_i/n_o
         double sinT2 = eta * eta * (1.0 - cosVH * cosVH);
-        double F = (sinT2 > 1.0) ? 1.0 : reflectance(fmin(cosVH, 1.0), eta);
+        double F = 0;
+        if (film_d > 0) {
+            F = film_prob(cosVH < 0 ? 0 : (cosVH > 1 ? 1 : cosVH), iri,
+                          rec.front_face);
+        } else {
+            F = (sinT2 > 1.0) ? 1.0 : reflectance(fmin(cosVH, 1.0), eta);
+        }
         vec3 Ll;
         if (sinT2 > 1.0 || random_double() < F) {
             Ll = H * (2.0 * cosVH) - Vl; // reflect incident (-V) about H
@@ -372,9 +429,11 @@ public:
         double cos_t = fmin(dot(-unit, rec.normal), 1.0);
         double sin_t = std::sqrt(1.0 - cos_t * cos_t);
         bool cannot_refract = ratio * sin_t > 1.0;
-        vec3 dir = (cannot_refract || reflectance(cos_t, ratio) > random_double())
-                       ? reflect(unit, rec.normal)
-                       : refract(unit, rec.normal, ratio);
+        double frefl = (film_d > 0) ? film_prob(cos_t, iri, rec.front_face)
+                                    : reflectance(cos_t, ratio);
+        vec3 dir = (cannot_refract || frefl > random_double())
+                        ? reflect(unit, rec.normal)
+                        : refract(unit, rec.normal, ratio);
         scattered = ray(rec.point, dir);
         return true;
     }
@@ -391,7 +450,8 @@ public:
         alb[1] = (float)sigma.y();
         alb[2] = (float)sigma.z();
         alb2[0] = (float)cauchyB; // Cauchy B in um^2 (M67); 0 = no dispersion
-        alb2[1] = alb2[2] = 0;
+        alb2[1] = (float)film_d; // thin-film thickness nm (M68); 0 = off
+        alb2[2] = (float)film_n; // film IOR (M68)
         return true;
     }
 
@@ -401,6 +461,8 @@ public:
     int prio = 0; // nesting priority (M57); 0 = legacy unnested
     vec3 sigma{0, 0, 0}; // absorption (M58); 0 = clear glass
     double cauchyB = 0.0; // dispersion (M67); 0 = constant IOR
+    double film_d = 0.0; // thin-film thickness in nm (M68); 0 = off
+    double film_n = 1.5; // thin-film IOR (M68)
     // Schlick approx: grazing -> mirror, normal -> ~4% for glass.
     static double reflectance(double cos, double ref_idx) {
         double r0 = (1 - ref_idx) / (1 + ref_idx);

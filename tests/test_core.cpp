@@ -6,6 +6,13 @@
 #include "core/sampler.h"
 #include "core/onb.h"
 #include "core/spectrum.h"
+#include "core/hdri.h"
+#include "core/thinfilm.h"
+#include "accel/qbvh.h"
+#include "geometry/sphere.h"
+#include "geometry/light.h"
+#include "integrator/integrator.h"
+#include <memory>
 
 static void t_vec3() {
     test_current = "vec3";
@@ -229,6 +236,110 @@ static void t_spectrum() {
     EXPECT_TRUE(fabs(ramp - r_red) < 1e-9);
 }
 
+
+// M63: HDRI CDF construction — monotone, normalised, sample PDF integrates to 4pi.
+static void t_hdri_cdf() {
+    test_current = "hdri_cdf";
+    hdri_env hdr;
+    if (!hdr.load("assets/test_hdri.hdr")) {
+        std::cerr << "  [skip] assets/test_hdri.hdr not found\n";
+        return;
+    }
+    int W = hdr.W, H = hdr.H;
+    EXPECT_TRUE(W > 0 && H > 0);
+
+    const auto &marg = hdr.marginal_cdf();
+    EXPECT_TRUE((int)marg.size() == H + 1);
+    EXPECT_TRUE(fabs(marg[0]) < 1e-6);
+    EXPECT_TRUE(fabs(marg[H] - 1.0f) < 1e-6);
+    for (int r = 0; r < H; ++r)
+        EXPECT_TRUE(marg[r + 1] >= marg[r]);
+
+    const auto &cond = hdr.cond_cdf();
+    EXPECT_TRUE((int)cond.size() == H * (W + 1));
+    for (int r = 0; r < H; ++r) {
+        int base = r * (W + 1);
+        EXPECT_TRUE(fabs(cond[base]) < 1e-6);
+        EXPECT_TRUE(fabs(cond[base + W] - 1.0f) < 1e-6);
+        for (int c = 0; c < W; ++c)
+            EXPECT_TRUE(cond[base + c + 1] >= cond[base + c]);
+    }
+
+    // Importance-sampling 1/pdf weights approximate 4pi (sphere solid angle).
+    rng_seed(99);
+    const int NS = 200;
+    double pdf_sum = 0;
+    for (int i = 0; i < NS; ++i) {
+        double u1 = (i + 0.5) / NS;
+        double u2 = random_double();
+        auto [dir, pdf] = hdr.sample(u1, u2);
+        EXPECT_TRUE(pdf > 0.0);
+        EXPECT_TRUE(fabs(dir.length() - 1.0) < 1e-5);
+        pdf_sum += 1.0 / pdf;
+    }
+    double sphere_area = 4.0 * 3.1415926535897932385;
+    EXPECT_TRUE(fabs(pdf_sum / NS - sphere_area) < 0.5 * sphere_area);
+}
+
+// M68: thin-film Airy formula — d=0 matches bare Fresnel; d>0 gives iridescence.
+static void t_thinfilm() {
+    test_current = "thinfilm";
+    // Bare dielectric at normal incidence: R0 = 0.04 exactly.
+    double bare = thinfilm::film_R(1.0, 1.5, 0.0, 1.5, 0.0, 1.0, 550.0);
+    EXPECT_TRUE(fabs(bare - 0.04) < 1e-6);
+    // Bare conductor limit: matches conductor_R exactly.
+    double bare_Au = thinfilm::film_R(1.0, 1.5, 0.0, 0.17, 3.80, 1.0, 650.0);
+    double cond_Au = spectrum::conductor_R(1.0, 0.17, 3.80, 1.0);
+    EXPECT_TRUE(fabs(bare_Au - cond_Au) < 1e-9);
+    // AR coat (MgF2 ~100nm on glass): reduces reflectance near design wavelength.
+    double ar = thinfilm::film_R(1.0, 1.38, 100.0, 1.5, 0.0, 1.0, 550.0);
+    EXPECT_TRUE(ar < bare);
+    // RGB helper: channels in [0,1] and differ (iridescence) for d>0.
+    vec3 rgb = thinfilm::film_R_rgb(1.0, 1.38, 100.0, 1.5, 0.0, 1.0);
+    EXPECT_TRUE(rgb.x() >= 0.0 && rgb.x() <= 1.0);
+    EXPECT_TRUE(rgb.y() >= 0.0 && rgb.y() <= 1.0);
+    EXPECT_TRUE(rgb.z() >= 0.0 && rgb.z() <= 1.0);
+    EXPECT_TRUE(fabs(rgb.x()-rgb.y()) > 1e-5 || fabs(rgb.y()-rgb.z()) > 1e-5);
+    // d=0 RGB: all three equal (no wavelength dependence for d=0 dielectric).
+    vec3 rgb0 = thinfilm::film_R_rgb(1.0, 1.38, 0.0, 1.5, 0.0, 1.0);
+    EXPECT_TRUE(fabs(rgb0.x()-rgb0.y()) < 1e-9 && fabs(rgb0.y()-rgb0.z()) < 1e-9);
+}
+
+// M67: spectral parity — non-dispersive lambertian gives same RGB mean as RGB path.
+static void t_spectral_parity() {
+    test_current = "spectral_parity";
+    auto m = std::make_shared<lambertian>(vec3(0.8, 0.5, 0.2));
+    std::vector<std::shared_ptr<hittable>> objs = {
+        std::static_pointer_cast<hittable>(
+            std::make_shared<sphere>(vec3(0,0,-1), 0.5, m))};
+    qbvh_node world(objs, 0, objs.size());
+    std::vector<light> lights;
+    std::vector<std::shared_ptr<hittable>> media;
+    integrator tracer;
+    ray r(vec3(0, 0, 0), vec3(0, 0, -1));
+    const int N = 400;
+
+    rng_seed(77);
+    vec3 Lrgb(0, 0, 0);
+    render_params rp_rgb{world, lights, 4, media};
+    for (int i = 0; i < N; ++i) Lrgb = Lrgb + tracer.Li(r, rp_rgb);
+    Lrgb = Lrgb / (double)N;
+
+    rng_seed(77);
+    vec3 Lspc(0, 0, 0);
+    render_params rp_spc{world, lights, 4, media};
+    rp_spc.spectral = true;
+    for (int i = 0; i < N; ++i) Lspc = Lspc + tracer.Li(r, rp_spc);
+    Lspc = Lspc / (double)N;
+
+    // Per-channel means agree within 20% of their value.
+    for (int c = 0; c < 3; ++c) {
+        double ref = Lrgb.e[c];
+        double got = Lspc.e[c];
+        if (ref > 0.01)
+            EXPECT_TRUE(fabs(got - ref) / ref < 0.20);
+    }
+}
 void run_core_tests() {
     t_vec3();
     t_ray();
@@ -239,4 +350,7 @@ void run_core_tests() {
     t_rr();
     t_seed_streams();
     t_spectrum();
+    t_hdri_cdf();
+    t_thinfilm();
+    t_spectral_parity();
 }
