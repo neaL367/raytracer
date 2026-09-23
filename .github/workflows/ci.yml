@@ -9,8 +9,12 @@ jobs:
   build:
     strategy:
       fail-fast: false
+      # macos-latest DROPPED for now: LunarG's mac download is a GUI
+      # installer .app (the old dmg flow is gone; hdiutil fails). The tree
+      # is portable (no Win32 API, C++20, Vulkan 1.0, SDL3×CMake), so
+      # re-enable once someone verifies a headless Apple-Silicon install.
       matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
+        os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -41,25 +45,12 @@ jobs:
           # glslc = shaderc binary pkg; libvulkan-dev = headers + loader.
           sudo apt-get update -qq
           sudo apt-get install -y glslc libvulkan-dev mesa-vulkan-drivers
-          # SDL3 static-build system deps (X11/Wayland/audio/udev).
+          # SDL3 static-build system deps (X11/Wayland/audio/udev; xtst
+          # missing killed the first green run: SDL errors loud, add here).
           sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
-            libxi-dev libxss-dev libxinerama-dev libwayland-dev libxkbcommon-dev \
-            libegl1-mesa-dev libpipewire-0.3-dev libpulse-dev libasound2-dev libudev-dev
-
-      - name: Install Vulkan SDK (macOS)
-        if: matrix.os == 'macos-latest'
-        run: |
-          # Pinned to the local SDK (verified 200); resolve the installed
-          # dir since the pkg may drift. Verbose mount: a silent -quiet
-          # failure here is undiagnosable.
-          curl -L -o /tmp/vulkansdk.dmg https://sdk.lunarg.com/sdk/download/1.4.350.0/mac/vulkan-sdk.dmg
-          hdiutil attach /tmp/vulkansdk.dmg -mountpoint /Volumes/vulkan -nobrowse
-          ls /Volumes/vulkan
-          sudo installer -verbose -pkg /Volumes/vulkan/*.pkg -target /
-          hdiutil detach /Volumes/vulkan
-          VULKAN_SDK=$(ls -d $HOME/VulkanSDK/*/macOS | tail -1)
-          echo "VULKAN_SDK=$VULKAN_SDK" >> $GITHUB_ENV
-          "$VULKAN_SDK/bin/glslc" --version
+            libxi-dev libxss-dev libxinerama-dev libxtst-dev libwayland-dev \
+            libxkbcommon-dev libegl1-mesa-dev libpipewire-0.3-dev libpulse-dev \
+            libasound2-dev libudev-dev
 
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release

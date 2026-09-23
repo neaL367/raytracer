@@ -81,10 +81,13 @@ Notes: the app requests Vulkan 1.0 (max compatibility, incl. old
 MoltenVK); shaders are SPIR-V 1.0; no Float64 anywhere. Device pick
 prefers discrete NVIDIA and degrades to the first compute device
 (Lavapipe/Apple Silicon) — the `gpu: <name>` log line names the pick.
-CI (`.github/workflows/ci.yml`) builds all three OSes, runs unit tests,
-and does a tiny Lavapipe `rt_gpu` smoke render on Ubuntu. MoltenVK
-hardware verification is still open (no Apple device here): timestamps
-and RGBA32F storage are the two things to eyeball first.
+CI (`.github/workflows/ci.yml`) builds Windows + Ubuntu, runs unit tests,
+and does a tiny Lavapipe `rt_gpu` smoke render on Ubuntu. macOS is out of
+the matrix for now: LunarG's mac download is a GUI installer .app (the old
+dmg flow is gone), so no headless install path is verified; the tree itself
+is portable, re-enable when someone confirms one on Apple hardware.
+MoltenVK hardware verification is likewise open (no Apple device here):
+timestamps and RGBA32F storage are the two things to eyeball first.
 
 ## Parity
 
