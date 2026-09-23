@@ -48,8 +48,10 @@ parity by design (wang-hash vs mt19937 RNGs); see Parity below.
 and averages linear HDR on the host (bit-exact vs the old manual
 averaging). Without it, one big dispatch can hit Windows TDR
 (`vulkan error -4`) on heavy scenes. Rough 1650 Ti limits at 1200px:
-book2 chunk<=6, cornell chunk<=25, default chunk<=50; keep dispatch
+book2 chunk<=2, cornell chunk<=25, default chunk<=50; keep dispatch
 under ~2 s. `--denoise`/`--joint` run once on the averaged beauty.
+(book2 tightened 6->2 in M59: per-event volume-NEE marches lengthened
+dispatches; the table is advisory, watch the dispatch ms.)
 `--maxdepth`/`--fixed-rng` mirror the CPU forensics hatches. `--aov`
 downloads the albedo/normal guides as PFM (last chunk wins when chunked).
 
@@ -208,4 +210,8 @@ M55 done: port prep (Vulkan 1.0 floor, glslc bin/ hints, .gitattributes)
 download is a GUI .app now, no verified headless install).
 M56 done: full-depth 1200/500 proof (CPU hash == VI anchor; cross 3.31 vs
 2.97 floor, signed ~0; leftover = symmetric fp32-geometry noise floor).
-Next: `.scratch/roadmap.md` backlog (port + knife-edge floor docs).
+M59 done: NEE at volume events (direct in-scattering, MIS vs 1/4PI phase;
+fixed-RNG exact; sss floor -17%, milk glows; book2/cross at floor;
+default/cornell/weekend bit-identical pre/post). Anchors VIII (estimator
+changed volume scenes). TDR table: book2 chunk<=2.
+Next: `.scratch/roadmap.md` backlog (density-gated vol NEE, MoltenVK).

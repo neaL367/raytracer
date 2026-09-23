@@ -20,6 +20,8 @@ public:
     virtual vec3 emitted() const { return vec3(0, 0, 0); }
     // NEE applies to diffuse only; specular paths skip explicit lights.
     virtual bool is_diffuse() const { return false; }
+    // Volume scatter (isotropic phase): fires phase-sampled NEE (M59).
+    virtual bool is_volume() const { return false; }
     // Nesting priority + IOR for transmissive interfaces (M57): default 0
     // = unnested legacy behavior. Only dielectric overrides.
     virtual int priority() const { return 0; }
@@ -323,6 +325,7 @@ public:
     double direction_pdf(const vec3 &, const hit_record &) const override {
         return 1.0 / (4.0 * 3.1415926535897932385);
     }
+    bool is_volume() const override { return true; }
     vec3 surface_albedo(const hit_record &) const override { return albedo; }
 
 private:

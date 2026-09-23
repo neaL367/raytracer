@@ -396,6 +396,48 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             throughput *= fog_alb;
             o = o + d * fog_t;
             prev = o;
+            // Volume NEE (M59): direct-light in-scattering at the event,
+            // mirroring the CPU phase estimator (uniform phase: no cosS).
+            // Draws only on events, so event-free streams stay bit-exact.
+            // Shadow sites 3/4 (surface NEE uses 1/2): no hash cross-talk.
+            if (pc.nlights > 0) {
+                int li = int(wrandf() * float(pc.nlights));
+                li = min(li, pc.nlights - 1);
+                vec3 lp, ln, lemit;
+                float area;
+                light_sample(li, rtime, wrandf(), wrandf(), lp, ln, area, lemit);
+                vec3 toL = lp - o;
+                float dist = length(toL);
+                vec3 wi = toL / dist;
+                float cosA = abs(dot(ln, -wi));
+                if (cosA > 0.0 && area > 0.0) {
+                    float Tr = shadow_transmittance(o, wi, rtime, pc.ns, dist,
+                                                    hbase, bounce, 3, -1, -1);
+                    if (Tr > 0.0) {
+                        float pdf_l = dist * dist / (float(pc.nlights) * area * cosA);
+                        float pdf_b = 1.0 / (4.0 * 3.14159265);
+                        float w = power_weight(pdf_l, pdf_b);
+                        L += throughput * lemit *
+                             (cosA * float(pc.nlights) * area /
+                              (4.0 * 3.14159265 * dist * dist)) * w * Tr;
+                    }
+                }
+            }
+            if (pc.nenv > 0) {
+                // Environment in-scattering mirrors the CPU: uniform sphere,
+                // probe to infinity, power MIS vs uniform continuation.
+                vec3 edir = env_sample_dir(wrandf(), wrandf());
+                float Tr = shadow_transmittance(o, edir, rtime, pc.ns, 1e30,
+                                                hbase, bounce, 4, -1, -1);
+                if (Tr > 0.0) {
+                    vec3 envLe = env_radiance(edir);
+                    float pdf_e = 1.0 / (4.0 * 3.14159265);
+                    float pdf_b = 1.0 / (4.0 * 3.14159265);
+                    float w = power_weight(pdf_e, pdf_b);
+                    L += throughput * envLe * (1.0 / (4.0 * 3.14159265 * pdf_e)) *
+                         w * Tr;
+                }
+            }
             d = normalize(wrand_in_sphere());
             pdf_b_last = 1.0 / (4.0 * 3.14159265);
             specular = false;

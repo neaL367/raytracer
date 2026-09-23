@@ -109,6 +109,7 @@ public:
             if (!rec.mat->scatter(cur, rec, attenuation, scattered))
                 break; // absorbed
             bool diffuse = rec.mat->is_diffuse();
+            bool vol = rec.mat->is_volume(); // scattering event in media
 
             if (diffuse && !lights.empty()) {
                 // Next-event estimation: uniform light + uniform point.
@@ -162,6 +163,57 @@ public:
                         L += throughput * attenuation * env_Le *
                              (cosS / (pi * pdf_e)) * w * Tr;
                     }
+                }
+            }
+
+            if (vol && !lights.empty()) {
+                // Volume NEE (M59): direct-light in-scattering at the event.
+                // Phase is uniform (no cosS gate, no cosS in the weight);
+                // MIS against the 1/4PI continuation, like surface NEE.
+                // Draws only on events, so event-free scenes stay byte-exact.
+                int li = (int)(random_double() * lights.size());
+                if (li >= (int)lights.size())
+                    li = (int)lights.size() - 1;
+                const auto &light = lights[(size_t)li];
+                vec3 lp = light_point(light, random_double(), random_double(), cur.time());
+                vec3 toL = lp - rec.point;
+                double dist = toL.length();
+                vec3 wi = toL / dist;
+                vec3 ln = light_normal_at(light, lp, cur.time());
+                double cosA = fabs(dot(ln, -wi));
+                double area = light_area(light);
+                if (cosA > 0 && area > 0) {
+                    count_ray(); // shadow ray
+                    double Tr = shadow_transmittance(world, media, rec.point, wi, dist,
+                                                     cur.time());
+                    if (Tr > 0) {
+                        vec3 light_Le = light_mat(light)->emitted();
+                        double pdf_l = dist * dist /
+                                       ((double)lights.size() * area * cosA);
+                        double pdf_b = 1.0 / (4.0 * pi);
+                        double w = direction_pdf::power_weight(pdf_l, pdf_b);
+                        // f*G/pdf: (rho/4PI)*Le*A*cosA/dist^2, N lights.
+                        L += throughput * attenuation * light_Le *
+                             (cosA * (double)lights.size() * area /
+                              (4.0 * pi * dist * dist)) * w * Tr;
+                    }
+                }
+            }
+
+            if (use_env && vol) {
+                // Environment in-scattering: uniform sphere, probe to
+                // infinity, power MIS against the uniform continuation.
+                vec3 edir = env_light::sample_dir(random_double(), random_double());
+                count_ray(); // env shadow ray
+                double Tr = shadow_transmittance(world, media, rec.point, edir, 1e30,
+                                                 cur.time());
+                if (Tr > 0) {
+                    vec3 env_Le = env_light::radiance(edir);
+                    double pdf_e = env_light::sample_pdf();
+                    double pdf_b = 1.0 / (4.0 * pi);
+                    double w = direction_pdf::power_weight(pdf_e, pdf_b);
+                    L += throughput * attenuation * env_Le * (1.0 / (4.0 * pi * pdf_e)) *
+                         w * Tr;
                 }
             }
 
