@@ -15,21 +15,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ---- Vulkan SDK (local pins 1.4.350.0; CI takes latest: only the
-      # ---- build + unit tests run here, never showcase anchors).
+      # ---- Vulkan SDK (Windows/Ubuntu take latest, macOS pins 1.4.350.0
+      # ---- to match local; only the build + unit tests run here, never
+      # ---- showcase anchors).
       - name: Install Vulkan SDK (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
         run: |
-          if (-not $env:VULKAN_SDK) { Write-Error 'runner has no VULKAN_SDK'; exit 1 }
+          # Runners carry no preinstalled SDK: choco it (latest is fine;
+          # CI builds + tests, never showcase anchors).
+          if (-not $env:VULKAN_SDK) {
+            choco install vulkan-sdk -y --no-progress
+            $sdk = (Get-ChildItem C:\VulkanSDK | Sort-Object Name -Descending | Select-Object -First 1).FullName
+            if (-not $sdk) { Write-Error 'choco vulkan-sdk installed nothing'; exit 1 }
+            echo "VULKAN_SDK=$sdk" >> $env:GITHUB_ENV
+            $env:VULKAN_SDK = $sdk
+          }
           & "$env:VULKAN_SDK/Bin/glslc.exe" --version
 
       - name: Install Vulkan SDK (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
         run: |
           CODENAME=$(lsb_release -cs)
-          wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg-signing-key-pub.asc > /dev/null
-          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-$CODENAME.list https://packages.lunarg.com/vulkan/$CODENAME/vulkan-$CODENAME.list
+          # Retry: runner<->lunarg links flap occasionally (silent -q exit 8).
+          for i in 1 2 3; do
+            wget -qO- https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo tee /etc/apt/trusted.gpg.d/lunarg-signing-key-pub.asc > /dev/null && \
+            sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-$CODENAME.list https://packages.lunarg.com/vulkan/$CODENAME/vulkan-$CODENAME.list && break || sleep 10
+          done
+          test -s /etc/apt/trusted.gpg.d/lunarg-signing-key-pub.asc
           sudo apt-get update -qq
           sudo apt-get install -y vulkan-sdk mesa-vulkan-drivers
           # SDL3 static-build system deps (X11/Wayland/audio/udev).
@@ -40,11 +53,12 @@ jobs:
       - name: Install Vulkan SDK (macOS)
         if: matrix.os == 'macos-latest'
         run: |
-          curl -L -o /tmp/vulkansdk.dmg https://sdk.lunarvg.com/sdk/download/latest/mac/vulkan-sdk.dmg
+          # Pinned to the local SDK (verified 200); resolve the installed
+          # dir since the pkg may drift.
+          curl -L -o /tmp/vulkansdk.dmg https://sdk.lunarg.com/sdk/download/1.4.350.0/mac/vulkan-sdk.dmg
           hdiutil attach /tmp/vulkansdk.dmg -mountpoint /Volumes/vulkan -nobrowse -quiet
           sudo installer -pkg /Volumes/vulkan/InstallVulkan*.pkg -target /
           hdiutil detach /Volumes/vulkan -quiet
-          # Installed version drifts from the local pin; resolve it.
           VULKAN_SDK=$(ls -d $HOME/VulkanSDK/*/macOS | tail -1)
           echo "VULKAN_SDK=$VULKAN_SDK" >> $GITHUB_ENV
           "$VULKAN_SDK/bin/glslc" --version
