@@ -346,6 +346,14 @@ inline void gpu_set_scene(GpuContext &g, const void *data[11], const size_t byte
     g.has_scene = true;
 }
 
+inline void gpu_update_camera(GpuContext &g, const void *cam_ptr, size_t cam_bytes) {
+    if (!g.scene_bufs[0].mem || !cam_ptr || cam_bytes == 0) return;
+    void *mapped = nullptr;
+    VKC_CHECK(vkMapMemory(g.device, g.scene_bufs[0].mem, 0, cam_bytes, 0, &mapped));
+    std::memcpy(mapped, cam_ptr, cam_bytes);
+    vkUnmapMemory(g.device, g.scene_bufs[0].mem);
+}
+
 #include "push_layout.h"
 
 // Dispatch spv with push constant block, copy image to host, report device ms.

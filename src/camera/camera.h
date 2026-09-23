@@ -56,6 +56,9 @@ public:
     vec3 corner() const { return lower_left; }
     vec3 span_u() const { return horizontal; }
     vec3 span_v() const { return vertical; }
+    vec3 dir() const { return -w; }
+    vec3 up_dir() const { return v; }
+    vec3 right_dir() const { return u; }
 
 private:
     vec3 origin, lower_left, horizontal, vertical, u, v, w;
