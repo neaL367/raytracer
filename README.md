@@ -203,4 +203,9 @@ traversal: shadow unconditional, beauty T-gated 0.5; M51 lift removed;
 NEE range mirrors CPU). Depth-1/d2 cross at floor; fixed-RNG down 40-100x.
 GPU showcases re-anchored (VII); CPU untouched. Kept forensics flags:
 --maxdepth/--fixed-rng (both), GPU --aov readback.
+M55 done: port prep (Vulkan 1.0 floor, glslc bin/ hints, .gitattributes)
++ CI (Windows + Ubuntu build/test, Lavapipe smoke; macOS out: LunarG mac
+download is a GUI .app now, no verified headless install).
+M56 done: full-depth 1200/500 proof (CPU hash == VI anchor; cross 3.31 vs
+2.97 floor, signed ~0; leftover = symmetric fp32-geometry noise floor).
 Next: `.scratch/roadmap.md` backlog (port + knife-edge floor docs).
