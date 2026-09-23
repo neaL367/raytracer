@@ -709,6 +709,13 @@ static void t_nesting() {
     EXPECT_NEAR(t1.x(), std::exp(-1.0));
     EXPECT_NEAR(t1.y(), std::exp(-2.0));
     EXPECT_NEAR(t1.z(), std::exp(-3.0));
+    // Volume-NEE density gate (M60): thin skips, dense fires.
+    EXPECT_TRUE(!volume_nee_fires(0.0001)); // haze
+    EXPECT_TRUE(!volume_nee_fires(0.0099));
+    EXPECT_TRUE(volume_nee_fires(0.01)); // threshold inclusive
+    EXPECT_TRUE(volume_nee_fires(0.0101));
+    EXPECT_TRUE(volume_nee_fires(0.06)); // milk
+    EXPECT_TRUE(volume_nee_fires(0.2)); // smoke
     // Material + record defaults.
     auto d = std::make_shared<dielectric>(1.5);
     EXPECT_TRUE(d->priority() == 0);

@@ -73,3 +73,10 @@ inline vec3 beer_transmittance(const vec3 &sigma, double d) {
     return vec3(std::exp(-sigma.x() * d), std::exp(-sigma.y() * d),
                 std::exp(-sigma.z() * d));
 }
+
+// Volume-NEE gate (M60): fire explicit in-scattering only in media dense
+// enough for it to matter. Thin haze (1e-4) skips back to walks-only;
+// milk (0.06) and smoke (0.2) fire. Unbiased: NEE is optional per event
+// and the gate is sample-independent. GPU mirrors the 0.01 literal.
+inline constexpr double kVolumeNeeMinDensity = 0.01;
+inline bool volume_nee_fires(double density) { return density >= kVolumeNeeMinDensity; }

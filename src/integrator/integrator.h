@@ -110,6 +110,17 @@ public:
                 break; // absorbed
             bool diffuse = rec.mat->is_diffuse();
             bool vol = rec.mat->is_volume(); // scattering event in media
+            // Density gate (M60): thin media skip explicit NEE (back to
+            // walks-only); hit_obj is the firing medium here.
+            bool vol_nee = false;
+            if (vol) {
+                double dens = 0;
+                if (auto cm = dynamic_cast<const constant_medium *>(rec.hit_obj))
+                    dens = cm->density_val();
+                else if (auto hm = dynamic_cast<const heterogeneous_medium *>(rec.hit_obj))
+                    dens = hm->density_val();
+                vol_nee = volume_nee_fires(dens);
+            }
 
             if (diffuse && !lights.empty()) {
                 // Next-event estimation: uniform light + uniform point.
@@ -166,7 +177,7 @@ public:
                 }
             }
 
-            if (vol && !lights.empty()) {
+            if (vol_nee && !lights.empty()) {
                 // Volume NEE (M59): direct-light in-scattering at the event.
                 // Phase is uniform (no cosS gate, no cosS in the weight);
                 // MIS against the 1/4PI continuation, like surface NEE.
@@ -200,7 +211,7 @@ public:
                 }
             }
 
-            if (use_env && vol) {
+            if (use_env && vol_nee) {
                 // Environment in-scattering: uniform sphere, probe to
                 // infinity, power MIS against the uniform continuation.
                 vec3 edir = env_light::sample_dir(random_double(), random_double());

@@ -194,8 +194,10 @@ float h32f(uint base, int bounce, int site, int k, int tag) {
     return float(h32(h)) / 4294967296.0;
 }
 bool fog_event(vec3 o, vec3 d, float rtime, int ns, float u01, float tmax,
-               out float tevent, out vec3 talb, uint hbase, int bounce, int site) {
+                out float tevent, out vec3 talb, uint hbase, int bounce, int site,
+                out int slot) {
     tevent = 1e30;
+    slot = -1;
     bool any = false;
     for (int i = 0; i < ns; ++i) {
         float mtype = spheres[i].params.x;
@@ -219,6 +221,7 @@ bool fog_event(vec3 o, vec3 d, float rtime, int ns, float u01, float tmax,
             if (s < tx - te && te + s < tevent) {
                 tevent = te + s;
                 talb = spheres[i].alb.xyz;
+                slot = i;
                 any = true;
             }
         } else {
@@ -240,6 +243,7 @@ bool fog_event(vec3 o, vec3 d, float rtime, int ns, float u01, float tmax,
                     if (x < tevent) {
                         tevent = x;
                         talb = spheres[i].alb.xyz;
+                        slot = i;
                         any = true;
                     }
                     break;

@@ -367,13 +367,14 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
         // RNG drawn only when fog exists: static streams bit-exact.
         float fog_t = 1e30;
         vec3 fog_alb = vec3(0.0);
+        int fog_slot = -1;
         bool has_fog = false;
         if (pc.nfog > 0) {
             // Tracking hashes derive from the sample base (zero wrandf
             // draws): the u01 draw below stays the legacy fog stream.
             // Site 0 = primary: shadow probes use site 1 (no cross-talk).
             has_fog = fog_event(o, d, rtime, pc.ns, wrandf(), 1e30, fog_t, fog_alb,
-                                hbase, bounce, 0);
+                                hbase, bounce, 0, fog_slot);
         }
         bool solid =
             trace_solid(o, d, rtime, 1e30, t, n, alb, alb2, emit, params, light_idx,
@@ -399,8 +400,11 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
             // Volume NEE (M59): direct-light in-scattering at the event,
             // mirroring the CPU phase estimator (uniform phase: no cosS).
             // Draws only on events, so event-free streams stay bit-exact.
+            // Density gate (M60): thin media skip back to walks-only
+            // (0.01 mirrors kVolumeNeeMinDensity on the host).
             // Shadow sites 3/4 (surface NEE uses 1/2): no hash cross-talk.
-            if (pc.nlights > 0) {
+            bool vol_nee = fog_slot >= 0 && spheres[fog_slot].params.y >= 0.01;
+            if (pc.nlights > 0 && vol_nee) {
                 int li = int(wrandf() * float(pc.nlights));
                 li = min(li, pc.nlights - 1);
                 vec3 lp, ln, lemit;
@@ -423,7 +427,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                     }
                 }
             }
-            if (pc.nenv > 0) {
+            if (pc.nenv > 0 && vol_nee) {
                 // Environment in-scattering mirrors the CPU: uniform sphere,
                 // probe to infinity, power MIS vs uniform continuation.
                 vec3 edir = env_sample_dir(wrandf(), wrandf());

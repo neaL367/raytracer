@@ -214,4 +214,8 @@ M59 done: NEE at volume events (direct in-scattering, MIS vs 1/4PI phase;
 fixed-RNG exact; sss floor -17%, milk glows; book2/cross at floor;
 default/cornell/weekend bit-identical pre/post). Anchors VIII (estimator
 changed volume scenes). TDR table: book2 chunk<=2.
-Next: `.scratch/roadmap.md` backlog (density-gated vol NEE, MoltenVK).
+M60 done: density-gated volume NEE (fire >= 0.01 majorant: haze skips
+back to walks, milk/smoke fire; unbiased, sample-independent gate).
+book2 d1k floor recovered to 0.55, full cross 3.56 vs 2.98 floor signed
+~0; sss bit-identical to M59. Anchors IX (book2 only).
+Next: MoltenVK verify (blocked, no hardware).
