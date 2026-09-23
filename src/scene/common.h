@@ -26,6 +26,8 @@
 #include <string>
 #include <vector>
 
+#include "../core/hdri.h"
+
 struct scene_data {
     std::vector<std::shared_ptr<hittable>> objs;
     std::vector<light> lights; // NEE-sampled emitters (any shape)
@@ -33,6 +35,12 @@ struct scene_data {
     camera cam;
     bool env_light = false; // analytic sun+sky environment (opt-in --env)
     bool black_bg = false; // black background for enclosed/dark scenes (book2)
+    // M63: HDRI env map (nenv_mode: 0=off, 1=analytic, 2=HDRI).
+    std::shared_ptr<hdri_env> hdri; // null when not loaded
+    int nenv_mode() const {
+        if (hdri && !hdri->empty()) return 2;
+        return env_light ? 1 : 0;
+    }
 };
 
 // Axis box from 6 quads, returned as a list so callers can instance it

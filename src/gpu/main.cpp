@@ -42,6 +42,7 @@ int main(int argc, char **argv) {
     double aperture = 0.0, exposure = 1.0;
     double shutter0 = 0, shutter1 = 0, fog_density = 0, het_density = 0;
     bool marble_demo = false, env_demo = false;
+    std::string hdri_env_path; // --hdri-env <file.hdr>
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--spp" && i + 1 < argc) {
@@ -69,6 +70,8 @@ int main(int argc, char **argv) {
             marble_demo = true;
         else if (a == "--env")
             env_demo = true;
+        else if (a == "--hdri-env" && i + 1 < argc)
+            hdri_env_path = argv[++i];
         else if (a == "--width" && i + 1 < argc) {
             W = std::max(8, std::atoi(argv[++i]));
             width_set = true;
@@ -119,6 +122,17 @@ int main(int argc, char **argv) {
     scene_data sdata =
         build_scene(scene_name, (double)W / (double)H, 0.0, shutter0, shutter1, fog_density,
                     het_density, marble_demo, env_demo);
+    // M63: load HDRI if requested.
+    if (!hdri_env_path.empty()) {
+        sdata.hdri = std::make_shared<hdri_env>();
+        if (!sdata.hdri->load(hdri_env_path)) {
+            std::cerr << "hdri-env: could not load '" << hdri_env_path << "'\n";
+            sdata.hdri.reset();
+        } else {
+            sdata.env_light = true; // activate env MIS path (nenv_mode()==2)
+            sdata.black_bg = false; // HDRI replaces the studio-void background
+        }
+    }
     flat_scene flat;
     if (!flatten_scene(sdata, flat)) {
         std::cerr << "scene has non-exportable shapes\n";
@@ -167,15 +181,27 @@ int main(int argc, char **argv) {
     const void *light_ptr = light_tab.empty() ? empty_light : light_tab.data();
     size_t light_bytes =
         light_tab.empty() ? sizeof empty_light : light_tab.size() * sizeof(int);
-    const void *data[9] = {&scene.cam, scene.spheres.data(), scene.quads.data(),
-                           scene.tris.data(), flat.nodes.data(), flat.refs.data(),
-                           img_ptr, tab_ptr, light_ptr};
-    const size_t bytes[9] = {sizeof scene.cam, scene.spheres.size() * sizeof(GPUSphere),
-                             scene.quads.size() * sizeof(GPUQuad),
-                             scene.tris.size() * sizeof(GPUTri),
+    // M63: HDRI texel + CDF buffers (empty pads when no HDRI loaded).
+    static const float empty_hdri[4] = {};
+    std::vector<float> hdri_tex_buf, hdri_cdf_buf;
+    if (sdata.hdri && !sdata.hdri->empty()) {
+        hdri_tex_buf = sdata.hdri->texel_upload();
+        hdri_cdf_buf = sdata.hdri->cdf_upload();
+    }
+    const void *hdri_tex_ptr = hdri_tex_buf.empty() ? (const void*)empty_hdri : (const void*)hdri_tex_buf.data();
+    size_t hdri_tex_bytes = hdri_tex_buf.empty() ? sizeof empty_hdri : hdri_tex_buf.size() * sizeof(float);
+    const void *hdri_cdf_ptr = hdri_cdf_buf.empty() ? (const void*)empty_hdri : (const void*)hdri_cdf_buf.data();
+    size_t hdri_cdf_bytes = hdri_cdf_buf.empty() ? sizeof empty_hdri : hdri_cdf_buf.size() * sizeof(float);
+
+    const void *data[11] = {&scene.cam, scene.spheres.data(), scene.quads.data(),
+                            scene.tris.data(), flat.nodes.data(), flat.refs.data(),
+                            img_ptr, tab_ptr, light_ptr, hdri_tex_ptr, hdri_cdf_ptr};
+    const size_t bytes[11] = {sizeof scene.cam, scene.spheres.size() * sizeof(GPUSphere),
+                              scene.quads.size() * sizeof(GPUQuad),
+                              scene.tris.size() * sizeof(GPUTri),
                               flat.nodes.size() * sizeof(GPUQNode),
-                             flat.refs.size() * sizeof(GPURef), img_bytes, tab_bytes,
-                             light_bytes};
+                              flat.refs.size() * sizeof(GPURef), img_bytes, tab_bytes,
+                              light_bytes, hdri_tex_bytes, hdri_cdf_bytes};
     gpu_set_scene(gpu, data, bytes);
 
     // Fog-slot count gates fog RNG draws (static streams bit-exact).
@@ -196,7 +222,7 @@ int main(int argc, char **argv) {
     push.sh0 = (float)shutter0;
     push.sh1 = (float)shutter1;
     push.nfog = nfog;
-    push.nenv = sdata.env_light ? 1 : 0;
+    push.nenv = sdata.nenv_mode();
     push.nblack = sdata.black_bg ? 1 : 0;
     push.maxdepth = max_depth;
     push.fixed_rng = fixed_rng ? 1 : 0;

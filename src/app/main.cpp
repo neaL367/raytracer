@@ -45,6 +45,7 @@ int main(int argc, char **argv) {
     bool mix_pdf = false; // --pdf mixture: Book 3 mixture-density path
     bool dump_aov = false; // --aov: albedo/normal/depth PFM trio next to PPM
     bool fixed_rng = false; // --fixed-rng: deterministic 0.5 stream (M54)
+    std::string hdri_env_path; // --hdri-env <file.hdr>
     unsigned seed = 42; // base RNG seed; per-pixel stream = seed + pixel index
     int W = 400, H = -1; // H defaults to 16:9 unless --height given
     int max_depth = 50; // RR handles termination; depth is backstop
@@ -107,6 +108,8 @@ int main(int argc, char **argv) {
             fixed_rng = true;
         else if (a == "--maxdepth" && i + 1 < argc)
             max_depth = std::max(1, std::atoi(argv[++i]));
+        else if (a == "--hdri-env" && i + 1 < argc)
+            hdri_env_path = argv[++i];
         else if (a.ends_with(".ppm"))
             out_path = a;
     }
@@ -135,6 +138,18 @@ int main(int argc, char **argv) {
     scene_data scene = build_scene(scene_name, double(W) / double(H), aperture, shutter0,
                                     shutter1, fog_density, het_density, marble_demo,
                                     env_demo);
+    // M63: load HDRI if requested. This also activates the env path (nenv_mode==2).
+    if (!hdri_env_path.empty()) {
+        scene.hdri = std::make_shared<hdri_env>();
+        if (!scene.hdri->load(hdri_env_path)) {
+            std::cerr << "hdri-env: could not load '" << hdri_env_path << "'\n";
+            scene.hdri.reset();
+        } else {
+            scene.env_light = true; // activate env MIS path
+            scene.black_bg = false; // HDRI replaces the studio-void background
+            env_demo = true; // report the active environment in render metadata
+        }
+    }
     std::vector<std::shared_ptr<hittable>> &objs = scene.objs;
     std::vector<light> &lights = scene.lights;
     camera &cam = scene.cam;
@@ -260,6 +275,9 @@ int main(int argc, char **argv) {
         workers.emplace_back([&] {
             if (fixed_rng)
                 rng_fixed_flag() = true; // thread-local: enable per worker
+            // M63: bind HDRI pointer thread-locally so env_light dispatches
+            // to it. Null when no HDRI loaded (analytic path unchanged).
+            env_light::g_hdri() = scene.hdri ? scene.hdri.get() : nullptr;
             for (;;) {
                 int ti = next_tile.fetch_add(1, std::memory_order_relaxed);
                 if (ti >= num_tiles)

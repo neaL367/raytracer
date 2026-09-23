@@ -63,8 +63,9 @@ public:
                 vec3 miss_L = use_env ? env_light::radiance(cur.direction())
                                       : env_light::sky(cur.direction());
                 if (use_env && !specular) {
+                    // MIS weight vs active env PDF (HDRI or analytic 1/4PI).
                     double w = direction_pdf::power_weight(
-                        pdf_b_last, env_light::sample_pdf());
+                        pdf_b_last, env_light::sample_pdf_for(cur.direction()));
                     L += throughput * miss_L * w;
                 } else {
                     L += throughput * miss_L;
@@ -158,18 +159,18 @@ public:
             }
 
             if (use_env && diffuse && !mix_pdf) {
-                // Environment NEE: uniform-sphere sample, shadow probe to
-                // infinity, power MIS against the cosine strategy. Draws RNG
-                // only when opted in, so env-off streams stay byte-exact.
-                vec3 edir = env_light::sample_dir(random_double(), random_double());
+                // Environment NEE: sample from the active env (analytic uniform
+                // sphere or HDRI CDF), shadow probe to infinity, power MIS
+                // against the cosine strategy. Draws RNG only when opted in.
+                double pdf_e = 0.0;
+                vec3 edir = env_light::sample_dir(random_double(), random_double(), pdf_e);
                 double cosS = dot(rec.normal, edir);
-                if (cosS > 0) {
+                if (cosS > 0 && pdf_e > 0) {
                     count_ray(); // env shadow ray
                     double Tr = shadow_transmittance(world, media, rec.point, edir, 1e30,
                                                      cur.time());
                     if (Tr > 0) {
                         vec3 env_Le = env_light::radiance(edir);
-                        double pdf_e = env_light::sample_pdf();
                         double pdf_b = cosine_pdf(cosS);
                         double w = direction_pdf::power_weight(pdf_e, pdf_b);
                         L += throughput * attenuation * env_Le *
@@ -213,19 +214,21 @@ public:
             }
 
             if (use_env && vol_nee && !mix_pdf) {
-                // Environment in-scattering: uniform sphere, probe to
-                // infinity, power MIS against the uniform continuation.
-                vec3 edir = env_light::sample_dir(random_double(), random_double());
+                // Environment in-scattering: sample from active env, probe to
+                // infinity, power MIS against the uniform phase continuation.
+                double pdf_e = 0.0;
+                vec3 edir = env_light::sample_dir(random_double(), random_double(), pdf_e);
                 count_ray(); // env shadow ray
-                double Tr = shadow_transmittance(world, media, rec.point, edir, 1e30,
-                                                 cur.time());
-                if (Tr > 0) {
-                    vec3 env_Le = env_light::radiance(edir);
-                    double pdf_e = env_light::sample_pdf();
-                    double pdf_b = 1.0 / (4.0 * pi);
-                    double w = direction_pdf::power_weight(pdf_e, pdf_b);
-                    L += throughput * attenuation * env_Le * (1.0 / (4.0 * pi * pdf_e)) *
-                         w * Tr;
+                if (pdf_e > 0) {
+                    double Tr = shadow_transmittance(world, media, rec.point, edir, 1e30,
+                                                     cur.time());
+                    if (Tr > 0) {
+                        vec3 env_Le = env_light::radiance(edir);
+                        double pdf_b = 1.0 / (4.0 * pi);
+                        double w = direction_pdf::power_weight(pdf_e, pdf_b);
+                        L += throughput * attenuation * env_Le * (1.0 / (4.0 * pi * pdf_e)) *
+                             w * Tr;
+                    }
                 }
             }
 
