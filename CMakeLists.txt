@@ -56,6 +56,7 @@ endfunction()
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/gpu/push_layout.inc)
 generate_push_block(${CMAKE_SOURCE_DIR}/src/gpu/push_layout.inc ${GPU_SHADER_DIR}/push_block.glsl)
 
+file(GLOB GPU_SHADER_HEADERS "${CMAKE_SOURCE_DIR}/src/gpu/shaders/*.glsl")
 foreach(shader grad normal path denoise joint)
     add_custom_command(
         OUTPUT ${GPU_SHADER_DIR}/${shader}.spv
@@ -63,7 +64,7 @@ foreach(shader grad normal path denoise joint)
                 ${CMAKE_SOURCE_DIR}/src/gpu/shaders/${shader}.comp
                 -o ${GPU_SHADER_DIR}/${shader}.spv
         DEPENDS ${CMAKE_SOURCE_DIR}/src/gpu/shaders/${shader}.comp
-                ${CMAKE_SOURCE_DIR}/src/gpu/shaders/common.glsl
+                ${GPU_SHADER_HEADERS}
                 ${GPU_SHADER_DIR}/push_block.glsl
         COMMENT "compiling ${shader}.comp")
     list(APPEND GPU_SHADERS_COMPILED ${GPU_SHADER_DIR}/${shader}.spv)

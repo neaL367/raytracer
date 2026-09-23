@@ -29,12 +29,12 @@ public:
 
     // Motion endpoints (scene-applied; OBJ carries no motion). Smooth
     // normals stay static — exact for rigid translation.
-    void set_motion(const vec3 &a, const vec3 &b, const vec3 &c, double t0, double t1) {
+    void set_motion(const vec3 &a, const vec3 &b, const vec3 &c, double time0, double time1) {
         v0b = a;
         v1b = b;
         v2b = c;
-        tm0 = t0;
-        tm1 = t1;
+        tm0 = time0;
+        tm1 = time1;
     }
     vec3 vert_at(int i, double time) const {
         const vec3 &a = (i == 0) ? v0 : ((i == 1) ? v1 : v2);
@@ -103,13 +103,12 @@ public:
                 duv1 = vec3(1, 0, 0);
                 duv2 = vec3(0, 1, 0);
             }
-            double det = duv1.x() * duv2.y() - duv2.x() * duv1.y();
-            vec3 flat = unit_vector(cross(e1, e2));
-            if (fabs(det) > 1e-12) {
-                vec3 t = (e1 * duv2.y() - e2 * duv1.y()) / det;
-                t = t - flat * dot(t, flat);
-                if (t.length_squared() > 1e-12) {
-                    rec.tangent = unit_vector(t);
+            double uv_det = duv1.x() * duv2.y() - duv2.x() * duv1.y();
+            if (fabs(uv_det) > 1e-12) {
+                vec3 tan_vec = (e1 * duv2.y() - e2 * duv1.y()) / uv_det;
+                tan_vec = tan_vec - flat * dot(tan_vec, flat);
+                if (tan_vec.length_squared() > 1e-12) {
+                    rec.tangent = unit_vector(tan_vec);
                     rec.has_tangent = true;
                 }
             }
@@ -134,9 +133,9 @@ public:
     // GPU flatten accessors.
     const vec3 &vert(int i) const { return (i == 0) ? v0 : ((i == 1) ? v1 : v2); }
     const vec3 &vert1(int i) const { return (i == 0) ? v0b : ((i == 1) ? v1b : v2b); }
-    void time_range(double &t0, double &t1) const {
-        t0 = tm0;
-        t1 = tm1;
+    void time_range(double &time0, double &time1) const {
+        time0 = tm0;
+        time1 = tm1;
     }
     // Smooth normals for upload; flat tris report the face normal x3
     // (same pixels, small upload cost, one shader path).
