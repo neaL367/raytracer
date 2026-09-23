@@ -71,7 +71,7 @@ inline bool try_image_export(flat_scene &out, const std::shared_ptr<lambertian> 
     alb[0] = alb[1] = alb[2] = alb[3] = 0;
     alb2[0] = alb2[1] = alb2[2] = alb2[3] = 0;
     emit[0] = emit[1] = emit[2] = emit[3] = 0;
-    prm[0] = 5;
+    prm[0] = static_cast<float>(MatType::IMAGE);
     prm[1] = (float)idx;
     prm[2] = prm[3] = 0;
     return true;
@@ -89,7 +89,7 @@ inline void export_or_magenta(const std::shared_ptr<material> &m, float alb[4], 
     alb[2] = 1;
     alb2[0] = alb2[1] = alb2[2] = 0;
     emit[0] = emit[1] = emit[2] = 0;
-    prm[0] = 0;
+    prm[0] = static_cast<float>(MatType::SOLID);
     prm[1] = prm[2] = prm[3] = 0;
 }
 
@@ -121,7 +121,7 @@ inline bool push_prim(flat_scene &out, std::map<const hittable *, std::pair<int,
         g.alb[0] = (float)alb.x();
         g.alb[1] = (float)alb.y();
         g.alb[2] = (float)alb.z();
-        g.prm[0] = 6;
+        g.prm[0] = static_cast<float>(MatType::FOG);
         g.prm[1] = (float)m->density_val();
         id[o.get()] = {0, (int)gs.spheres.size()};
         gs.spheres.push_back(g);
@@ -147,7 +147,7 @@ inline bool push_prim(flat_scene &out, std::map<const hittable *, std::pair<int,
         g.alb2[0] = (float)fr.x();
         g.alb2[1] = (float)fr.y();
         g.alb2[2] = (float)fr.z();
-        g.prm[0] = 8;
+        g.prm[0] = static_cast<float>(MatType::HET);
         g.prm[1] = (float)hm->density_val();
         id[o.get()] = {0, (int)gs.spheres.size()};
         gs.spheres.push_back(g);
@@ -174,7 +174,7 @@ inline bool push_prim(flat_scene &out, std::map<const hittable *, std::pair<int,
             g.prm[3] = 1;
         id[o.get()] = {0, (int)gs.spheres.size()};
         gs.spheres.push_back(g);
-        if (g.prm[0] != 6 && g.emit[0] + g.emit[1] + g.emit[2] > 0)
+        if (g.prm[0] != static_cast<float>(MatType::FOG) && g.emit[0] + g.emit[1] + g.emit[2] > 0)
             out.light_table.push_back({1, (int)gs.spheres.size() - 1});
         return true;
     }
@@ -402,7 +402,7 @@ inline bool flatten_scene(const scene_data &scene, flat_scene &out) {
             float alb[4] = {}, alb2[4] = {}, emit[4] = {}, prm[4] = {};
             if (!q->mat_ptr() || !q->mat_ptr()->export_gpu(alb, alb2, emit, prm))
                 return false;
-            return prm[0] == 3;
+            return prm[0] == static_cast<float>(MatType::EMIT);
         });
     std::map<const hittable *, std::pair<int, int>> id;
     for (const auto &o : ordered)

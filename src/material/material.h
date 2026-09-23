@@ -9,6 +9,50 @@
 #include "../geometry/hittable.h"
 #include <memory>
 
+enum class MatType : int {
+    SOLID     = 0,
+    RESERVED  = 1, // fuzz-era deleted; do not renumber
+    GLASS     = 2,
+    EMIT      = 3,
+    CHECKER   = 4,
+    IMAGE     = 5,
+    FOG       = 6,
+    CONDUCTOR = 7,
+    HET       = 8,
+    NOISE     = 9,
+    ANISO     = 10
+};
+
+inline constexpr MatType kAllActiveMatTypes[] = {
+    MatType::SOLID,
+    MatType::GLASS,
+    MatType::EMIT,
+    MatType::CHECKER,
+    MatType::IMAGE,
+    MatType::FOG,
+    MatType::CONDUCTOR,
+    MatType::HET,
+    MatType::NOISE,
+    MatType::ANISO
+};
+
+inline const char *mat_type_name(MatType t) {
+    switch (t) {
+        case MatType::SOLID:     return "SOLID";
+        case MatType::RESERVED:  return "RESERVED";
+        case MatType::GLASS:     return "GLASS";
+        case MatType::EMIT:      return "EMIT";
+        case MatType::CHECKER:   return "CHECKER";
+        case MatType::IMAGE:     return "IMAGE";
+        case MatType::FOG:       return "FOG";
+        case MatType::CONDUCTOR: return "CONDUCTOR";
+        case MatType::HET:       return "HET";
+        case MatType::NOISE:     return "NOISE";
+        case MatType::ANISO:     return "ANISO";
+    }
+    return "UNKNOWN";
+}
+
 // Material answers scatter only. No light/traversal knowledge.
 // Returns false = ray absorbed (killed, contributes black).
 // emitted() default black; diffuse_light overrides (no scatter).
@@ -77,7 +121,7 @@ public:
     }
     bool export_gpu(float alb[4], float alb2[4], float emit[4],
                     float prm[4]) const override {
-        // Solid -> type 0; solid-checker -> type 4 (even/odd/scale).
+        // Solid -> MatType::SOLID; solid-checker -> MatType::CHECKER (even/odd/scale).
         // Nested textures refuse (magenta fallback, loud not silent).
         if (auto s = dynamic_cast<const solid_color *>(tex.get())) {
             alb[0] = (float)s->rgb().x();
@@ -85,7 +129,7 @@ public:
             alb[2] = (float)s->rgb().z();
             alb2[0] = alb2[1] = alb2[2] = 0;
             emit[0] = emit[1] = emit[2] = 0;
-            prm[0] = 0;
+            prm[0] = static_cast<float>(MatType::SOLID);
             prm[1] = prm[2] = prm[3] = 0;
             return true;
         }
@@ -101,12 +145,12 @@ public:
             alb2[1] = (float)o->rgb().y();
             alb2[2] = (float)o->rgb().z();
             emit[0] = emit[1] = emit[2] = 0;
-            prm[0] = 4;
+            prm[0] = static_cast<float>(MatType::CHECKER);
             prm[1] = (float)c->tex_scale();
             prm[2] = prm[3] = 0;
             return true;
         }
-        // Procedural marble family -> type 9 (freq, depth, mode in prm).
+        // Procedural marble family -> MatType::NOISE (freq, depth, mode in prm).
         if (auto n = dynamic_cast<const noise_texture *>(tex.get())) {
             alb[0] = (float)n->color0().x();
             alb[1] = (float)n->color0().y();
@@ -115,7 +159,7 @@ public:
             alb2[1] = (float)n->color1().y();
             alb2[2] = (float)n->color1().z();
             emit[0] = emit[1] = emit[2] = 0;
-            prm[0] = 9;
+            prm[0] = static_cast<float>(MatType::NOISE);
             prm[1] = (float)n->freq();
             prm[2] = (float)n->depth();
             prm[3] = (float)n->mode();
@@ -194,11 +238,11 @@ public:
         alb2[0] = alb2[1] = alb2[2] = 0;
         emit[0] = emit[1] = emit[2] = 0;
         if (is_aniso()) {
-            prm[0] = 10; // anisotropic conductor (ax, ay)
+            prm[0] = static_cast<float>(MatType::ANISO); // anisotropic conductor (ax, ay)
             prm[1] = (float)rough_x;
             prm[2] = (float)rough_y;
         } else {
-            prm[0] = 7; // GGX conductor (fuzz-era type 1 deleted)
+            prm[0] = static_cast<float>(MatType::CONDUCTOR); // GGX conductor (fuzz-era type 1 deleted)
             prm[1] = (float)roughness;
             prm[2] = 0;
         }
@@ -286,7 +330,7 @@ public:
         alb[0] = alb[1] = alb[2] = 0;
         alb2[0] = alb2[1] = alb2[2] = 0;
         emit[0] = emit[1] = emit[2] = 0;
-        prm[0] = 2;
+        prm[0] = static_cast<float>(MatType::GLASS);
         prm[1] = (float)roughness; // 0 = legacy delta path, bit-exact
         prm[2] = (float)ir;
         prm[3] = (float)prio; // nesting priority (M57); 0 = legacy
@@ -349,7 +393,7 @@ public:
         emit[0] = (float)emit_color.x();
         emit[1] = (float)emit_color.y();
         emit[2] = (float)emit_color.z();
-        prm[0] = 3;
+        prm[0] = static_cast<float>(MatType::EMIT);
         prm[1] = prm[2] = prm[3] = 0;
         return true;
     }

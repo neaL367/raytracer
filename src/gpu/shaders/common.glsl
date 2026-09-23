@@ -1,5 +1,18 @@
 // Shared scene structs + intersection. Included by normal/path kernels.
 // 4-wide QBVH traversal over the same SAH collapse the CPU walks.
+
+// Material types matching C++ MatType enum class
+const int MAT_SOLID     = 0;
+const int MAT_RESERVED  = 1;
+const int MAT_GLASS     = 2;
+const int MAT_EMIT      = 3;
+const int MAT_CHECKER   = 4;
+const int MAT_IMAGE     = 5;
+const int MAT_FOG       = 6;
+const int MAT_CONDUCTOR = 7;
+const int MAT_HET       = 8;
+const int MAT_NOISE     = 9;
+const int MAT_ANISO     = 10;
 struct GPUSphere {
     vec4 c_r;
     vec4 c1;
@@ -201,7 +214,7 @@ bool fog_event(vec3 o, vec3 d, float rtime, int ns, float u01, float tmax,
     bool any = false;
     for (int i = 0; i < ns; ++i) {
         float mtype = spheres[i].params.x;
-        if (mtype != 6.0 && mtype != 8.0)
+        if (mtype != float(MAT_FOG) && mtype != float(MAT_HET))
             continue;
         float te, tx;
         vec3 dn;
@@ -216,7 +229,7 @@ bool fog_event(vec3 o, vec3 d, float rtime, int ns, float u01, float tmax,
         if (!hit_sphere(o, d, rtime, te + 1e-4, 1e30, spheres[i], tx, dn, duv))
             continue;
         tx = min(tx, tmax);
-        if (mtype == 6.0) {
+        if (mtype == float(MAT_FOG)) {
             float s = -log(max(u01, 1e-7)) / max(spheres[i].params.y, 1e-7);
             if (s < tx - te && te + s < tevent) {
                 tevent = te + s;
@@ -486,7 +499,7 @@ float shadow_transmittance(vec3 o, vec3 wi, float rtime, int ns, float dist,
     float Tr = 1.0;
     for (int i = 0; i < ns; ++i) {
         float mtype = spheres[i].params.x;
-        if (mtype != 6.0 && mtype != 8.0)
+        if (mtype != float(MAT_FOG) && mtype != float(MAT_HET))
             continue;
         float te, tx;
         vec3 dn;
@@ -501,7 +514,7 @@ float shadow_transmittance(vec3 o, vec3 wi, float rtime, int ns, float dist,
         tx = min(tx, tmax);
         if (tx <= te)
             continue;
-        if (mtype == 6.0) {
+        if (mtype == float(MAT_FOG)) {
             Tr *= exp(-max(spheres[i].params.y, 1e-7) * (tx - te));
         } else {
             float sig = max(spheres[i].params.y, 1e-7);

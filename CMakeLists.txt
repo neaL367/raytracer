@@ -24,6 +24,11 @@ add_executable(raytracer_tests tests/test_all.cpp tests/test_core.cpp tests/test
 target_include_directories(raytracer_tests PRIVATE src tests external)
 add_test(NAME unit_tests COMMAND raytracer_tests WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME parity COMMAND Python3::Interpreter ${CMAKE_SOURCE_DIR}/tools/parity.py --fast WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+endif()
+
 # GPU backend: headless Vulkan compute. CPU binary untouched.
 find_package(Vulkan REQUIRED)
 # SDK layouts differ: Windows uses Bin/, Linux/macOS use bin/.
@@ -32,14 +37,34 @@ find_program(GLSLC_EXECUTABLE glslc
 
 set(GPU_SHADER_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${GPU_SHADER_DIR})
+
+# Generate push_block.glsl directly from push_layout.inc (inlined from cmake/generate_push_block.cmake)
+function(generate_push_block source_inc out_glsl)
+    file(STRINGS "${source_inc}" PUSH_ENTRIES)
+    set(GLSL_PC_MEMBERS "")
+    foreach(ENTRY ${PUSH_ENTRIES})
+        string(REGEX MATCH "X\\(([a-zA-Z0-9_]+),[ \t]*([a-zA-Z0-9_]+),[ \t]*([0-9]+)\\)" MATCHED "${ENTRY}")
+        if(MATCHED)
+            set(TYPE "${CMAKE_MATCH_1}")
+            set(NAME "${CMAKE_MATCH_2}")
+            string(APPEND GLSL_PC_MEMBERS "    ${TYPE} ${NAME};\n")
+        endif()
+    endforeach()
+    file(WRITE "${out_glsl}" "// Auto-generated from push_layout.inc. Do not edit directly.\nlayout(push_constant) uniform PC {\n${GLSL_PC_MEMBERS}} pc;\n")
+endfunction()
+
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/gpu/push_layout.inc)
+generate_push_block(${CMAKE_SOURCE_DIR}/src/gpu/push_layout.inc ${GPU_SHADER_DIR}/push_block.glsl)
+
 foreach(shader grad normal path denoise joint)
     add_custom_command(
         OUTPUT ${GPU_SHADER_DIR}/${shader}.spv
-        COMMAND ${GLSLC_EXECUTABLE} -O -I${CMAKE_SOURCE_DIR}/src/gpu/shaders
+        COMMAND ${GLSLC_EXECUTABLE} -O -I${CMAKE_SOURCE_DIR}/src/gpu/shaders -I${GPU_SHADER_DIR}
                 ${CMAKE_SOURCE_DIR}/src/gpu/shaders/${shader}.comp
                 -o ${GPU_SHADER_DIR}/${shader}.spv
         DEPENDS ${CMAKE_SOURCE_DIR}/src/gpu/shaders/${shader}.comp
                 ${CMAKE_SOURCE_DIR}/src/gpu/shaders/common.glsl
+                ${GPU_SHADER_DIR}/push_block.glsl
         COMMENT "compiling ${shader}.comp")
     list(APPEND GPU_SHADERS_COMPILED ${GPU_SHADER_DIR}/${shader}.spv)
 endforeach()

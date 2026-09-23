@@ -161,27 +161,30 @@ int main(int argc, char **argv) {
                              light_bytes};
     gpu_set_scene(gpu, data, bytes);
 
-    uint32_t push10[10] = {(uint32_t)W,         (uint32_t)H,
-                           (uint32_t)scene.spheres.size(),
-                           (uint32_t)scene.quads.size(), (uint32_t)scene.tris.size(),
-                           (uint32_t)spp,                (uint32_t)seed,
-                           (uint32_t)flat.nlights,       0, 0};
-    float shf[2] = {(float)shutter0, (float)shutter1};
-    std::memcpy(&push10[8], shf, sizeof shf);
     // Fog-slot count gates fog RNG draws (static streams bit-exact).
     int nfog = 0;
     for (const auto &s : scene.spheres)
-        if (s.prm[0] == 6 || s.prm[0] == 8)
+        if (s.prm[0] == static_cast<float>(MatType::FOG) || s.prm[0] == static_cast<float>(MatType::HET))
             nfog++;
-    uint32_t push16[16];
-    for (int k = 0; k < 10; ++k)
-        push16[k] = push10[k];
-    push16[10] = (uint32_t)nfog;
-    push16[11] = sdata.env_light ? 1u : 0u;
-    push16[12] = sdata.black_bg ? 1u : 0u;
-    push16[13] = (uint32_t)max_depth;
-    push16[14] = fixed_rng ? 1u : 0u;
-    push16[15] = mix_pdf ? 1u : 0u;
+
+    PushConstants push;
+    push.W = W;
+    push.H = H;
+    push.ns = (int)scene.spheres.size();
+    push.nq = (int)scene.quads.size();
+    push.nt = (int)scene.tris.size();
+    push.spp = spp;
+    push.seed = seed;
+    push.nlights = (int)flat.nlights;
+    push.sh0 = (float)shutter0;
+    push.sh1 = (float)shutter1;
+    push.nfog = nfog;
+    push.nenv = sdata.env_light ? 1 : 0;
+    push.nblack = sdata.black_bg ? 1 : 0;
+    push.maxdepth = max_depth;
+    push.fixed_rng = fixed_rng ? 1 : 0;
+    push.mixpdf = mix_pdf ? 1 : 0;
+
     // Chunked submit (M52): split spp into TDR-safe dispatches, accumulate
     // linear HDR on the host in fp64 (same order as the old python script:
     // v[i]/n added per chunk, so chunked output bit-matches manual runs).
@@ -194,9 +197,9 @@ int main(int argc, char **argv) {
     int done = 0;
     for (int c = 0; c < nchunks; ++c) {
         int cspp = std::min(per, spp - done);
-        push16[5] = (uint32_t)cspp;
-        push16[6] = (uint32_t)(seed + c);
-        dispatch_ms += gpu_run(gpu, shader, push16, rgba);
+        push.spp = cspp;
+        push.seed = seed + c;
+        dispatch_ms += gpu_run(gpu, shader, push, rgba);
         // NOTE: divide (not multiply-by-reciprocal) to bit-match the old
         // python averaging (a/n per chunk, same order).
         for (size_t k = 0; k < acc.size(); ++k)

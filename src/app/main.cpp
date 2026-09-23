@@ -51,9 +51,10 @@ int main(int argc, char **argv) {
     bool spp_set = false;
     bool width_set = false;
     std::string hdr_path; // empty = no float dump
+    std::string out_path = "out/image.ppm";
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
-        if (a == "--samples" && i + 1 < argc) {
+        if ((a == "--samples" || a == "--spp") && i + 1 < argc) {
             spp = std::max(1, std::atoi(argv[++i]));
             spp_set = true;
         } else if (a == "--aperture" && i + 1 < argc)
@@ -106,6 +107,8 @@ int main(int argc, char **argv) {
             fixed_rng = true;
         else if (a == "--maxdepth" && i + 1 < argc)
             max_depth = std::max(1, std::atoi(argv[++i]));
+        else if (a.ends_with(".ppm"))
+            out_path = a;
     }
     // "weekend" (Ray Tracing in One Weekend final) defaults: 1200 width, 500 spp.
     if (scene_name == "weekend" || scene_name == "final" || scene_name == "spheres" ||
@@ -299,8 +302,11 @@ int main(int argc, char **argv) {
                     .count();
     }
 
-    std::filesystem::create_directories("out");
-    if (!write_ppm("out/image.ppm", fb, W, H, exposure)) {
+    if (auto p = std::filesystem::path(out_path).parent_path(); !p.empty())
+        std::filesystem::create_directories(p);
+    else
+        std::filesystem::create_directories("out");
+    if (!write_ppm(out_path.c_str(), fb, W, H, exposure)) {
         std::cerr << "write failed\n";
         return 1;
     }
@@ -318,7 +324,7 @@ int main(int argc, char **argv) {
         }
     }
     std::uint64_t rays = bench_rays().load();
-    std::cout << "wrote out/image.ppm " << W << "x" << H << " spp=" << spp
+    std::cout << "wrote " << out_path << " " << W << "x" << H << " spp=" << spp
               << " threads=" << num_threads << " tile=" << tile_rows
               << " split=" << (use_sah ? "sah" : "median")
               << " exposure=" << exposure << " scene=" << scene_name

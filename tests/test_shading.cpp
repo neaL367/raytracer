@@ -19,6 +19,7 @@
 #include "io/denoise.h"
 #include "output/film.h"
 #include "output/pfm.h"
+#include "gpu/flatten.h"
 
 #include <filesystem>
 #include <fstream>
@@ -684,8 +685,130 @@ static void t_env() {
     EXPECT_TRUE(s1.env_light);
 }
 
+static void t_material_completeness() {
+    test_current = "material_completeness";
+    rng_seed(42);
+
+    int count_tested = 0;
+    for (MatType type : kAllActiveMatTypes) {
+        count_tested++;
+        std::shared_ptr<material> mat;
+        std::shared_ptr<hittable> prim;
+        bool is_volume_type = (type == MatType::FOG || type == MatType::HET);
+
+        switch (type) {
+            case MatType::SOLID: {
+                mat = std::make_shared<lambertian>(vec3(0.7, 0.3, 0.2));
+                prim = std::make_shared<sphere>(point3(0, 0, -1), 0.5, mat);
+                break;
+            }
+            case MatType::GLASS: {
+                mat = std::make_shared<dielectric>(1.5, 0.1);
+                prim = std::make_shared<sphere>(point3(0, 0, -1), 0.5, mat);
+                break;
+            }
+            case MatType::EMIT: {
+                mat = std::make_shared<diffuse_light>(vec3(4.0, 4.0, 4.0));
+                prim = std::make_shared<quad>(point3(-0.5, -0.5, -1), vec3(1, 0, 0), vec3(0, 1, 0), mat);
+                break;
+            }
+            case MatType::CHECKER: {
+                auto chk = std::make_shared<checker>(10.0, vec3(0.1, 0.1, 0.1), vec3(0.9, 0.9, 0.9));
+                mat = std::make_shared<lambertian>(chk);
+                prim = std::make_shared<sphere>(point3(0, 0, -1), 0.5, mat);
+                break;
+            }
+            case MatType::IMAGE: {
+                auto img = std::make_shared<image_texture>("assets/photo_test.jpg");
+                mat = std::make_shared<lambertian>(img);
+                prim = std::make_shared<quad>(point3(-0.5, -0.5, -1), vec3(1, 0, 0), vec3(0, 1, 0), mat);
+                break;
+            }
+            case MatType::FOG: {
+                auto boundary = std::make_shared<sphere>(point3(0, 0, -1), 0.5, nullptr);
+                mat = std::make_shared<isotropic>(vec3(0.6, 0.6, 0.6));
+                prim = std::make_shared<constant_medium>(boundary, 10.0, mat);
+                break;
+            }
+            case MatType::CONDUCTOR: {
+                mat = std::make_shared<metal>(vec3(0.8, 0.8, 0.8), 0.2);
+                prim = std::make_shared<sphere>(point3(0, 0, -1), 0.5, mat);
+                break;
+            }
+            case MatType::HET: {
+                auto boundary = std::make_shared<sphere>(point3(0, 0, -1), 0.5, nullptr);
+                mat = std::make_shared<isotropic>(vec3(0.6, 0.6, 0.6));
+                prim = std::make_shared<heterogeneous_medium>(boundary, 10.0, mat);
+                break;
+            }
+            case MatType::NOISE: {
+                auto marble = std::make_shared<noise_texture>(4.0, 7, 0, vec3(0.2, 0.2, 0.2), vec3(0.8, 0.8, 0.8));
+                mat = std::make_shared<lambertian>(marble);
+                prim = std::make_shared<sphere>(point3(0, 0, -1), 0.5, mat);
+                break;
+            }
+            case MatType::ANISO: {
+                mat = std::make_shared<metal>(vec3(0.8, 0.8, 0.8), 0.1, 0.4);
+                prim = std::make_shared<sphere>(point3(0, 0, -1), 0.5, mat);
+                break;
+            }
+            case MatType::RESERVED:
+                break;
+        }
+
+        // 1. Export check for surface materials that define export_gpu
+        if (mat && type != MatType::IMAGE && !is_volume_type) {
+            float alb[4]{}, alb2[4]{}, emit[4]{}, prm[4]{};
+            bool exp_ok = mat->export_gpu(alb, alb2, emit, prm);
+            EXPECT_TRUE(exp_ok);
+            EXPECT_TRUE(prm[0] == static_cast<float>(type));
+        }
+
+        // 2. Flatten check: flatten_scene must assign the exact prm[0]
+        scene_data sdata;
+        sdata.objs.push_back(prim);
+        if (is_volume_type)
+            sdata.media.push_back(prim);
+        if (type == MatType::EMIT) {
+            if (auto q = std::dynamic_pointer_cast<quad>(prim))
+                sdata.lights.push_back(light(q));
+        }
+        flat_scene flat;
+        bool flat_ok = flatten_scene(sdata, flat);
+        EXPECT_TRUE(flat_ok);
+
+        float assigned_type = -1.0f;
+        if (!flat.gs.spheres.empty())
+            assigned_type = flat.gs.spheres.back().prm[0];
+        else if (!flat.gs.quads.empty())
+            assigned_type = flat.gs.quads.back().prm[0];
+        EXPECT_TRUE(assigned_type == static_cast<float>(type));
+
+        // 3. AOV guide check
+        ray r(point3(0, 0, 1), vec3(0, 0, -1));
+        vec3 aov_alb, aov_nrm;
+        bool aov_hit = false;
+        double aov_depth = -1.0;
+        first_hit_aov(r, *prim, aov_alb, aov_nrm, aov_hit, &aov_depth);
+        EXPECT_TRUE(aov_hit);
+        EXPECT_TRUE(aov_alb.length_squared() > 0.0);
+        EXPECT_TRUE(aov_nrm.length_squared() > 0.0);
+        EXPECT_TRUE(aov_depth > 0.0);
+
+        // 4. 1-pixel Li execution check: hits the material branch without NaN
+        qbvh_node world(sdata.objs, 0, sdata.objs.size());
+        integrator tracer;
+        rng_seed(100 + static_cast<int>(type));
+        vec3 L = tracer.Li(r, world, sdata.lights, 4, sdata.media, false, false);
+        EXPECT_TRUE(!std::isnan(L.x()) && !std::isnan(L.y()) && !std::isnan(L.z()));
+        EXPECT_TRUE(L.x() >= 0.0 && L.y() >= 0.0 && L.z() >= 0.0);
+    }
+    EXPECT_TRUE(count_tested == 10);
+}
+
 void run_shading_tests() {
     t_materials();
+    t_material_completeness();
     t_texture();
     t_mipmaps();
     t_noise();

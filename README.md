@@ -119,6 +119,26 @@ floor, never an absolute threshold. Method notes from the hunt:
   traversal (shadow unconditional, beauty T-gated 0.5), M51 lift removed.
   Leftover: fp32 silhouette knife-edges (mixed-sign speckle, converges).
 
+### CI Parity Gate & Estimator Drift Harness
+
+CI (`.github/workflows/ci.yml`) runs an automated cross-backend parity gate on Ubuntu using Mesa's Lavapipe software Vulkan driver:
+1. **Fixed-RNG Arithmetic Gate**: Runs CPU (`raytracer`) and GPU (`rt_gpu`) with `--fixed-rng` on `default` (64x36, 4 spp). Diffs with `rt_view --diff --stats` and asserts `mean <= 0.05` and `over8 <= 0.1%` (calibrated: `mean ~ 0.002 - 0.004`, `over8 = 0%`). Any arithmetic regressions or shader formula bugs trip this gate instantly without Monte Carlo noise.
+2. **Estimator Drift Harness (`tools/parity.py`)**: Tests a matrix across scenes (`default`, `cornell`, `weekend`, `book2`, `sss`) × sampling modes (`mis`, `mixture`) × bounce depths (`1`, `2`, `50`) × RNG modes (`fixed`, `sampled`). Verifies that outputs do not drift from calibrated baselines recorded in `tools/parity_baseline.json`.
+
+**Local debugging & reproduction**:
+```bash
+# Fast check (default scene, 12 cells, <10s):
+ctest -R parity --output-on-failure
+# or directly:
+python tools/parity.py --fast
+
+# Full 60-cell matrix across all scenes and modes:
+python tools/parity.py
+
+# Re-calibrate and establish new baseline:
+python tools/parity.py --save-baseline tools/parity_baseline.json
+```
+
 ## Layout
 
 ```text

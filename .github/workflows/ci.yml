@@ -61,12 +61,27 @@ jobs:
       - name: Unit tests
         run: ctest --test-dir build -C Release --output-on-failure
 
-      # ---- Software-Vulkan smoke: Lavapipe has no discrete GPU, but the
-      # ---- full dispatch path (scene upload, path trace, download) runs.
-      - name: Lavapipe smoke render (Ubuntu)
+      # ---- Software-Vulkan smoke & parity gate: Lavapipe has no discrete GPU,
+      # ---- but verifies the full dispatch path and enforces cross-backend parity.
+      - name: Lavapipe smoke & parity gate (Ubuntu)
         if: matrix.os == 'ubuntu-latest'
         run: |
           ./build/rt_gpu --list-scenes
-          ./build/rt_gpu build/shaders/path.spv /tmp/smoke.ppm --scene default \
-            --width 64 --spp 4 --seed 7
-          test -s /tmp/smoke.ppm
+          # 1. Deterministic fixed-RNG parity gate (asserts arithmetic exactness without MC noise)
+          ./build/raytracer --scene default --width 64 --height 36 --spp 4 --fixed-rng /tmp/cpu_fixed.ppm
+          ./build/rt_gpu build/shaders/path.spv /tmp/gpu_fixed.ppm --scene default --width 64 --height 36 --spp 4 --fixed-rng
+          ./build/rt_view /tmp/cpu_fixed.ppm --diff /tmp/gpu_fixed.ppm --stats > /tmp/diff_fixed.txt
+          cat /tmp/diff_fixed.txt
+          python3 -c "
+          import re, sys
+          txt = open('/tmp/diff_fixed.txt').read()
+          m = re.search(r'diff mean=([\d\.]+) max=(\d+) over8=([\d\.]+)%', txt)
+          if not m: sys.exit('Could not parse rt_view output')
+          mean, mx, over8 = float(m.group(1)), int(m.group(2)), float(m.group(3))
+          print(f'Fixed-RNG check: mean={mean}, max={mx}, over8={over8}%')
+          if mean > 0.05 or over8 > 0.1:
+              sys.exit(f'FAIL: Fixed-RNG drift exceeded threshold: mean={mean} (max 0.05), over8={over8}% (max 0.1%)')
+          "
+
+          # 2. Comprehensive estimator drift harness across modes and depths
+          python3 tools/parity.py --fast --tolerance-factor 1.5

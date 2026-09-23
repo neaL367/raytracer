@@ -28,25 +28,7 @@ layout(binding = 9) readonly buffer LightTab {
 // joint pass; no RNG involved so beauty streams stay bit-exact).
 layout(binding = 10, rgba32f) uniform image2D albImg;
 layout(binding = 11, rgba32f) uniform image2D nrmImg;
-layout(push_constant) uniform PC {
-    int W;
-    int H;
-    int ns;
-    int nq;
-    int nt;
-    int spp;
-    int seed;
-    int nlights; // NEE entries in the binding-9 light table
-    float sh0;
-    float sh1; // shutter span (closed when equal)
-    int nfog; // fog-ish slots present (type 6/8, gates fog RNG draws)
-    int nenv; // analytic sun+sky environment on (gates env RNG draws)
-    int nblack; // black background (enclosed scenes): miss adds nothing, no RNG
-    int maxdepth; // bounce cap (depth ladder forensics; prod = 50)
-    int fixed_rng; // forensics hatch: wrandf returns 0.5 (deterministic)
-    int mixpdf; // Book 3 mixture-density path (M61): 0 = power-MIS default
-}
-pc;
+#include "push_block.glsl"
 
 uint wseed;
 uint wrand() {
@@ -475,16 +457,16 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
         int mtype = int(params.x + 0.5);
         vec3 hitp0 = o + d * t;
         // Type 4 = checker diffuse: world-pos parity like CPU texture.
-        // Type 5 = image diffuse: UV sample like CPU image_texture.
-        // Type 9 = procedural noise: marble family like CPU noise_texture.
+        // Type MAT_IMAGE = image diffuse: UV sample like CPU image_texture.
+        // Type MAT_NOISE = procedural noise: marble family like CPU noise_texture.
         vec3 base_alb = alb.xyz;
         int img_idx = -1;
-        if (mtype == 4)
+        if (mtype == MAT_CHECKER)
             base_alb = checker_col(hitp0, alb.xyz, alb2.xyz, params.y);
-        else if (mtype == 5) {
+        else if (mtype == MAT_IMAGE) {
             img_idx = int(params.y + 0.5);
             base_alb = image_sample(huv, img_idx, t);
-        } else if (mtype == 9) {
+        } else if (mtype == MAT_NOISE) {
             base_alb = noise_col(hitp0, alb.xyz, alb2.xyz, params.y,
                                  int(params.z + 0.5), int(params.w + 0.5));
         }
@@ -492,16 +474,16 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
         // Before the emit break: lights carry guides too (CPU records all).
         if (bounce == 0) {
             guide_n = n;
-            if (mtype == 5 && img_idx >= 0)
+            if (mtype == MAT_IMAGE && img_idx >= 0)
                 guide_a = image_sample(huv, img_idx, 1e-3); // L0, no LOD
-            else if (mtype == 7 || mtype == 10)
+            else if (mtype == MAT_CONDUCTOR || mtype == MAT_ANISO)
                 guide_a = alb.xyz;
-            else if (mtype == 2)
+            else if (mtype == MAT_GLASS)
                 guide_a = vec3(1.0);
-            else if (mtype == 3)
+            else if (mtype == MAT_EMIT)
                 guide_a = emit.xyz;
             else
-                guide_a = base_alb; // 0 solid, 4 checker, 9 noise
+                guide_a = base_alb; // MAT_SOLID, MAT_CHECKER, MAT_NOISE
         }
         if (emit.x + emit.y + emit.z > 0.0) {
             if (specular) {
@@ -531,17 +513,17 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
         vec3 sd;
         bool ok = true;
         bool diffuse = false;
-        if (mtype == 0 || mtype == 4 || mtype == 5 || mtype == 9) {
+        if (mtype == MAT_SOLID || mtype == MAT_CHECKER || mtype == MAT_IMAGE || mtype == MAT_NOISE) {
             vec3 u, v, w;
             wonb(n, u, v, w);
             vec3 cd = wcosine_dir();
             sd = u * cd.x + v * cd.y + w * cd.z;
             attenuation = base_alb;
             diffuse = true;
-        } else if (mtype == 3) {
+        } else if (mtype == MAT_EMIT) {
             ok = false; // emissive has no scatter (CPU returns false);
                         // reached only when emit == 0 (black), absorbed
-        } else if (mtype == 7) {
+        } else if (mtype == MAT_CONDUCTOR) {
             // GGX conductor (fuzz-era type 1 deleted): F0 = albedo,
             // perceptual roughness in params.y. Frame faces the view
             // like CPU set_face_normal.
@@ -565,7 +547,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                 attenuation = F * ratio;
                 sd = u * Ll.x + v * Ll.y + w * Ll.z;
             }
-        } else if (mtype == 10) {
+        } else if (mtype == MAT_ANISO) {
             // Anisotropic conductor (mirrors CPU metal aniso): TBN frame
             // from the hit tangent, ONB-u fallback by the same rule.
             vec3 V = -normalize(d);
