@@ -29,11 +29,14 @@ int main(int argc, char **argv) {
     std::string shader = SHADER_DIR "/grad.spv";
     std::string out_path = "out/gpu_grad.ppm";
     int spp = 16, seed = 42;
+    int max_depth = 50; // bounce cap (depth ladder forensics)
+    bool fixed_rng = false; // --fixed-rng: deterministic 0.5 stream (M54)
     int chunk_spp = 0; // --chunk C: spp per dispatch (TDR); 0 = one shot
     std::string scene_name = "default";
     std::string hdr_path; // empty = no float dump
     bool do_denoise = false;
     bool do_joint = false;
+    bool dump_aov = false; // --aov: download albedo/normal guides as PFM
     double aperture = 0.0, exposure = 1.0;
     double shutter0 = 0, shutter1 = 0, fog_density = 0, het_density = 0;
     bool marble_demo = false, env_demo = false;
@@ -72,10 +75,16 @@ int main(int argc, char **argv) {
             do_denoise = true;
         else if (a == "--joint")
             do_joint = true;
+        else if (a == "--aov")
+            dump_aov = true;
         else if (a == "--aperture" && i + 1 < argc)
             aperture = std::max(0.0, std::atof(argv[++i]));
         else if (a == "--exposure" && i + 1 < argc)
             exposure = std::max(0.0, std::atof(argv[++i]));
+        else if (a == "--maxdepth" && i + 1 < argc)
+            max_depth = std::max(1, std::atoi(argv[++i]));
+        else if (a == "--fixed-rng")
+            fixed_rng = true;
         else if (a.ends_with(".spv"))
             shader = a;
         else if (a.ends_with(".ppm"))
@@ -161,12 +170,14 @@ int main(int argc, char **argv) {
     for (const auto &s : scene.spheres)
         if (s.prm[0] == 6 || s.prm[0] == 8)
             nfog++;
-    uint32_t push12[13];
+    uint32_t push15[15];
     for (int k = 0; k < 10; ++k)
-        push12[k] = push10[k];
-    push12[10] = (uint32_t)nfog;
-    push12[11] = sdata.env_light ? 1u : 0u;
-    push12[12] = sdata.black_bg ? 1u : 0u;
+        push15[k] = push10[k];
+    push15[10] = (uint32_t)nfog;
+    push15[11] = sdata.env_light ? 1u : 0u;
+    push15[12] = sdata.black_bg ? 1u : 0u;
+    push15[13] = (uint32_t)max_depth;
+    push15[14] = fixed_rng ? 1u : 0u;
     // Chunked submit (M52): split spp into TDR-safe dispatches, accumulate
     // linear HDR on the host in fp64 (same order as the old python script:
     // v[i]/n added per chunk, so chunked output bit-matches manual runs).
@@ -179,9 +190,9 @@ int main(int argc, char **argv) {
     int done = 0;
     for (int c = 0; c < nchunks; ++c) {
         int cspp = std::min(per, spp - done);
-        push12[5] = (uint32_t)cspp;
-        push12[6] = (uint32_t)(seed + c);
-        dispatch_ms += gpu_run(gpu, shader, push12, rgba);
+        push15[5] = (uint32_t)cspp;
+        push15[6] = (uint32_t)(seed + c);
+        dispatch_ms += gpu_run(gpu, shader, push15, rgba);
         // NOTE: divide (not multiply-by-reciprocal) to bit-match the old
         // python averaging (a/n per chunk, same order).
         for (size_t k = 0; k < acc.size(); ++k)
@@ -230,7 +241,23 @@ int main(int argc, char **argv) {
                 c = vec3(t[0], t[1], t[2]);
             }
             fb[((size_t)H - 1 - y) * W + x] = c;
-        }
+    }
+    if (dump_aov && !post) {
+        // Guide readback mirrors the CPU --aov trio (linear, no film).
+        // Chunked runs leave the LAST chunk's guides on device.
+        std::vector<float> alb_rgba, nrm_rgba;
+        gpu_read_aov(gpu, alb_rgba, nrm_rgba);
+        std::vector<vec3> alb_fb((size_t)W * H), nrm_fb((size_t)W * H);
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                const float *ta = alb_rgba.data() + ((size_t)y * W + x) * 4;
+                const float *tn = nrm_rgba.data() + ((size_t)y * W + x) * 4;
+                alb_fb[((size_t)H - 1 - y) * W + x] = vec3(ta[0], ta[1], ta[2]);
+                nrm_fb[((size_t)H - 1 - y) * W + x] = vec3(tn[0], tn[1], tn[2]);
+            }
+        write_pfm("out/aov_albedo.pfm", alb_fb, W, H);
+        write_pfm("out/aov_normal.pfm", nrm_fb, W, H);
+    }
     gpu_shutdown(gpu);
 
     std::filesystem::create_directories("out");

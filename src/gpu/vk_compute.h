@@ -330,9 +330,9 @@ inline void gpu_set_scene(GpuContext &g, const void *data[9], const size_t bytes
     g.has_scene = true;
 }
 
-// Dispatch spv with 32B push block, copy image to host, report device ms.
+// Dispatch spv with 60B push block, copy image to host, report device ms.
 // out_rgba receives W*H*4 floats, top-first rows.
-inline double gpu_run(GpuContext &g, const std::string &spv_path, const uint32_t push12[13],
+inline double gpu_run(GpuContext &g, const std::string &spv_path, const uint32_t push15[15],
                       std::vector<float> &out_rgba) {
     std::ifstream f(spv_path, std::ios::binary | std::ios::ate);
     if (!f) {
@@ -355,7 +355,7 @@ inline double gpu_run(GpuContext &g, const std::string &spv_path, const uint32_t
     {
         VkPushConstantRange pc{};
         pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        pc.size = 52; // 13 words are pushed (M52: layout must cover nblack)
+        pc.size = 60; // 15 words (M54: +maxdepth +fixed_rng)
         VkPipelineLayoutCreateInfo li{};
         li.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         li.setLayoutCount = 1;
@@ -396,7 +396,7 @@ inline double gpu_run(GpuContext &g, const std::string &spv_path, const uint32_t
         vkCmdBindPipeline(g.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g.pipe);
         vkCmdBindDescriptorSets(g.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g.pipe_layout, 0,
                                 1, &g.set, 0, nullptr);
-        vkCmdPushConstants(g.cmd, g.pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 52, push12);
+        vkCmdPushConstants(g.cmd, g.pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 60, push15);
         vkCmdWriteTimestamp(g.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.query_pool, 0);
         vkCmdDispatch(g.cmd, (g.W + 15) / 16, (g.H + 15) / 16, 1);
         vkCmdWriteTimestamp(g.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.query_pool, 1);
@@ -949,6 +949,54 @@ inline double gpu_joint(GpuContext &g, const std::string &spv_path,
     vkDestroyImage(g.device, out_img, nullptr);
     vkFreeMemory(g.device, out_mem, nullptr);
     return dispatch_ms;
+}
+
+// AOV readback: download the albedo + normal guide images path.comp
+// writes (bindings 10/11). Both stay GENERAL after gpu_run; transition
+// to TRANSFER_SRC, copy sequentially through the shared staging buffer.
+inline void gpu_read_aov(GpuContext &g, std::vector<float> &out_alb,
+                         std::vector<float> &out_nrm) {
+    VkImage imgs[2] = {g.alb_img, g.nrm_img};
+    std::vector<float> *outs[2] = {&out_alb, &out_nrm};
+    for (int k = 0; k < 2; ++k) {
+        VkCommandBufferBeginInfo bi{};
+        bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        VKC_CHECK(vkBeginCommandBuffer(g.cmd, &bi));
+        VkImageMemoryBarrier b{};
+        b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        b.image = imgs[k];
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(g.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr,
+                             1, &b);
+        VkBufferImageCopy region{};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageExtent = {(uint32_t)g.W, (uint32_t)g.H, 1};
+        vkCmdCopyImageToBuffer(g.cmd, imgs[k], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               g.staging.buf, 1, &region);
+        VKC_CHECK(vkEndCommandBuffer(g.cmd));
+        VkFence fence;
+        VkFenceCreateInfo fi{};
+        fi.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        VKC_CHECK(vkCreateFence(g.device, &fi, nullptr, &fence));
+        VkSubmitInfo si{};
+        si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &g.cmd;
+        VKC_CHECK(vkQueueSubmit(g.queue, 1, &si, fence));
+        VKC_CHECK(vkWaitForFences(g.device, 1, &fence, VK_TRUE, UINT64_MAX));
+        vkDestroyFence(g.device, fence, nullptr);
+        void *mapped = nullptr;
+        VKC_CHECK(vkMapMemory(g.device, g.staging.mem, 0, g.staging.bytes, 0, &mapped));
+        outs[k]->assign((const float *)mapped,
+                        (const float *)mapped + (size_t)g.W * g.H * 4);
+        vkUnmapMemory(g.device, g.staging.mem);
+    }
 }
 
 inline void gpu_shutdown(GpuContext &g) {

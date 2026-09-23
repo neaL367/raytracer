@@ -18,6 +18,7 @@ build\Release\raytracer.exe [--samples 16] [--threads N] [--tile 8]
   [--shutter T0 T1] [--fog D] [--het D] [--aperture A] [--width W] [--height H]
   [--seed 42] [--hdr float.pfm] [--bench] [--noise] [--env]
   [--sampler stratified|sobol] [--aov] [--list-scenes]
+  [--maxdepth 50] [--fixed-rng]
 ```
 
 Renders `out/image.ppm` (400x225, 16spp stratified default,
@@ -29,12 +30,15 @@ pre-exposure float (PFM) for post-workflows alongside the PPM.
 `--aov` dumps linear `out/aov_{albedo,normal,depth}.pfm` for denoise/ML workflows.
 `--list-scenes` prints the scene registry (default/cornell/weekend/book2
 plus book aliases). weekend/book2 default to 500spp book-style renders.
+`--maxdepth` caps bounces (depth-ladder forensics; prod 50). `--fixed-rng`
+forces a deterministic 0.5 stream (pixel centers, center light samples)
+for exact cross-backend debugging.
 
 ```bat
 build\Release\rt_gpu.exe [path.spv] [out.ppm] [--spp N] [--chunk C] [--seed S]
   [--scene NAME] [--shutter T0 T1] [--fog D] [--het D] [--width W] [--height H]
   [--hdr float.pfm] [--aperture A] [--exposure X] [--denoise] [--joint]
-  [--noise] [--env] [--list-scenes]
+  [--noise] [--env] [--list-scenes] [--maxdepth 50] [--fixed-rng] [--aov]
 ```
 
 Headless Vulkan compute backend (discrete NVIDIA pick). Statistical CPU
@@ -46,6 +50,8 @@ averaging). Without it, one big dispatch can hit Windows TDR
 (`vulkan error -4`) on heavy scenes. Rough 1650 Ti limits at 1200px:
 book2 chunk<=6, cornell chunk<=25, default chunk<=50; keep dispatch
 under ~2 s. `--denoise`/`--joint` run once on the averaged beauty.
+`--maxdepth`/`--fixed-rng` mirror the CPU forensics hatches. `--aov`
+downloads the albedo/normal guides as PFM (last chunk wins when chunked).
 
 ```bat
 build\Release\rt_view.exe [image.ppm] [--diff other.ppm] [--scale N] [--stats]
@@ -66,12 +72,17 @@ floor, never an absolute threshold. Method notes from the hunt:
   but changes nothing for cross-backend verdicts.
 - Deterministic probes beat blind review: center-ray first-hit t/mtype,
   analytic chord/entry/exit oracles, fixed-point NEE transmittance, event
-  rates vs 1-exp(-sL), phase-albedo exactness. All live in `.scratch/`
-  specs (M48-M51); the temp shaders/flags were reverted pre-commit.
+  rates vs 1-exp(-sL), phase-albedo exactness, fixed-RNG renders (identical
+  sample sets both sides). Forensics live in `.scratch/` specs (M48-M54);
+  temp probe shaders were reverted pre-commit, kept flags documented above.
 - Current standing (1200px/500spp unless noted): default, cornell,
   weekend at floor; fog/het matrix at floor (M48 closed the gap);
-  book2 15.2 -> 11.5 vs ~10.4 floor proxy (residual: object-correlated
-  indirect paths, documented in M49-M51).
+  book2 residual CLOSED (M54): depth-1 400px/1024spp cross 1.46 -> 0.60
+  vs 0.55 floor; depth-2 400px/256spp cross 2.86 -> 2.44 vs 2.43 floor;
+  fixed-RNG d1/d2 cross down 40-100x. Cause: fp32 origin self-skims in
+  device shadow + beauty (dense cluster); fix: origin-prim skip inline in
+  traversal (shadow unconditional, beauty T-gated 0.5), M51 lift removed.
+  Leftover: fp32 silhouette knife-edges (mixed-sign speckle, converges).
 
 ## Layout
 
@@ -158,4 +169,9 @@ shadow bias for fp32 self-skims; 15.2 -> 11.5 vs ~10.4 floor).
 M52 done: GPU `--chunk` in-binary HDR averaging (bit-exact vs manual).
 M53 done: default showcase tune (brushed ball, key 6, studio void,
 vfov 75) + GPU camera mirrored from CPU (hardcoded drift fixed).
-Next: `.scratch/roadmap.md` backlog (port + residual forensics).
+M54 done: book2 residual closed (origin-prim skip inline in device
+traversal: shadow unconditional, beauty T-gated 0.5; M51 lift removed;
+NEE range mirrors CPU). Depth-1/d2 cross at floor; fixed-RNG down 40-100x.
+GPU showcases re-anchored (VII); CPU untouched. Kept forensics flags:
+--maxdepth/--fixed-rng (both), GPU --aov readback.
+Next: `.scratch/roadmap.md` backlog (port + knife-edge floor docs).

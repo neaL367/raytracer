@@ -176,6 +176,8 @@ bool hit_box(vec3 o, vec3 d, float tmin, float tmax, vec3 bmin, vec3 bmax) {
 // mirroring the CPU flat mirror). Same closest-hit contract as before
 // (narrowing tmax); fog slots pass through here (volume events come from
 // fog_event, mirroring the CPU where the boundary never shades).
+// skip_ty/skip_idx/skip_t exclude the ray origin prim nearer than skip_t
+// (fp32 self-skims; M54): single-pass, no re-walk. (-1,-1) = none.
 //
 // Counter-based hash: independent uniforms per (base, bounce, step, tag).
 // Delta tracking must not chain one xorshift stream (consecutive-pair
@@ -252,12 +254,16 @@ bool fog_event(vec3 o, vec3 d, float rtime, int ns, float u01, float tmax,
 void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
               out vec4 alb, out vec4 alb2, out vec4 emit, out vec4 params,
                out int light_idx, out int light_ty, out vec2 huv,
-               out vec3 tang, out bool has_tang, out bool any) {
+               out vec3 tang, out bool has_tang, out bool any,
+               out int solid_ty, out int solid_idx,
+               int skip_ty, int skip_idx, float skip_t) {
     int stack[32];
     int sp = 0;
     stack[sp++] = 0;
     t = tmax;
     any = false;
+    solid_ty = -1;
+    solid_idx = -1;
     light_idx = -1;
     light_ty = -1;
     huv = vec2(0.0);
@@ -299,6 +305,10 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                         continue;
                     if (!hit_sphere(o, d, rtime, 0.001, t, spheres[ref.ti.y], tt, nn, uv))
                         continue;
+                    // Origin self-skim (M54): fp32 re-hit past tmin of the
+                    // surface the ray leaves; skip inline (no re-walk).
+                    if (ref.ti.x == skip_ty && ref.ti.y == skip_idx && tt < skip_t)
+                        continue;
                     GPUSphere s = spheres[ref.ti.y];
                     t = tt;
                     n = nn;
@@ -320,9 +330,13 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                     bool lit = !fogslot && (emit.x + emit.y + emit.z > 0.0);
                     light_idx = lit ? ref.ti.y : -1;
                     light_ty = lit ? 1 : -1;
+                    solid_ty = 0;
+                    solid_idx = ref.ti.y;
                     any = true;
                 } else if (ref.ti.x == 1) {
                     if (!hit_quad(o, d, 0.001, t, quads[ref.ti.y], tt, nn, uv))
+                        continue;
+                    if (ref.ti.x == skip_ty && ref.ti.y == skip_idx && tt < skip_t)
                         continue;
                     GPUQuad q = quads[ref.ti.y];
                     t = tt;
@@ -338,9 +352,13 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                     has_tang = true;
                     light_idx = (emit.x + emit.y + emit.z > 0.0) ? ref.ti.y : -1;
                     light_ty = (emit.x + emit.y + emit.z > 0.0) ? 0 : -1;
+                    solid_ty = 1;
+                    solid_idx = ref.ti.y;
                     any = true;
                 } else {
                     if (!hit_tri(o, d, rtime, 0.001, t, tris[ref.ti.y], tt, nn, uv))
+                        continue;
+                    if (ref.ti.x == skip_ty && ref.ti.y == skip_idx && tt < skip_t)
                         continue;
                     GPUTri tr = tris[ref.ti.y];
                     t = tt;
@@ -387,6 +405,8 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                     bool trlit = emit.x + emit.y + emit.z > 0.0;
                     light_idx = trlit ? ref.ti.y : -1;
                     light_ty = trlit ? 2 : -1;
+                    solid_ty = 2;
+                    solid_idx = ref.ti.y;
                     any = true;
                 }
             }
@@ -400,20 +420,36 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
 // Solid-surface trace: fog slots pass through (up to 4 boundaries).
 // Mirrors CPU where the medium boundary never shades. Returned t is
 // absolute from o (travelled distance accumulated across passes).
+// skip_ty/skip_idx (-1,-1 = none) excludes the ray origin prim: fp32
+// self re-hits (computed t past tmin, true t below it) would otherwise
+// shadow/block. skip_t gates it: origin hits nearer than skip_t step
+// past (self-skim band); farther ones accept (glass transmission exits,
+// TIR far sides). Shadows pass 1e30 (unconditional: outward diffuse
+// rays never legitimately re-hit); beauty bounces pass 0.5. The 0.5
+// covers inside-exit chords from fp32-short hit points (2*sqrt(2*r*d)
+// with r=70 glass, d~2e-4 t-error: ~0.34); real origin chords below it
+// are measure-zero grazing transits.
 bool trace_solid(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                  out vec4 alb, out vec4 alb2, out vec4 emit, out vec4 params,
                  out int light_idx, out int light_ty, out vec2 huv, out vec3 tang,
-                 out bool has_tang) {
+                 out bool has_tang, int skip_ty, int skip_idx, float skip_t,
+                 out int solid_ty, out int solid_idx) {
     vec3 oo = o;
     float trav = 0.0;
+    solid_ty = -1;
+    solid_idx = -1;
     for (int k = 0; k < 4; ++k) {
         bool any;
+        int sty, sidx;
         traverse(oo, d, rtime, tmax - trav, t, n, alb, alb2, emit, params, light_idx,
-                 light_ty, huv, tang, has_tang, any);
+                 light_ty, huv, tang, has_tang, any, sty, sidx,
+                 skip_ty, skip_idx, skip_t);
         if (!any)
             return false;
         if (params.x != 6.0 && params.x != 8.0) {
             t = trav + t;
+            solid_ty = sty;
+            solid_idx = sidx;
             return true;
         }
         trav += t + 0.01;
@@ -426,7 +462,8 @@ bool trace_solid(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 
 // segments (type-6 analytic, type-8 ratio-tracked). Mirrors the CPU march.
 // Draw-free (counter hashes / analytic): shadow calls consume no RNG.
 float shadow_transmittance(vec3 o, vec3 wi, float rtime, int ns, float dist,
-                           uint hbase, int bounce, int site) {
+                           uint hbase, int bounce, int site,
+                           int skip_ty, int skip_idx) {
     float t;
     vec3 n;
     vec4 alb, alb2, emit, params;
@@ -434,10 +471,13 @@ float shadow_transmittance(vec3 o, vec3 wi, float rtime, int ns, float dist,
     vec2 huv;
     vec3 tang;
     bool has_tang;
+    int sty, sidx;
     // Range excludes the light itself (mirrors CPU dist - 0.001).
     float tmax = dist - 0.001;
-    if (trace_solid(o, wi, rtime, tmax, t, n, alb, alb2, emit, params, li, lt,
-                    huv, tang, has_tang))
+    bool occluded = trace_solid(o, wi, rtime, tmax, t, n, alb, alb2, emit, params,
+                                li, lt, huv, tang, has_tang, skip_ty, skip_idx,
+                                1e30, sty, sidx);
+    if (occluded)
         return 0.0;
     float Tr = 1.0;
     for (int i = 0; i < ns; ++i) {

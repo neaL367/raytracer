@@ -9,7 +9,16 @@ inline std::mt19937 &rng_engine() {
     return eng;
 }
 inline void rng_seed(unsigned s) { rng_engine().seed(s); }
+// Forensics hatch (M54): fixed 0.5 stream makes renders deterministic
+// functions of geometry (pixel centers, center light samples). Off by
+// default; tests never enable it.
+inline bool &rng_fixed_flag() {
+    static thread_local bool f = false;
+    return f;
+}
 inline double random_double() {
+    if (rng_fixed_flag())
+        return 0.5;
     static thread_local std::uniform_real_distribution<double> dist(0.0, 1.0);
     return dist(rng_engine());
 }

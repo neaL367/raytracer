@@ -43,8 +43,10 @@ int main(int argc, char **argv) {
     bool env_demo = false;
     bool use_sobol = false; // --sampler sobol: rotated Sobol pixel set
     bool dump_aov = false; // --aov: albedo/normal/depth PFM trio next to PPM
+    bool fixed_rng = false; // --fixed-rng: deterministic 0.5 stream (M54)
     unsigned seed = 42; // base RNG seed; per-pixel stream = seed + pixel index
     int W = 400, H = -1; // H defaults to 16:9 unless --height given
+    int max_depth = 50; // RR handles termination; depth is backstop
     bool spp_set = false;
     bool width_set = false;
     std::string hdr_path; // empty = no float dump
@@ -97,6 +99,10 @@ int main(int argc, char **argv) {
             use_sobol = (std::string(argv[++i]) == "sobol");
         else if (a == "--aov")
             dump_aov = true;
+        else if (a == "--fixed-rng")
+            fixed_rng = true;
+        else if (a == "--maxdepth" && i + 1 < argc)
+            max_depth = std::max(1, std::atoi(argv[++i]));
     }
     // "weekend" (Ray Tracing in One Weekend final) defaults: 1200 width, 500 spp.
     if (scene_name == "weekend" || scene_name == "final" || scene_name == "spheres" ||
@@ -127,7 +133,6 @@ int main(int argc, char **argv) {
     // Square-ish scenes (cornell, book2) pass --height explicitly; default 16:9.
     if (H <= 0)
         H = is_square_scene ? W : static_cast<int>(W / (16.0 / 9.0));
-    const int max_depth = 50; // RR handles termination; depth is backstop
     const unsigned base_seed = seed;
     mip_render_h() = H; // LOD seam: texture minification follows output height
 
@@ -258,6 +263,8 @@ int main(int argc, char **argv) {
     std::vector<std::thread> workers;
     for (unsigned t = 0; t < num_threads; ++t) {
         workers.emplace_back([&] {
+            if (fixed_rng)
+                rng_fixed_flag() = true; // thread-local: enable per worker
             for (;;) {
                 int ti = next_tile.fetch_add(1, std::memory_order_relaxed);
                 if (ti >= num_tiles)
