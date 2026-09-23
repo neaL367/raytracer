@@ -28,16 +28,7 @@ layout(binding = 9) readonly buffer LightTab {
 // joint pass; no RNG involved so beauty streams stay bit-exact).
 layout(binding = 10, rgba32f) uniform image2D albImg;
 layout(binding = 11, rgba32f) uniform image2D nrmImg;
-// Binding 12: HDRI texels (RGBA32f, W*H, row 0 = top). Unused when nenv != 2.
-layout(binding = 12) readonly buffer HdriTex {
-    vec4 hdriTex[];
-};
-// Binding 13: HDRI CDF buffer. Layout (all float):
-//   [0] = W, [1] = H, [2..H+2] = marginal CDF (H+1),
-//   [H+3 .. H+3+H*(W+1)-1] = conditional CDFs row-major.
-layout(binding = 13) readonly buffer HdriCdf {
-    float hdriCdf[];
-};
+// Bindings 12-13 (HdriTex, HdriCdf) are declared in env.glsl.
 #include "push_block.glsl"
 #include "noise.glsl"
 #include "env.glsl"

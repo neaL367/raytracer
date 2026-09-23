@@ -27,6 +27,17 @@ vec3 env_analytic_radiance(vec3 d) {
     return L;
 }
 
+// Binding 12: HDRI texels (RGBA32f, W*H, row 0 = top). Unused when nenv != 2.
+layout(binding = 12) readonly buffer HdriTex {
+    vec4 hdriTex[];
+};
+// Binding 13: HDRI CDF buffer. Layout (all float):
+//   [0] = W, [1] = H, [2..H+2] = marginal CDF (H+1),
+//   [H+3 .. H+3+H*(W+1)-1] = conditional CDFs row-major.
+layout(binding = 13) readonly buffer HdriCdf {
+    float hdriCdf[];
+};
+
 // ---- HDRI helpers (nenv == 2) ----------------------------------------
 // UV convention matches CPU hdri_env and codebase sphere UVs:
 //   u = (atan2(-z, x) + pi) / (2*pi),  v = acos(y) / pi
