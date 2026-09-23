@@ -703,16 +703,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                     Tr = shadow_transmittance(hitp, wi, rtime, pc.ns, dist,
                                               hbase, bounce, 1, sty, sidx);
                 } else {
-                    float tt2;
-                    vec3 nn2;
-                    vec4 a2, ab2, e2, p2;
-                    vec2 huv2;
-                    vec3 tg2;
-                    bool ht2;
-                    int lx2, lt2, sy2, si2;
-                    Tr = trace_solid(hitp, wi, rtime, dist - 0.001, tt2, nn2, a2,
-                                     ab2, e2, p2, lx2, lt2, huv2, tg2, ht2,
-                                     sty, sidx, 1e30, sy2, si2)
+                    Tr = is_occluded(hitp, wi, rtime, dist - 0.001, sty, sidx)
                              ? 0.0
                              : 1.0;
                 }
@@ -738,16 +729,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                     Tr = shadow_transmittance(hitp, edir, rtime, pc.ns, 1e30,
                                               hbase, bounce, 2, sty, sidx);
                 } else {
-                    float tt3;
-                    vec3 nn3;
-                    vec4 a3, ab3, e3, p3;
-                    vec2 huv3;
-                    vec3 tg3;
-                    bool ht3;
-                    int lx3, lt3, sy3, si3;
-                    Tr = trace_solid(hitp, edir, rtime, 1e30, tt3, nn3, a3,
-                                     ab3, e3, p3, lx3, lt3, huv3, tg3, ht3,
-                                     sty, sidx, 1e30, sy3, si3)
+                    Tr = is_occluded(hitp, edir, rtime, 1e30, sty, sidx)
                              ? 0.0
                              : 1.0;
                 }

@@ -267,6 +267,125 @@ bool fog_event(vec3 o, vec3 d, float rtime, int ns, float u01, float tmax,
     }
     return any;
 }
+
+// Fast boolean-only intersection tests for shadow occlusion
+bool hit_sphere_test(vec3 o, vec3 d, float rtime, float tmin, float tmax, GPUSphere s) {
+    float f = (s.tm.y > s.tm.x) ? clamp((rtime - s.tm.x) / (s.tm.y - s.tm.x), 0.0, 1.0)
+                                : 0.0;
+    vec3 cen = mix(s.c_r.xyz, s.c1.xyz, f);
+    vec3 oc = o - cen;
+    float a = dot(d, d);
+    float hb = dot(oc, d);
+    float c = dot(oc, oc) - s.c_r.w * s.c_r.w;
+    float disc = hb * hb - a * c;
+    if (disc < 0.0)
+        return false;
+    float sq = sqrt(disc);
+    float root = (-hb - sq) / a;
+    if (root >= tmin && root <= tmax)
+        return true;
+    root = (-hb + sq) / a;
+    return (root >= tmin && root <= tmax);
+}
+
+bool hit_quad_test(vec3 o, vec3 d, float tmin, float tmax, GPUQuad q) {
+    vec3 nrm = normalize(cross(q.u.xyz, q.v.xyz));
+    float denom = dot(nrm, d);
+    if (abs(denom) < 1e-8)
+        return false;
+    float D = dot(nrm, q.Q.xyz);
+    float tt = (D - dot(nrm, o)) / denom;
+    if (tt < tmin || tt > tmax)
+        return false;
+    vec3 p = o + d * tt;
+    vec3 w = cross(q.u.xyz, q.v.xyz);
+    w = w / dot(w, w);
+    vec3 pq = p - q.Q.xyz;
+    float alpha = dot(w, cross(pq, q.v.xyz));
+    float beta = dot(w, cross(q.u.xyz, pq));
+    return (alpha >= 0.0 && alpha <= 1.0 && beta >= 0.0 && beta <= 1.0);
+}
+
+bool hit_tri_test(vec3 o, vec3 d, float rtime, float tmin, float tmax, GPUTri t_) {
+    const float eps = 1e-8;
+    float f = (t_.tm.y > t_.tm.x)
+                  ? clamp((rtime - t_.tm.x) / (t_.tm.y - t_.tm.x), 0.0, 1.0)
+                  : 0.0;
+    vec3 va = mix(t_.a.xyz, t_.a1.xyz, f);
+    vec3 vb = mix(t_.b.xyz, t_.b1.xyz, f);
+    vec3 vc = mix(t_.c.xyz, t_.c1.xyz, f);
+    vec3 e1 = vb - va, e2 = vc - va;
+    vec3 pvec = cross(d, e2);
+    float det = dot(e1, pvec);
+    if (abs(det) < eps)
+        return false;
+    float inv = 1.0 / det;
+    vec3 tvec = o - va.xyz;
+    float u = dot(tvec, pvec) * inv;
+    if (u < 0.0 || u > 1.0)
+        return false;
+    vec3 qvec = cross(tvec, e1);
+    float v = dot(d, qvec) * inv;
+    if (v < 0.0 || u + v > 1.0)
+        return false;
+    float tt = dot(e2, qvec) * inv;
+    return (tt >= tmin && tt <= tmax);
+}
+
+// Fast any-hit occlusion test for shadow rays. Aborts on the first solid hit.
+// Fog slots (params.x == 6.0 || params.x == 8.0) pass through because volume
+// transmittance is accounted for separately in shadow_transmittance.
+bool is_occluded(vec3 o, vec3 d, float rtime, float tmax, int skip_ty, int skip_idx) {
+    int stack[16];
+    int sp = 0;
+    stack[sp++] = 0;
+    vec3 inv = 1.0 / d;
+    while (sp > 0) {
+        GPUQNode nd = nodes[stack[--sp]];
+        int mask = 0;
+        for (int s = 0; s < 4; ++s) {
+            vec3 t0 = (nd.qbmin[s].xyz - o) * inv;
+            vec3 t1 = (nd.qbmax[s].xyz - o) * inv;
+            vec3 tsm = min(t0, t1);
+            vec3 tbg = max(t0, t1);
+            float mn = max(max(tsm.x, tsm.y), max(tsm.z, 0.001));
+            float mx = min(min(tbg.x, tbg.y), min(tbg.z, tmax));
+            if (mx > mn)
+                mask |= (1 << s);
+        }
+        for (int s = 3; s >= 0; --s) {
+            if ((mask & (1 << s)) == 0)
+                continue;
+            if (nd.qchild[s] < 0) {
+                int start = nd.qstart[s];
+                int count = nd.qcount[s];
+                for (int k = 0; k < count; ++k) {
+                    GPURef ref = refs[start + k];
+                    if (ref.ti.x == skip_ty && ref.ti.y == skip_idx)
+                        continue;
+                    if (ref.ti.x == 0) {
+                        float mtype = spheres[ref.ti.y].params.x;
+                        if (mtype == 6.0 || mtype == 8.0)
+                            continue;
+                        if (hit_sphere_test(o, d, rtime, 0.001, tmax, spheres[ref.ti.y]))
+                            return true;
+                    } else if (ref.ti.x == 1) {
+                        if (hit_quad_test(o, d, 0.001, tmax, quads[ref.ti.y]))
+                            return true;
+                    } else {
+                        if (hit_tri_test(o, d, rtime, 0.001, tmax, tris[ref.ti.y]))
+                            return true;
+                    }
+                }
+            } else if (sp < 15) {
+                stack[sp++] = nd.qchild[s];
+            }
+        }
+    }
+    return false;
+}
+
+// 4-wide QBVH traversal: 4 child AABBs tested in parallel, DFS stack. Same
 // contract as the old brute loops (narrowing tmax), so kernels just swap.
 void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
               out vec4 alb, out vec4 alb2, out vec4 emit, out vec4 params,
@@ -274,7 +393,7 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                out vec3 tang, out bool has_tang, out bool any,
                out int solid_ty, out int solid_idx,
                int skip_ty, int skip_idx, float skip_t) {
-    int stack[32];
+    int stack[16];
     int sp = 0;
     stack[sp++] = 0;
     t = tmax;
@@ -285,11 +404,11 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
     light_ty = -1;
     huv = vec2(0.0);
     has_tang = false;
+    vec3 inv = 1.0 / d;
     while (sp > 0) {
         GPUQNode nd = nodes[stack[--sp]];
         // 4-wide slab: one interval per slot, strict miss, empty slots
         // upload inverted (never hit).
-        vec3 inv = 1.0 / d;
         int mask = 0;
         for (int s = 0; s < 4; ++s) {
             vec3 t0 = (nd.qbmin[s].xyz - o) * inv;
@@ -326,27 +445,9 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                     // surface the ray leaves; skip inline (no re-walk).
                     if (ref.ti.x == skip_ty && ref.ti.y == skip_idx && tt < skip_t)
                         continue;
-                    GPUSphere s = spheres[ref.ti.y];
                     t = tt;
                     n = nn;
-                    alb = s.alb;
-                    alb2 = s.alb2;
-                    emit = s.emit;
-                    params = s.params;
                     huv = uv;
-                    // Spherical-UV tangent like CPU (pole fallback).
-                    vec3 st = vec3(-nn.z, 0.0, nn.x);
-                    if (dot(st, st) <= 1e-12)
-                        st = vec3(1.0, 0.0, 0.0);
-                    else
-                        st = normalize(st);
-                    tang = st;
-                    has_tang = true;
-                    // Fog slot never shades; dark solids clear stale markers.
-                    bool fogslot = params.x > 5.5 && params.x < 6.5;
-                    bool lit = !fogslot && (emit.x + emit.y + emit.z > 0.0);
-                    light_idx = lit ? ref.ti.y : -1;
-                    light_ty = lit ? 1 : -1;
                     solid_ty = 0;
                     solid_idx = ref.ti.y;
                     any = true;
@@ -355,20 +456,9 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                         continue;
                     if (ref.ti.x == skip_ty && ref.ti.y == skip_idx && tt < skip_t)
                         continue;
-                    GPUQuad q = quads[ref.ti.y];
                     t = tt;
                     n = nn;
-                    alb = q.alb;
-                    alb2 = q.alb2;
-                    emit = q.emit;
-                    params = q.params;
                     huv = uv;
-                    // Edge-u tangent like CPU (always valid: u ⊥ normal).
-                    vec3 qg = normalize(cross(q.u.xyz, q.v.xyz));
-                    tang = normalize(q.u.xyz - qg * dot(q.u.xyz, qg));
-                    has_tang = true;
-                    light_idx = (emit.x + emit.y + emit.z > 0.0) ? ref.ti.y : -1;
-                    light_ty = (emit.x + emit.y + emit.z > 0.0) ? 0 : -1;
                     solid_ty = 1;
                     solid_idx = ref.ti.y;
                     any = true;
@@ -377,61 +467,92 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                         continue;
                     if (ref.ti.x == skip_ty && ref.ti.y == skip_idx && tt < skip_t)
                         continue;
-                    GPUTri tr = tris[ref.ti.y];
                     t = tt;
                     n = nn;
-                    alb = tr.alb;
-                    alb2 = tr.alb2;
-                    emit = tr.emit;
-                    params = tr.params;
-                    // Corner-UV blend when present, else barycentric fallback.
-                    huv = (tr.params.w > 0.5)
-                              ? tr.tuvA.xy * (1.0 - uv.x - uv.y) + tr.tuvA.zw * uv.x +
-                                    tr.tuvB.xy * uv.y
-                              : uv;
-                    // UV-derivative tangent like CPU (motion-lerped verts).
-                    {
-                        float tf =
-                            (tr.tm.y > tr.tm.x)
-                                ? clamp((rtime - tr.tm.x) / (tr.tm.y - tr.tm.x), 0.0, 1.0)
-                                : 0.0;
-                        vec3 va = mix(tr.a.xyz, tr.a1.xyz, tf);
-                        vec3 vb = mix(tr.b.xyz, tr.b1.xyz, tf);
-                        vec3 vc = mix(tr.c.xyz, tr.c1.xyz, tf);
-                        vec3 te1 = vb - va, te2 = vc - va;
-                        vec2 td1, td2;
-                        if (tr.params.w > 0.5) {
-                            td1 = vec2(tr.tuvA.z - tr.tuvA.x, tr.tuvA.w - tr.tuvA.y);
-                            td2 = vec2(tr.tuvB.x - tr.tuvA.x, tr.tuvB.y - tr.tuvA.y);
-                        } else {
-                            td1 = vec2(1.0, 0.0);
-                            td2 = vec2(0.0, 1.0);
-                        }
-                        float tdet = td1.x * td2.y - td2.x * td1.y;
-                        vec3 tface = normalize(cross(te1, te2));
-                        has_tang = false;
-                        if (abs(tdet) > 1e-12) {
-                            vec3 ttv = (te1 * td2.y - te2 * td1.y) / tdet;
-                            ttv = ttv - tface * dot(ttv, tface);
-                            if (dot(ttv, ttv) > 1e-12) {
-                                tang = normalize(ttv);
-                                has_tang = true;
-                            }
-                        }
-                    }
-                    bool trlit = emit.x + emit.y + emit.z > 0.0;
-                    light_idx = trlit ? ref.ti.y : -1;
-                    light_ty = trlit ? 2 : -1;
+                    huv = uv;
                     solid_ty = 2;
                     solid_idx = ref.ti.y;
                     any = true;
                 }
             }
-        } else if (sp < 31) {
+        } else if (sp < 15) {
             stack[sp++] = nd.qchild[s];
         }
     }
 }
+
+    if (any) {
+        if (solid_ty == 0) {
+            GPUSphere s = spheres[solid_idx];
+            alb = s.alb;
+            alb2 = s.alb2;
+            emit = s.emit;
+            params = s.params;
+            vec3 st = vec3(-n.z, 0.0, n.x);
+            if (dot(st, st) <= 1e-12)
+                st = vec3(1.0, 0.0, 0.0);
+            else
+                st = normalize(st);
+            tang = st;
+            has_tang = true;
+            bool fogslot = params.x > 5.5 && params.x < 6.5;
+            bool lit = !fogslot && (emit.x + emit.y + emit.z > 0.0);
+            light_idx = lit ? solid_idx : -1;
+            light_ty = lit ? 1 : -1;
+        } else if (solid_ty == 1) {
+            GPUQuad q = quads[solid_idx];
+            alb = q.alb;
+            alb2 = q.alb2;
+            emit = q.emit;
+            params = q.params;
+            vec3 qg = normalize(cross(q.u.xyz, q.v.xyz));
+            tang = normalize(q.u.xyz - qg * dot(q.u.xyz, qg));
+            has_tang = true;
+            light_idx = (emit.x + emit.y + emit.z > 0.0) ? solid_idx : -1;
+            light_ty = (emit.x + emit.y + emit.z > 0.0) ? 0 : -1;
+        } else {
+            GPUTri tr = tris[solid_idx];
+            alb = tr.alb;
+            alb2 = tr.alb2;
+            emit = tr.emit;
+            params = tr.params;
+            vec2 uv = huv;
+            huv = (tr.params.w > 0.5)
+                      ? tr.tuvA.xy * (1.0 - uv.x - uv.y) + tr.tuvA.zw * uv.x +
+                            tr.tuvB.xy * uv.y
+                      : uv;
+            float tf =
+                (tr.tm.y > tr.tm.x)
+                    ? clamp((rtime - tr.tm.x) / (tr.tm.y - tr.tm.x), 0.0, 1.0)
+                    : 0.0;
+            vec3 va = mix(tr.a.xyz, tr.a1.xyz, tf);
+            vec3 vb = mix(tr.b.xyz, tr.b1.xyz, tf);
+            vec3 vc = mix(tr.c.xyz, tr.c1.xyz, tf);
+            vec3 te1 = vb - va, te2 = vc - va;
+            vec2 td1, td2;
+            if (tr.params.w > 0.5) {
+                td1 = vec2(tr.tuvA.z - tr.tuvA.x, tr.tuvA.w - tr.tuvA.y);
+                td2 = vec2(tr.tuvB.x - tr.tuvA.x, tr.tuvB.y - tr.tuvA.y);
+            } else {
+                td1 = vec2(1.0, 0.0);
+                td2 = vec2(0.0, 1.0);
+            }
+            float tdet = td1.x * td2.y - td2.x * td1.y;
+            vec3 tface = normalize(cross(te1, te2));
+            has_tang = false;
+            if (abs(tdet) > 1e-12) {
+                vec3 ttv = (te1 * td2.y - te2 * td1.y) / tdet;
+                ttv = ttv - tface * dot(ttv, tface);
+                if (dot(ttv, ttv) > 1e-12) {
+                    tang = normalize(ttv);
+                    has_tang = true;
+                }
+            }
+            bool trlit = emit.x + emit.y + emit.z > 0.0;
+            light_idx = trlit ? solid_idx : -1;
+            light_ty = trlit ? 2 : -1;
+        }
+    }
 }
 
 // Solid-surface trace: fog slots pass through (up to 4 boundaries).
@@ -451,28 +572,11 @@ bool trace_solid(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 
                  out int light_idx, out int light_ty, out vec2 huv, out vec3 tang,
                  out bool has_tang, int skip_ty, int skip_idx, float skip_t,
                  out int solid_ty, out int solid_idx) {
-    vec3 oo = o;
-    float trav = 0.0;
-    solid_ty = -1;
-    solid_idx = -1;
-    for (int k = 0; k < 4; ++k) {
-        bool any;
-        int sty, sidx;
-        traverse(oo, d, rtime, tmax - trav, t, n, alb, alb2, emit, params, light_idx,
-                 light_ty, huv, tang, has_tang, any, sty, sidx,
-                 skip_ty, skip_idx, skip_t);
-        if (!any)
-            return false;
-        if (params.x != 6.0 && params.x != 8.0) {
-            t = trav + t;
-            solid_ty = sty;
-            solid_idx = sidx;
-            return true;
-        }
-        trav += t + 0.01;
-        oo = o + d * trav;
-    }
-    return false;
+    bool any;
+    traverse(o, d, rtime, tmax, t, n, alb, alb2, emit, params, light_idx,
+             light_ty, huv, tang, has_tang, any, solid_ty, solid_idx,
+             skip_ty, skip_idx, skip_t);
+    return any;
 }
 
 // NEE shadow transmittance: solid in range -> 0; else product of per-slot
@@ -481,20 +585,8 @@ bool trace_solid(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 
 float shadow_transmittance(vec3 o, vec3 wi, float rtime, int ns, float dist,
                            uint hbase, int bounce, int site,
                            int skip_ty, int skip_idx) {
-    float t;
-    vec3 n;
-    vec4 alb, alb2, emit, params;
-    int li, lt;
-    vec2 huv;
-    vec3 tang;
-    bool has_tang;
-    int sty, sidx;
-    // Range excludes the light itself (mirrors CPU dist - 0.001).
     float tmax = dist - 0.001;
-    bool occluded = trace_solid(o, wi, rtime, tmax, t, n, alb, alb2, emit, params,
-                                li, lt, huv, tang, has_tang, skip_ty, skip_idx,
-                                1e30, sty, sidx);
-    if (occluded)
+    if (is_occluded(o, wi, rtime, tmax, skip_ty, skip_idx))
         return 0.0;
     float Tr = 1.0;
     for (int i = 0; i < ns; ++i) {
