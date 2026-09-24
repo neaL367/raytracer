@@ -1376,9 +1376,27 @@ void main() {
             if (cam.lens.x > 0.0) {
                 vec3 right = normalize(cam.horiz.xyz);
                 vec3 up = normalize(cam.vert.xyz);
-                float rr = cam.lens.x * sqrt(wrandf());
-                float phi = 6.28318530718 * wrandf();
-                o += (right * cos(phi) + up * sin(phi)) * rr;
+                int blades = int(cam.lens.y + 0.5);
+                vec2 p_lens;
+                if (blades >= 3) {
+                    float u1 = wrandf(), u2 = wrandf();
+                    float nb = float(blades);
+                    float kf = floor(u1 * nb);
+                    int k = min(int(kf), blades - 1);
+                    float t = u1 * nb - kf;
+                    float r = sqrt(u2);
+                    float dt = 6.28318530718 / nb;
+                    float th0 = float(k) * dt;
+                    float th1 = th0 + dt;
+                    vec2 v0 = vec2(cos(th0), sin(th0));
+                    vec2 v1 = vec2(cos(th1), sin(th1));
+                    p_lens = cam.lens.x * r * mix(v0, v1, t);
+                } else {
+                    float rr = cam.lens.x * sqrt(wrandf());
+                    float phi = 6.28318530718 * wrandf();
+                    p_lens = vec2(cos(phi), sin(phi)) * rr;
+                }
+                o += right * p_lens.x + up * p_lens.y;
             }
             vec3 d = target - o;
             // Shutter sample mirrors CPU (drawn last, stream order kept).

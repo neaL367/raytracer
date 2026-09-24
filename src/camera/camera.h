@@ -34,8 +34,29 @@ public:
         lens_radius = aperture / 2;
     }
 
+    void set_blades(int b) { blades = b; }
+    int get_blades() const { return blades; }
+
+    static vec3 random_in_polygon(int b) {
+        if (b < 3) return random_in_unit_disk();
+        double u1 = random_double();
+        double u2 = random_double();
+        double n = (double)b;
+        double k_f = std::floor(u1 * n);
+        int k = std::min((int)k_f, b - 1);
+        double t = u1 * n - k_f;
+        double r = std::sqrt(u2);
+        const double two_pi = 6.2831853071795864769;
+        double dt = two_pi / n;
+        double th0 = (double)k * dt;
+        double th1 = th0 + dt;
+        vec3 v0(std::cos(th0), std::sin(th0), 0.0);
+        vec3 v1(std::cos(th1), std::sin(th1), 0.0);
+        return r * ((1.0 - t) * v0 + t * v1);
+    }
+
     ray get_ray(double s, double t) const {
-        vec3 rd = lens_radius * random_in_unit_disk();
+        vec3 rd = lens_radius * ((blades >= 3) ? random_in_polygon(blades) : random_in_unit_disk());
         vec3 offset = u * rd.x() + v * rd.y();
         // Closed shutter draws no RNG: default stream bit-exact.
         double tm = (shutter1 > shutter0) ? shutter0 + random_double() * (shutter1 - shutter0)
@@ -63,5 +84,6 @@ public:
 private:
     vec3 origin, lower_left, horizontal, vertical, u, v, w;
     double lens_radius = 0;
+    int blades = 0; // 0 = circular disk, >= 3 = regular N-gon iris
     double shutter0 = 0, shutter1 = 0;
 };

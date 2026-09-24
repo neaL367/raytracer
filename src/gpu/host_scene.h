@@ -103,7 +103,8 @@ inline GPUCam build_gpu_camera(int W, int H, const std::string &name,
 // hardcoded default cam stayed vfov-90 after the tune moved CPU to 75).
 // Needs camera/camera.h (included by the caller, not here).
 inline GPUCam gpu_cam_from_cpu(const vec3 &origin, const vec3 &lower_left,
-                               const vec3 &horiz, const vec3 &vert, double lens_radius) {
+                               const vec3 &horiz, const vec3 &vert, double lens_radius,
+                               int blades = 0) {
     GPUCam cam = {};
     cam.o[0] = (float)origin.x();
     cam.o[1] = (float)origin.y();
@@ -118,5 +119,6 @@ inline GPUCam gpu_cam_from_cpu(const vec3 &origin, const vec3 &lower_left,
     cam.v[1] = (float)vert.y();
     cam.v[2] = (float)vert.z();
     cam.lens[0] = (float)lens_radius;
+    cam.lens[1] = (float)blades;
     return cam;
 }
