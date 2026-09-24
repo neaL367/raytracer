@@ -38,17 +38,87 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <filesystem>
+#include <functional>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
 namespace {
+
+// Persistent worker thread pool with dynamic work-stealing for interactive viewport
+class cpu_render_pool {
+public:
+    explicit cpu_render_pool(unsigned n) : num_threads(n) {
+        for (unsigned t = 0; t < n; ++t) {
+            workers.emplace_back([this, t] {
+                int local_gen = 0;
+                while (true) {
+                    std::function<void(unsigned)> fn;
+                    {
+                        std::unique_lock<std::mutex> lock(mtx);
+                        cv_start.wait(lock, [this, local_gen] {
+                            return stop.load(std::memory_order_relaxed) || (start_gen.load(std::memory_order_relaxed) > local_gen);
+                        });
+                        if (stop.load(std::memory_order_relaxed))
+                            return;
+                        local_gen = start_gen.load(std::memory_order_relaxed);
+                        fn = worker_fn;
+                    }
+                    if (fn)
+                        fn(t);
+                    if (done_count.fetch_add(1, std::memory_order_acq_rel) + 1 == (int)num_threads) {
+                        cv_done.notify_one();
+                    }
+                }
+            });
+        }
+    }
+
+    void parallel_run(std::function<void(unsigned)> fn) {
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            worker_fn = std::move(fn);
+            done_count.store(0, std::memory_order_relaxed);
+            start_gen.fetch_add(1, std::memory_order_release);
+        }
+        cv_start.notify_all();
+        {
+            std::unique_lock<std::mutex> lock(mtx);
+            cv_done.wait(lock, [this] {
+                return done_count.load(std::memory_order_acquire) == (int)num_threads;
+            });
+        }
+    }
+
+    ~cpu_render_pool() {
+        stop.store(true, std::memory_order_release);
+        cv_start.notify_all();
+        for (auto &w : workers) {
+            if (w.joinable())
+                w.join();
+        }
+    }
+
+private:
+    unsigned num_threads;
+    std::vector<std::thread> workers;
+    std::atomic<bool> stop{false};
+    std::mutex mtx;
+    std::condition_variable cv_start;
+    std::condition_variable cv_done;
+    std::atomic<int> start_gen{0};
+    std::atomic<int> done_count{0};
+    std::function<void(unsigned)> worker_fn;
+};
 
 // =============================================================================
 // Legacy PPM Viewer Functions
@@ -422,6 +492,7 @@ int run_interactive_renderer(int argc, char **argv) {
     std::shared_ptr<material> selected_mat = nullptr;
 
     unsigned num_threads = std::max(1u, std::thread::hardware_concurrency());
+    cpu_render_pool pool(num_threads);
 
     auto last_frame_time = std::chrono::steady_clock::now();
     auto last_title_time = last_frame_time;
@@ -912,30 +983,24 @@ int run_interactive_renderer(int argc, char **argv) {
                 }
                 accum_spp += 1;
             } else {
-                // Multi-threaded CPU progressive slice
-                int chunk_h = (H + (int)num_threads - 1) / (int)num_threads;
-                std::vector<std::thread> workers;
-                workers.reserve(num_threads);
-                for (unsigned t = 0; t < num_threads; ++t) {
-                    int y_start = (int)t * chunk_h;
-                    int y_end = std::min(H, y_start + chunk_h);
-                    if (y_start >= y_end) continue;
-                    workers.emplace_back([&, y_start, y_end, t] {
-                        rng_seed(42u + (unsigned)accum_spp * 10007u + t * 997u);
-                        for (int sy = y_start; sy < y_end; ++sy) {
-                            int j = H - 1 - sy; // Screen row 0 is top; ray v=0 is bottom
-                            for (int i = 0; i < W; ++i) {
-                                double u = (i + random_double()) / (double)W;
-                                double v = (j + random_double()) / (double)H;
-                                ray r = active_cam.get_ray(u, v);
-                                vec3 col = tracer.Li(r, params);
-                                accum_fb[(size_t)sy * W + i] += col;
-                            }
+                // Multi-threaded CPU progressive slice with persistent pool & dynamic scanline work-stealing
+                std::atomic<int> next_row{0};
+                pool.parallel_run([&](unsigned t) {
+                    rng_seed(42u + (unsigned)accum_spp * 10007u + t * 997u);
+                    for (;;) {
+                        int sy = next_row.fetch_add(1, std::memory_order_relaxed);
+                        if (sy >= H)
+                            break;
+                        int j = H - 1 - sy; // Screen row 0 is top; ray v=0 is bottom
+                        for (int i = 0; i < W; ++i) {
+                            double u = (i + random_double()) / (double)W;
+                            double v = (j + random_double()) / (double)H;
+                            ray r = active_cam.get_ray(u, v);
+                            vec3 col = tracer.Li(r, params);
+                            accum_fb[(size_t)sy * W + i] += col;
                         }
-                    });
-                }
-                for (auto &w : workers)
-                    w.join();
+                    }
+                });
                 accum_spp += 1;
             }
         }

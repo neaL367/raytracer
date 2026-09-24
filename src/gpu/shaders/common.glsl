@@ -335,6 +335,7 @@ bool is_occluded(vec3 o, vec3 d, float rtime, float tmax, int skip_ty, int skip_
     while (sp > 0) {
         GPUQNode nd = nodes[stack[--sp]];
         int mask = 0;
+        float entry[4];
         for (int s = 0; s < 4; ++s) {
             vec3 t0 = (nd.qbmin[s].xyz - o) * inv;
             vec3 t1 = (nd.qbmax[s].xyz - o) * inv;
@@ -342,16 +343,35 @@ bool is_occluded(vec3 o, vec3 d, float rtime, float tmax, int skip_ty, int skip_
             vec3 tbg = max(t0, t1);
             float mn = max(max(tsm.x, tsm.y), max(tsm.z, 0.001));
             float mx = min(min(tbg.x, tbg.y), min(tbg.z, tmax));
+            entry[s] = mn;
             if (mx > mn)
                 mask |= (1 << s);
         }
-        for (int s = 3; s >= 0; --s) {
-            if ((mask & (1 << s)) == 0)
-                continue;
+        if (mask == 0)
+            continue;
+
+        int order[4];
+        int count = 0;
+        for (int s = 0; s < 4; ++s) {
+            if ((mask & (1 << s)) != 0)
+                order[count++] = s;
+        }
+        for (int i = 1; i < count; ++i) {
+            int key = order[i];
+            int j = i - 1;
+            while (j >= 0 && entry[order[j]] > entry[key]) {
+                order[j + 1] = order[j];
+                --j;
+            }
+            order[j + 1] = key;
+        }
+
+        for (int oi = 0; oi < count; ++oi) {
+            int s = order[oi];
             if (nd.qchild[s] < 0) {
                 int start = nd.qstart[s];
-                int count = nd.qcount[s];
-                for (int k = 0; k < count; ++k) {
+                int cnt = nd.qcount[s];
+                for (int k = 0; k < cnt; ++k) {
                     GPURef ref = refs[start + k];
                     if (ref.ti.x == skip_ty && ref.ti.y == skip_idx)
                         continue;
@@ -369,7 +389,11 @@ bool is_occluded(vec3 o, vec3 d, float rtime, float tmax, int skip_ty, int skip_
                             return true;
                     }
                 }
-            } else if (sp < 15) {
+            }
+        }
+        for (int oi = count - 1; oi >= 0; --oi) {
+            int s = order[oi];
+            if (nd.qchild[s] >= 0 && sp < 15) {
                 stack[sp++] = nd.qchild[s];
             }
         }
@@ -400,9 +424,8 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
     vec3 inv = 1.0 / d;
     while (sp > 0) {
         GPUQNode nd = nodes[stack[--sp]];
-        // 4-wide slab: one interval per slot, strict miss, empty slots
-        // upload inverted (never hit).
         int mask = 0;
+        float entry[4];
         for (int s = 0; s < 4; ++s) {
             vec3 t0 = (nd.qbmin[s].xyz - o) * inv;
             vec3 t1 = (nd.qbmax[s].xyz - o) * inv;
@@ -410,69 +433,86 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
             vec3 tbg = max(t0, t1);
             float mn = max(max(tsm.x, tsm.y), max(tsm.z, 0.001));
             float mx = min(min(tbg.x, tbg.y), min(tbg.z, t));
+            entry[s] = mn;
             if (mx > mn)
                 mask |= (1 << s);
         }
-        // Push high-to-low so slot 0 pops first (DFS order).
-        for (int s = 3; s >= 0; --s) {
-            if ((mask & (1 << s)) == 0)
+        if (mask == 0)
+            continue;
+
+        int order[4];
+        int count = 0;
+        for (int s = 0; s < 4; ++s) {
+            if ((mask & (1 << s)) != 0)
+                order[count++] = s;
+        }
+        for (int i = 1; i < count; ++i) {
+            int key = order[i];
+            int j = i - 1;
+            while (j >= 0 && entry[order[j]] > entry[key]) {
+                order[j + 1] = order[j];
+                --j;
+            }
+            order[j + 1] = key;
+        }
+
+        for (int oi = 0; oi < count; ++oi) {
+            int s = order[oi];
+            if (entry[s] >= t)
                 continue;
             if (nd.qchild[s] < 0) {
                 for (int k = 0; k < nd.qcount[s]; ++k) {
                     GPURef ref = refs[nd.qstart[s] + k];
-                float tt;
-                vec3 nn;
-                vec2 uv;
-                if (ref.ti.x == 0) {
-                    // Fog slots never shade as surfaces: volume events come
-                    // from fog_event, transmittance from the shadow march.
-                    // (M51: a co-located fog slot processed after a solid in
-                    // the same leaf run overwrote its params, making glass
-                    // shells coincident with smoke invisible. Skip up front.)
-                    if (spheres[ref.ti.y].params.x == 6.0 ||
-                        spheres[ref.ti.y].params.x == 8.0)
-                        continue;
-                    if (!hit_sphere(o, d, rtime, 0.001, t, spheres[ref.ti.y], tt, nn, uv))
-                        continue;
-                    // Origin self-skim (M54): fp32 re-hit past tmin of the
-                    // surface the ray leaves; skip inline (no re-walk).
-                    if (ref.ti.x == skip_ty && ref.ti.y == skip_idx && tt < skip_t)
-                        continue;
-                    t = tt;
-                    n = nn;
-                    huv = uv;
-                    solid_ty = 0;
-                    solid_idx = ref.ti.y;
-                    any = true;
-                } else if (ref.ti.x == 1) {
-                    if (!hit_quad(o, d, 0.001, t, quads[ref.ti.y], tt, nn, uv))
-                        continue;
-                    if (ref.ti.x == skip_ty && ref.ti.y == skip_idx && tt < skip_t)
-                        continue;
-                    t = tt;
-                    n = nn;
-                    huv = uv;
-                    solid_ty = 1;
-                    solid_idx = ref.ti.y;
-                    any = true;
-                } else {
-                    if (!hit_tri(o, d, rtime, 0.001, t, tris[ref.ti.y], tt, nn, uv))
-                        continue;
-                    if (ref.ti.x == skip_ty && ref.ti.y == skip_idx && tt < skip_t)
-                        continue;
-                    t = tt;
-                    n = nn;
-                    huv = uv;
-                    solid_ty = 2;
-                    solid_idx = ref.ti.y;
-                    any = true;
+                    float tt;
+                    vec3 nn;
+                    vec2 uv;
+                    if (ref.ti.x == 0) {
+                        if (spheres[ref.ti.y].params.x == 6.0 ||
+                            spheres[ref.ti.y].params.x == 8.0)
+                            continue;
+                        if (!hit_sphere(o, d, rtime, 0.001, t, spheres[ref.ti.y], tt, nn, uv))
+                            continue;
+                        if (ref.ti.x == skip_ty && ref.ti.y == skip_idx && tt < skip_t)
+                            continue;
+                        t = tt;
+                        n = nn;
+                        huv = uv;
+                        solid_ty = 0;
+                        solid_idx = ref.ti.y;
+                        any = true;
+                    } else if (ref.ti.x == 1) {
+                        if (!hit_quad(o, d, 0.001, t, quads[ref.ti.y], tt, nn, uv))
+                            continue;
+                        if (ref.ti.x == skip_ty && ref.ti.y == skip_idx && tt < skip_t)
+                            continue;
+                        t = tt;
+                        n = nn;
+                        huv = uv;
+                        solid_ty = 1;
+                        solid_idx = ref.ti.y;
+                        any = true;
+                    } else {
+                        if (!hit_tri(o, d, rtime, 0.001, t, tris[ref.ti.y], tt, nn, uv))
+                            continue;
+                        if (ref.ti.x == skip_ty && ref.ti.y == skip_idx && tt < skip_t)
+                            continue;
+                        t = tt;
+                        n = nn;
+                        huv = uv;
+                        solid_ty = 2;
+                        solid_idx = ref.ti.y;
+                        any = true;
+                    }
                 }
             }
-        } else if (sp < 15) {
-            stack[sp++] = nd.qchild[s];
+        }
+        for (int oi = count - 1; oi >= 0; --oi) {
+            int s = order[oi];
+            if (nd.qchild[s] >= 0 && entry[s] < t && sp < 15) {
+                stack[sp++] = nd.qchild[s];
+            }
         }
     }
-}
 
     if (any) {
         if (solid_ty == 0) {
