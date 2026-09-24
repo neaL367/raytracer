@@ -7,7 +7,7 @@
 // Finite capped 3D cylinder defined between points p0 and p1 with radius r.
 class cylinder : public hittable {
 public:
-    cylinder() : radius(1.0), length(1.0), capped(true) {}
+    cylinder() : radius(1.0), length(1.0), capped(true) { init_static(); }
     cylinder(const vec3 &p0, const vec3 &p1, double r, std::shared_ptr<material> m, bool is_capped = true)
         : base(p0), top(p1), radius(r), capped(is_capped), mat(m) {
         vec3 axis_vec = top - base;
@@ -18,6 +18,13 @@ public:
         vec3 up = (std::abs(axis.x()) > 0.9) ? vec3(0, 1, 0) : vec3(1, 0, 0);
         u_axis = unit_vector(cross(axis, up));
         v_axis = cross(axis, u_axis);
+        init_static();
+    }
+
+    void init_static() {
+        radius_sq = radius * radius;
+        inv_radius = (radius != 0.0) ? (1.0 / radius) : 0.0;
+        inv_length = (length > 1e-8) ? (1.0 / length) : 0.0;
     }
 
     bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const override {
@@ -27,7 +34,7 @@ public:
 
         double a = dot(d_proj, d_proj);
         double half_b = dot(d_proj, dp_proj);
-        double c = dot(dp_proj, dp_proj) - radius * radius;
+        double c = dot(dp_proj, dp_proj) - radius_sq;
         double disc = half_b * half_b - a * c;
 
         double nearest_t = t_max + 1.0;
@@ -68,7 +75,7 @@ public:
                 double t_cap = dot(base - r.origin(), -axis) / denom;
                 if (t_cap > t_min && t_cap < nearest_t) {
                     vec3 p_cap = r.at(t_cap);
-                    if ((p_cap - base).length_squared() <= radius * radius) {
+                    if ((p_cap - base).length_squared() <= radius_sq) {
                         nearest_t = t_cap;
                         hit_type = 2;
                         best_normal = -axis;
@@ -82,7 +89,7 @@ public:
                 double t_cap = dot(top - r.origin(), axis) / denom;
                 if (t_cap > t_min && t_cap < nearest_t) {
                     vec3 p_cap = r.at(t_cap);
-                    if ((p_cap - top).length_squared() <= radius * radius) {
+                    if ((p_cap - top).length_squared() <= radius_sq) {
                         nearest_t = t_cap;
                         hit_type = 3;
                         best_normal = axis;
@@ -102,12 +109,12 @@ public:
             rec.set_face_normal(r, unit_vector(radial));
             double phi = std::atan2(dot(radial, v_axis), dot(radial, u_axis)) + 3.1415926535897932385;
             rec.u = phi / (2.0 * 3.1415926535897932385);
-            rec.v = (length > 1e-8) ? best_h / length : 0.0;
+            rec.v = best_h * inv_length;
         } else {
             rec.set_face_normal(r, best_normal);
             vec3 cap_p = (hit_type == 2) ? rec.point - base : rec.point - top;
-            rec.u = 0.5 + 0.5 * (dot(cap_p, u_axis) / radius);
-            rec.v = 0.5 + 0.5 * (dot(cap_p, v_axis) / radius);
+            rec.u = 0.5 + 0.5 * (dot(cap_p, u_axis) * inv_radius);
+            rec.v = 0.5 + 0.5 * (dot(cap_p, v_axis) * inv_radius);
         }
 
         rec.mat = mat;
@@ -125,7 +132,7 @@ public:
 
         double a = d_proj.length_squared();
         double half_b = dot(d_proj, dp_proj);
-        double c = dp_proj.length_squared() - radius * radius;
+        double c = dp_proj.length_squared() - radius_sq;
         double disc = half_b * half_b - a * c;
 
         if (disc >= 0.0 && a > 1e-12) {
@@ -149,12 +156,12 @@ public:
             if (std::abs(denom) > 1e-8) {
                 double t_base = dot(base - r.origin(), axis) / denom;
                 if (t_base >= t_min && t_base <= t_max) {
-                    if ((r.at(t_base) - base).length_squared() <= radius * radius)
+                    if ((r.at(t_base) - base).length_squared() <= radius_sq)
                         return true;
                 }
                 double t_top = dot(top - r.origin(), axis) / denom;
                 if (t_top >= t_min && t_top <= t_max) {
-                    if ((r.at(t_top) - top).length_squared() <= radius * radius)
+                    if ((r.at(t_top) - top).length_squared() <= radius_sq)
                         return true;
                 }
             }
@@ -190,4 +197,7 @@ private:
     vec3 u_axis, v_axis;
     bool capped;
     std::shared_ptr<material> mat;
+    double radius_sq = 1.0;
+    double inv_radius = 1.0;
+    double inv_length = 1.0;
 };

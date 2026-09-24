@@ -7,7 +7,7 @@
 // Analytical 3D capsule primitive: segment from a to b with spherical end caps of radius r.
 class capsule : public hittable {
 public:
-    capsule() : radius(0.5), length(1.0) {}
+    capsule() : radius(0.5), length(1.0) { init_static(); }
     capsule(const vec3 &p0, const vec3 &p1, double r, std::shared_ptr<material> m)
         : a(p0), b(p1), radius(r), mat(m) {
         vec3 axis_vec = b - a;
@@ -17,6 +17,14 @@ public:
         vec3 up = (std::abs(axis.x()) > 0.9) ? vec3(0, 1, 0) : vec3(1, 0, 0);
         u_axis = unit_vector(cross(axis, up));
         v_axis = cross(axis, u_axis);
+        init_static();
+    }
+
+    void init_static() {
+        radius_sq = radius * radius;
+        inv_radius = (radius != 0.0) ? (1.0 / radius) : 0.0;
+        double total_len = length + 2.0 * radius;
+        inv_total_len = (total_len > 1e-8) ? (1.0 / total_len) : 0.0;
     }
 
     bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const override {
@@ -31,7 +39,7 @@ public:
 
         double c_a = dot(d_proj, d_proj);
         double half_b = dot(d_proj, dp_proj);
-        double c_c = dot(dp_proj, dp_proj) - radius * radius;
+        double c_c = dot(dp_proj, dp_proj) - radius_sq;
         double disc = half_b * half_b - c_a * c_c;
 
         if (disc >= 0.0 && c_a > 1e-12) {
@@ -62,7 +70,7 @@ public:
         vec3 oc_a = r.origin() - a;
         double sa_a = dot(r.direction(), r.direction());
         double sa_hb = dot(oc_a, r.direction());
-        double sa_c = dot(oc_a, oc_a) - radius * radius;
+        double sa_c = dot(oc_a, oc_a) - radius_sq;
         double sa_disc = sa_hb * sa_hb - sa_a * sa_c;
         if (sa_disc >= 0.0) {
             double sqrtd = std::sqrt(sa_disc);
@@ -91,7 +99,7 @@ public:
         // 3. Test Sphere Cap B (at point b)
         vec3 oc_b = r.origin() - b;
         double sb_hb = dot(oc_b, r.direction());
-        double sb_c = dot(oc_b, oc_b) - radius * radius;
+        double sb_c = dot(oc_b, oc_b) - radius_sq;
         double sb_disc = sb_hb * sb_hb - sa_a * sb_c;
         if (sb_disc >= 0.0) {
             double sqrtd = std::sqrt(sb_disc);
@@ -129,7 +137,7 @@ public:
 
         double phi = std::atan2(dot(normal_vec, v_axis), dot(normal_vec, u_axis)) + 3.1415926535897932385;
         rec.u = phi / (2.0 * 3.1415926535897932385);
-        rec.v = (best_s + radius) / (length + 2.0 * radius);
+        rec.v = (best_s + radius) * inv_total_len;
         rec.mat = mat;
         rec.hit_obj = nullptr;
         rec.hit_prim = this;
@@ -147,7 +155,7 @@ public:
 
         double a_cyl = d_proj.length_squared();
         double half_b = dot(d_proj, dp_proj);
-        double c_cyl = dp_proj.length_squared() - radius * radius;
+        double c_cyl = dp_proj.length_squared() - radius_sq;
         double disc = half_b * half_b - a_cyl * c_cyl;
 
         if (disc >= 0.0 && a_cyl > 1e-12) {
@@ -170,16 +178,16 @@ public:
         vec3 oc_a = r.origin() - a;
         double a_ray = r.direction().length_squared();
         double hb_a = dot(oc_a, r.direction());
-        double c_a = oc_a.length_squared() - radius * radius;
+        double c_a = oc_a.length_squared() - radius_sq;
         double disc_a = hb_a * hb_a - a_ray * c_a;
         if (disc_a >= 0.0 && a_ray > 1e-12) {
             double sqrtd_a = std::sqrt(disc_a);
-            double root = (-half_b - sqrtd_a) / a_ray;
+            double root = (-hb_a - sqrtd_a) / a_ray;
             if (root >= t_min && root <= t_max) {
                 if (dot(r.at(root) - a, axis) < 0.0)
                     return true;
             }
-            root = (-half_b + sqrtd_a) / a_ray;
+            root = (-hb_a + sqrtd_a) / a_ray;
             if (root >= t_min && root <= t_max) {
                 if (dot(r.at(root) - a, axis) < 0.0)
                     return true;
@@ -189,16 +197,16 @@ public:
         // 3. Test spherical end cap at b
         vec3 oc_b = r.origin() - b;
         double hb_b = dot(oc_b, r.direction());
-        double c_b = oc_b.length_squared() - radius * radius;
+        double c_b = oc_b.length_squared() - radius_sq;
         double disc_b = hb_b * hb_b - a_ray * c_b;
         if (disc_b >= 0.0 && a_ray > 1e-12) {
             double sqrtd_b = std::sqrt(disc_b);
-            double root = (-half_b - sqrtd_b) / a_ray;
+            double root = (-hb_b - sqrtd_b) / a_ray;
             if (root >= t_min && root <= t_max) {
                 if (dot(r.at(root) - b, axis) > 0.0)
                     return true;
             }
-            root = (-half_b + sqrtd_b) / a_ray;
+            root = (-hb_b + sqrtd_b) / a_ray;
             if (root >= t_min && root <= t_max) {
                 if (dot(r.at(root) - b, axis) > 0.0)
                     return true;
@@ -232,4 +240,7 @@ private:
     vec3 axis;
     vec3 u_axis, v_axis;
     std::shared_ptr<material> mat;
+    double radius_sq = 0.25;
+    double inv_radius = 2.0;
+    double inv_total_len = 0.5;
 };

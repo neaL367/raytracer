@@ -7,7 +7,7 @@
 // Analytical truncated conical frustum between p0 (radius r0) and p1 (radius r1).
 class cone : public hittable {
 public:
-    cone() : r0(1.0), r1(0.0), length(1.0), capped(true) {}
+    cone() : r0(1.0), r1(0.0), length(1.0), capped(true) { init_static(); }
     cone(const vec3 &p0, const vec3 &p1, double radius0, double radius1,
          std::shared_ptr<material> m, bool is_capped = true)
         : base(p0), top(p1), r0(radius0), r1(radius1), capped(is_capped), mat(m) {
@@ -18,6 +18,17 @@ public:
         vec3 up = (std::abs(axis.x()) > 0.9) ? vec3(0, 1, 0) : vec3(1, 0, 0);
         u_axis = unit_vector(cross(axis, up));
         v_axis = cross(axis, u_axis);
+        init_static();
+    }
+
+    void init_static() {
+        dr = (r1 - r0) / (length > 1e-8 ? length : 1.0);
+        dr_sq = dr * dr;
+        r0_sq = r0 * r0;
+        r1_sq = r1 * r1;
+        inv_length = (length > 1e-8) ? (1.0 / length) : 0.0;
+        inv_r0 = (r0 > 0.0) ? (1.0 / r0) : 1.0;
+        inv_r1 = (r1 > 0.0) ? (1.0 / r1) : 1.0;
     }
 
     bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const override {
@@ -26,7 +37,6 @@ public:
         double best_s = 0.0;
         vec3 best_normal;
 
-        double dr = (r1 - r0) / (length > 1e-8 ? length : 1.0);
         vec3 dp = r.origin() - base;
 
         // Decompose ray into axial and radial components
@@ -36,7 +46,7 @@ public:
         vec3 dp_rad = dp - dp_dot_a * axis;
 
         // Quadratic coefficients for conical surface: ||P_rad||^2 = (r0 + dr * s)^2
-        double a = dot(d_rad, d_rad) - dr * dr * d_dot_a * d_dot_a;
+        double a = dot(d_rad, d_rad) - dr_sq * d_dot_a * d_dot_a;
         double half_b = dot(d_rad, dp_rad) - dr * (r0 + dr * dp_dot_a) * d_dot_a;
         double c = dot(dp_rad, dp_rad) - (r0 + dr * dp_dot_a) * (r0 + dr * dp_dot_a);
         double disc = half_b * half_b - a * c;
@@ -115,13 +125,13 @@ public:
             rec.set_face_normal(r, norm);
             double phi = std::atan2(dot(radial, v_axis), dot(radial, u_axis)) + 3.1415926535897932385;
             rec.u = phi / (2.0 * 3.1415926535897932385);
-            rec.v = (length > 1e-8) ? best_s / length : 0.0;
+            rec.v = best_s * inv_length;
         } else {
             rec.set_face_normal(r, best_normal);
             vec3 cap_p = (hit_type == 2) ? rec.point - base : rec.point - top;
-            double cap_r = (hit_type == 2) ? r0 : r1;
-            rec.u = 0.5 + 0.5 * (dot(cap_p, u_axis) / (cap_r > 0 ? cap_r : 1.0));
-            rec.v = 0.5 + 0.5 * (dot(cap_p, v_axis) / (cap_r > 0 ? cap_r : 1.0));
+            double inv_cap_r = (hit_type == 2) ? inv_r0 : inv_r1;
+            rec.u = 0.5 + 0.5 * (dot(cap_p, u_axis) * inv_cap_r);
+            rec.v = 0.5 + 0.5 * (dot(cap_p, v_axis) * inv_cap_r);
         }
 
         rec.mat = mat;
@@ -134,14 +144,13 @@ public:
     }
 
     bool hit_any(const ray &r, double t_min, double t_max) const override {
-        double dr = (r1 - r0) / (length > 1e-8 ? length : 1.0);
         vec3 dp = r.origin() - base;
         double d_dot_a = dot(r.direction(), axis);
         double dp_dot_a = dot(dp, axis);
         vec3 d_rad = r.direction() - d_dot_a * axis;
         vec3 dp_rad = dp - dp_dot_a * axis;
 
-        double a = dot(d_rad, d_rad) - dr * dr * d_dot_a * d_dot_a;
+        double a = dot(d_rad, d_rad) - dr_sq * d_dot_a * d_dot_a;
         double half_b = dot(d_rad, dp_rad) - dr * (r0 + dr * dp_dot_a) * d_dot_a;
         double c = dot(dp_rad, dp_rad) - (r0 + dr * dp_dot_a) * (r0 + dr * dp_dot_a);
         double disc = half_b * half_b - a * c;
@@ -167,12 +176,12 @@ public:
             if (std::abs(denom) > 1e-8) {
                 double t_base = dot(base - r.origin(), axis) / denom;
                 if (t_base >= t_min && t_base <= t_max) {
-                    if ((r.at(t_base) - base).length_squared() <= r0 * r0)
+                    if ((r.at(t_base) - base).length_squared() <= r0_sq)
                         return true;
                 }
                 double t_top = dot(top - r.origin(), axis) / denom;
                 if (t_top >= t_min && t_top <= t_max) {
-                    if ((r.at(t_top) - top).length_squared() <= r1 * r1)
+                    if ((r.at(t_top) - top).length_squared() <= r1_sq)
                         return true;
                 }
             }
@@ -208,4 +217,11 @@ private:
     vec3 u_axis, v_axis;
     bool capped;
     std::shared_ptr<material> mat;
+    double dr = 0.0;
+    double dr_sq = 0.0;
+    double r0_sq = 1.0;
+    double r1_sq = 0.0;
+    double inv_length = 1.0;
+    double inv_r0 = 1.0;
+    double inv_r1 = 1.0;
 };
