@@ -21,6 +21,8 @@ public:
           rough_y(ry < 0 ? 0 : (ry > 1 ? 1 : ry)), nk_id(nk_preset) {}
     bool is_aniso() const { return roughness < 0; }
     int nk_preset() const { return nk_id; }
+    void set_roughness(double r) { roughness = (r < 0 ? 0 : (r > 1 ? 1 : r)); }
+    double get_roughness() const { return roughness; }
     // Thin-film overcoat (M68): d_nm = 0 (default) disables. Set before
     // sharing; draw-free so RGB streams stay byte-exact.
     void set_film(double d_nm, double n_film = 1.5) {

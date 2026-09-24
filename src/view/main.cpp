@@ -414,7 +414,9 @@ int run_interactive_renderer(int argc, char **argv) {
     bool live_denoise = false;
     bool optical_vignette = false;
     bool bloom_enabled = false;
+    bool chromatic_aberration = false;
     double color_temp = 0.0;
+    std::shared_ptr<material> selected_mat = nullptr;
 
     unsigned num_threads = std::max(1u, std::thread::hardware_concurrency());
 
@@ -440,6 +442,9 @@ int run_interactive_renderer(int argc, char **argv) {
               << "  B            : Toggle Bokeh Iris Shape (Circular <-> 6-Blade Hexagon)\n"
               << "  J            : Toggle Anamorphic Lens Squeeze (1.0x Spherical <-> 2.0x Oval)\n"
               << "  Y            : Toggle Radial Lens Distortion (0.0 Rectilinear <-> 0.20 Barrel)\n"
+              << "  9 / F5       : Toggle Lens Chromatic Aberration [ON/OFF]\n"
+              << "  - / =        : Nudge Selected Material Roughness (-0.05 / +0.05)\n"
+              << "  , / .        : Nudge Selected Material IOR (-0.05 / +0.05)\n"
               << "  Z            : Toggle Temporal Motion Smoothing [ON/OFF]\n"
               << "  N            : Toggle Live Bilateral AOV Denoiser [ON/OFF]\n"
               << "  V            : Toggle Optical Vignetting [ON/OFF]\n"
@@ -543,6 +548,50 @@ int run_interactive_renderer(int argc, char **argv) {
                     std::cout << "rt_view: Lens Distortion = " << distortion << " ["
                               << (distortion != 0.0 ? "0.20 Barrel" : "0.0 Rectilinear") << "]\n";
                     cam_moved = true;
+                } else if (e.key.key == SDLK_9 || e.key.key == SDLK_F5) {
+                    chromatic_aberration = !chromatic_aberration;
+                    std::cout << "rt_view: Lens Chromatic Aberration ["
+                              << (chromatic_aberration ? "ON" : "OFF") << "]\n";
+                } else if (e.key.key == SDLK_MINUS) {
+                    if (selected_mat) {
+                        if (auto m = dynamic_cast<metal*>(selected_mat.get())) {
+                            m->set_roughness(m->get_roughness() - 0.05);
+                            std::cout << "rt_view: [Live Material Tweaker] Metal Roughness = " << m->get_roughness() << "\n";
+                            cam_moved = true;
+                        } else if (auto d = dynamic_cast<dielectric*>(selected_mat.get())) {
+                            d->set_roughness(d->get_roughness() - 0.05);
+                            std::cout << "rt_view: [Live Material Tweaker] Glass Roughness = " << d->get_roughness() << "\n";
+                            cam_moved = true;
+                        }
+                    }
+                } else if (e.key.key == SDLK_EQUALS) {
+                    if (selected_mat) {
+                        if (auto m = dynamic_cast<metal*>(selected_mat.get())) {
+                            m->set_roughness(m->get_roughness() + 0.05);
+                            std::cout << "rt_view: [Live Material Tweaker] Metal Roughness = " << m->get_roughness() << "\n";
+                            cam_moved = true;
+                        } else if (auto d = dynamic_cast<dielectric*>(selected_mat.get())) {
+                            d->set_roughness(d->get_roughness() + 0.05);
+                            std::cout << "rt_view: [Live Material Tweaker] Glass Roughness = " << d->get_roughness() << "\n";
+                            cam_moved = true;
+                        }
+                    }
+                } else if (e.key.key == SDLK_COMMA) {
+                    if (selected_mat) {
+                        if (auto d = dynamic_cast<dielectric*>(selected_mat.get())) {
+                            d->set_ior(d->ior() - 0.05);
+                            std::cout << "rt_view: [Live Material Tweaker] Glass IOR = " << d->ior() << "\n";
+                            cam_moved = true;
+                        }
+                    }
+                } else if (e.key.key == SDLK_PERIOD) {
+                    if (selected_mat) {
+                        if (auto d = dynamic_cast<dielectric*>(selected_mat.get())) {
+                            d->set_ior(d->ior() + 0.05);
+                            std::cout << "rt_view: [Live Material Tweaker] Glass IOR = " << d->ior() << "\n";
+                            cam_moved = true;
+                        }
+                    }
                 } else if (e.key.key == SDLK_SEMICOLON) {
                     color_temp = std::max(-0.4, color_temp - 0.05);
                     std::cout << "rt_view: Color Temperature = " << color_temp << " (Cooler)\n";
@@ -622,6 +671,9 @@ int run_interactive_renderer(int argc, char **argv) {
                               << " B            : Toggle Bokeh Iris Shape (Hexagonal 6-Blade vs Circular)\n"
                               << " J            : Toggle Anamorphic Lens Squeeze (1.0x vs 2.0x Oval Bokeh)\n"
                               << " Y            : Toggle Lens Radial Distortion (0.0 Rectilinear vs 0.20 Barrel)\n"
+                              << " 9 / F5       : Toggle Lens Chromatic Aberration & Spectral Fringe\n"
+                              << " - / =        : Nudge Selected Material Roughness (-0.05 / +0.05)\n"
+                              << " , / .        : Nudge Selected Material IOR (-0.05 / +0.05)\n"
                               << " N            : Toggle Live Bilateral AOV Denoising\n"
                               << " V            : Toggle Optical Vignetting\n"
                               << " M            : Toggle Multi-Scale Bloom & Optical Glare\n"
@@ -688,6 +740,7 @@ int run_interactive_renderer(int argc, char **argv) {
                     ray probe_r = probe_cam.get_ray(u, v);
                     hit_record probe_rec;
                     if (world.hit(probe_r, 1e-4, 1e30, probe_rec)) {
+                        selected_mat = probe_rec.mat;
                         std::cout << "\n=== [Object Inspector] ===\n"
                                   << "  Screen Pixel   : (" << mx << ", " << my << ")\n"
                                   << "  Hit Distance   : " << probe_rec.t << " m\n"
@@ -699,7 +752,8 @@ int run_interactive_renderer(int argc, char **argv) {
                                   << probe_rec.geo_normal.y() << ", " << probe_rec.geo_normal.z() << ")\n"
                                   << "  Surface UV     : (" << probe_rec.u << ", " << probe_rec.v << ")\n"
                                   << "  Primitive Ptr  : " << probe_rec.hit_prim << "\n"
-                                  << "  Material Ptr   : " << probe_rec.mat.get() << "\n\n";
+                                  << "  Material Ptr   : " << probe_rec.mat.get() << "\n"
+                                  << "  --> Selected for Live Editing: [-/=] Roughness, [, / .] IOR\n\n";
                     } else {
                         std::cout << "rt_view: [Object Inspector] Missed geometry (background / sky)\n";
                     }
@@ -806,12 +860,24 @@ int run_interactive_renderer(int argc, char **argv) {
             for (int y = 0; y < H; ++y) {
                 double dy = (y - half_h) / half_h;
                 for (int x = 0; x < W; ++x) {
+                    double dx = (x - half_w) / half_w;
                     size_t i = (size_t)y * W + x;
                     vec3 hdr = beauty_hdr[i];
+                    if (chromatic_aberration) {
+                        double r2 = dx * dx + dy * dy;
+                        int offset_x = (int)std::round(dx * r2 * 4.0);
+                        int offset_y = (int)std::round(dy * r2 * 4.0);
+                        int rx = std::clamp(x + offset_x, 0, W - 1);
+                        int ry = std::clamp(y + offset_y, 0, H - 1);
+                        int bx = std::clamp(x - offset_x, 0, W - 1);
+                        int by = std::clamp(y - offset_y, 0, H - 1);
+                        hdr = vec3(beauty_hdr[(size_t)ry * W + rx].x(),
+                                   hdr.y(),
+                                   beauty_hdr[(size_t)by * W + bx].z());
+                    }
                     if (color_temp != 0.0)
                         hdr = vec3(hdr.x() * (1.0 + color_temp), hdr.y(), hdr.z() * (1.0 - color_temp));
                     if (optical_vignette) {
-                        double dx = (x - half_w) / half_w;
                         hdr *= 1.0 / (1.0 + 0.45 * (dx * dx + dy * dy));
                     }
                     vec3 ldr = use_aces ? tonemap(hdr, exposure)
@@ -903,7 +969,7 @@ int run_interactive_renderer(int argc, char **argv) {
             const char *mode_str = (view_mode == ViewMode::BEAUTY) ? "Beauty" :
                                    (view_mode == ViewMode::ALBEDO) ? "Albedo AOV" : "Normal AOV";
             std::snprintf(title_buf, sizeof(title_buf),
-                          "rt_view [%s] %s | %s%s | SPP: %d | %.1f FPS (%.1f ms) | Ap: %.2f | Foc: %.2fm | TS: %s | Bokeh: %s | Den: %s | Vig: %s | Bloom: %s | Anam: %.1fx",
+                          "rt_view [%s] %s | %s%s | SPP: %d | %.1f FPS (%.1f ms) | Ap: %.2f | Foc: %.2fm | TS: %s | Bokeh: %s | Den: %s | Vig: %s | Bloom: %s | Chr: %s | Anam: %.1fx",
                           use_gpu ? "GPU" : "CPU", scene_name.c_str(), mode_str,
                           accum_paused ? " [PAUSED]" : "", accum_spp,
                           current_fps, current_ms, aperture, focus_dist,
@@ -912,6 +978,7 @@ int run_interactive_renderer(int argc, char **argv) {
                           (live_denoise ? "ON" : "OFF"),
                           (optical_vignette ? "ON" : "OFF"),
                           (bloom_enabled ? "ON" : "OFF"),
+                          (chromatic_aberration ? "ON" : "OFF"),
                           anamorphic);
             SDL_SetWindowTitle(win, title_buf);
         }

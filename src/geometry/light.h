@@ -8,6 +8,7 @@
 #include "quad.h"
 #include "sphere.h"
 #include "triangle.h"
+#include "disk.h"
 #include "../material/material.h"
 
 #include <cmath>
@@ -18,12 +19,15 @@ struct light {
     light(const std::shared_ptr<quad> &q) : shape(q) {}
     light(const std::shared_ptr<sphere> &s) : shape(s) {}
     light(const std::shared_ptr<triangle> &t) : shape(t) {}
+    light(const std::shared_ptr<disk> &d) : shape(d) {}
     std::shared_ptr<hittable> shape;
 };
 
 inline vec3 light_point(const light &lt, double u1, double u2, double time) {
     if (auto q = std::dynamic_pointer_cast<quad>(lt.shape))
         return q->corner() + u1 * q->edge_u() + u2 * q->edge_v();
+    if (auto d = std::dynamic_pointer_cast<disk>(lt.shape))
+        return d->sample_point();
     if (auto s = std::dynamic_pointer_cast<sphere>(lt.shape)) {
         // Exact uniform on sphere (no rejection, fixed draw count).
         double z = 1.0 - 2.0 * u1;
@@ -45,6 +49,8 @@ inline vec3 light_normal_at(const light &lt, const vec3 &p, double time) {
     // approximate with base-pose geometry, like static smooth normals.
     if (auto q = std::dynamic_pointer_cast<quad>(lt.shape))
         return q->light_normal();
+    if (auto d = std::dynamic_pointer_cast<disk>(lt.shape))
+        return d->light_normal();
     if (auto s = std::dynamic_pointer_cast<sphere>(lt.shape))
         return unit_vector(p - s->center(time));
     auto t = std::dynamic_pointer_cast<triangle>(lt.shape);
@@ -55,6 +61,8 @@ inline vec3 light_normal_at(const light &lt, const vec3 &p, double time) {
 inline double light_area(const light &lt) {
     if (auto q = std::dynamic_pointer_cast<quad>(lt.shape))
         return q->area();
+    if (auto d = std::dynamic_pointer_cast<disk>(lt.shape))
+        return d->area();
     if (auto s = std::dynamic_pointer_cast<sphere>(lt.shape)) {
         double r = s->radius_val();
         return 4.0 * 3.1415926535897932385 * r * r;
@@ -67,6 +75,8 @@ inline double light_area(const light &lt) {
 inline std::shared_ptr<material> light_mat(const light &lt) {
     if (auto q = std::dynamic_pointer_cast<quad>(lt.shape))
         return q->mat_ptr();
+    if (auto d = std::dynamic_pointer_cast<disk>(lt.shape))
+        return d->mat_ptr();
     if (auto s = std::dynamic_pointer_cast<sphere>(lt.shape))
         return s->mat_ptr();
     return std::dynamic_pointer_cast<triangle>(lt.shape)->mat_ptr();
@@ -80,6 +90,11 @@ inline bool light_uv(const light &lt, double u1, double u2, double time, double 
     if (std::dynamic_pointer_cast<quad>(lt.shape)) {
         u = u1;
         v = u2;
+        return true;
+    }
+    if (std::dynamic_pointer_cast<disk>(lt.shape)) {
+        u = u1;
+        v = std::sqrt(u2);
         return true;
     }
     if (auto s = std::dynamic_pointer_cast<sphere>(lt.shape)) {

@@ -18,6 +18,9 @@ public:
           cauchyB(cauchyB < 0 ? 0 : cauchyB) {}
     int priority() const override { return prio; }
     double ior() const override { return ir; }
+    void set_ior(double ri) { ir = std::max(1.0, ri); }
+    void set_roughness(double r) { roughness = (r < 0 ? 0 : (r > 1 ? 1 : r)); }
+    double get_roughness() const { return roughness; }
     double ior_at(int channel) const override {
         if (channel < 0 || channel > 2)
             return ir;

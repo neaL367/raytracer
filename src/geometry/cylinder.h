@@ -136,6 +136,7 @@ public:
     const vec3 &get_top() const { return top; }
     double get_radius() const { return radius; }
     double get_length() const { return length; }
+    std::shared_ptr<material> mat_ptr() const { return mat; }
 
 private:
     vec3 base;

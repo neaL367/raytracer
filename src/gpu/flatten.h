@@ -8,6 +8,8 @@
 #include "../accel/qbvh.h"
 #include "../accel/qbvh_flat.h"
 #include "../geometry/instance.h"
+#include "../geometry/disk.h"
+#include "../geometry/cylinder.h"
 #include "../scene/scene.h"
 
 #include <algorithm>
@@ -314,7 +316,8 @@ inline int flatten_qnode_at(const std::vector<flat_qnode> &all, int idx,
 inline bool expand_for_gpu(const std::shared_ptr<hittable> &o, double c, double s,
                            const vec3 &T, std::vector<std::shared_ptr<hittable>> &out,
                            std::vector<std::shared_ptr<quad>> &quad_owned,
-                           std::vector<std::shared_ptr<sphere>> &sphere_owned) {
+                           std::vector<std::shared_ptr<sphere>> &sphere_owned,
+                           std::vector<std::shared_ptr<triangle>> &tri_owned) {
     // Identity: pass the original through (pointer identity preserved for
     // the BVH id map; untransformed motion uploads natively).
     bool ident = (c == 1.0 && s == 0.0 && T.x() == 0.0 && T.y() == 0.0 && T.z() == 0.0);
@@ -348,25 +351,25 @@ inline bool expand_for_gpu(const std::shared_ptr<hittable> &o, double c, double 
     }
     if (auto list = std::dynamic_pointer_cast<hittable_list>(o)) {
         for (const auto &child : list->children())
-            if (!expand_for_gpu(child, c, s, T, out, quad_owned, sphere_owned))
+            if (!expand_for_gpu(child, c, s, T, out, quad_owned, sphere_owned, tri_owned))
                 return false;
         return true;
     }
     if (auto bn = std::dynamic_pointer_cast<bvh_node>(o)) {
         if (bn->is_leaf()) {
             for (const auto &p : bn->leaf_prims())
-                if (!expand_for_gpu(p, c, s, T, out, quad_owned, sphere_owned))
+                if (!expand_for_gpu(p, c, s, T, out, quad_owned, sphere_owned, tri_owned))
                     return false;
             return true;
         }
-        return expand_for_gpu(bn->child(false), c, s, T, out, quad_owned, sphere_owned) &&
-               expand_for_gpu(bn->child(true), c, s, T, out, quad_owned, sphere_owned);
+        return expand_for_gpu(bn->child(false), c, s, T, out, quad_owned, sphere_owned, tri_owned) &&
+               expand_for_gpu(bn->child(true), c, s, T, out, quad_owned, sphere_owned, tri_owned);
     }
     if (auto qn = std::dynamic_pointer_cast<qbvh_node>(o)) {
         std::vector<std::shared_ptr<hittable>> prims;
         qn->collect_prims(prims);
         for (const auto &p : prims)
-            if (!expand_for_gpu(p, c, s, T, out, quad_owned, sphere_owned))
+            if (!expand_for_gpu(p, c, s, T, out, quad_owned, sphere_owned, tri_owned))
                 return false;
         return true;
     }
@@ -378,14 +381,78 @@ inline bool expand_for_gpu(const std::shared_ptr<hittable> &o, double c, double 
         (void)tr;
         return false; // transformed triangle: fail loudly (as before)
     }
+    if (auto dsk = std::dynamic_pointer_cast<disk>(o)) {
+        vec3 c_pos = instance_detail::rot_point(dsk->get_center(), c, s) + T;
+        vec3 n_dir = unit_vector(instance_detail::rot_dir(dsk->get_normal(), c, s));
+        vec3 up = (std::abs(n_dir.x()) > 0.9) ? vec3(0, 1, 0) : vec3(1, 0, 0);
+        vec3 u_ax = unit_vector(cross(n_dir, up));
+        vec3 v_ax = cross(n_dir, u_ax);
+        int segs = 24;
+        double r_out = dsk->get_radius();
+        double r_in = dsk->get_inner_radius();
+        double dtheta = 2.0 * 3.1415926535897932385 / (double)segs;
+        for (int k = 0; k < segs; ++k) {
+            double th0 = (double)k * dtheta;
+            double th1 = th0 + dtheta;
+            vec3 dir0 = std::cos(th0) * u_ax + std::sin(th0) * v_ax;
+            vec3 dir1 = std::cos(th1) * u_ax + std::sin(th1) * v_ax;
+            if (r_in <= 1e-6) {
+                auto tri = std::make_shared<triangle>(c_pos, c_pos + r_out * dir0, c_pos + r_out * dir1, dsk->mat_ptr());
+                tri_owned.push_back(tri);
+                out.push_back(tri);
+            } else {
+                auto tri1 = std::make_shared<triangle>(c_pos + r_in * dir0, c_pos + r_out * dir0, c_pos + r_out * dir1, dsk->mat_ptr());
+                auto tri2 = std::make_shared<triangle>(c_pos + r_in * dir0, c_pos + r_out * dir1, c_pos + r_in * dir1, dsk->mat_ptr());
+                tri_owned.push_back(tri1);
+                tri_owned.push_back(tri2);
+                out.push_back(tri1);
+                out.push_back(tri2);
+            }
+        }
+        return true;
+    }
+    if (auto cyl = std::dynamic_pointer_cast<cylinder>(o)) {
+        vec3 p0 = instance_detail::rot_point(cyl->get_base(), c, s) + T;
+        vec3 p1 = instance_detail::rot_point(cyl->get_top(), c, s) + T;
+        vec3 ax = p1 - p0;
+        double len = ax.length();
+        vec3 ax_u = (len > 1e-8) ? ax / len : vec3(0, 1, 0);
+        vec3 up = (std::abs(ax_u.x()) > 0.9) ? vec3(0, 1, 0) : vec3(1, 0, 0);
+        vec3 u_ax = unit_vector(cross(ax_u, up));
+        vec3 v_ax = cross(ax_u, u_ax);
+        int segs = 24;
+        double r = cyl->get_radius();
+        double dtheta = 2.0 * 3.1415926535897932385 / (double)segs;
+        for (int k = 0; k < segs; ++k) {
+            double th0 = (double)k * dtheta;
+            double th1 = th0 + dtheta;
+            vec3 r0 = std::cos(th0) * u_ax + std::sin(th0) * v_ax;
+            vec3 r1 = std::cos(th1) * u_ax + std::sin(th1) * v_ax;
+            vec3 b0 = p0 + r * r0, b1 = p0 + r * r1;
+            vec3 t0 = p1 + r * r0, t1 = p1 + r * r1;
+            auto sw1 = std::make_shared<triangle>(b0, b1, t1, cyl->mat_ptr());
+            auto sw2 = std::make_shared<triangle>(b0, t1, t0, cyl->mat_ptr());
+            tri_owned.push_back(sw1);
+            tri_owned.push_back(sw2);
+            out.push_back(sw1);
+            out.push_back(sw2);
+            auto cap_b = std::make_shared<triangle>(p0, b1, b0, cyl->mat_ptr());
+            auto cap_t = std::make_shared<triangle>(p1, t0, t1, cyl->mat_ptr());
+            tri_owned.push_back(cap_b);
+            tri_owned.push_back(cap_t);
+            out.push_back(cap_b);
+            out.push_back(cap_t);
+        }
+        return true;
+    }
     if (auto tr2 = std::dynamic_pointer_cast<translate>(o)) {
         vec3 T2 = instance_detail::rot_point(tr2->offset(), c, s) + T;
-        return expand_for_gpu(tr2->inner_ref(), c, s, T2, out, quad_owned, sphere_owned);
+        return expand_for_gpu(tr2->inner_ref(), c, s, T2, out, quad_owned, sphere_owned, tri_owned);
     }
     if (auto ry = std::dynamic_pointer_cast<rotate_y>(o)) {
         double ci = ry->cos_theta(), si = ry->sin_theta();
         return expand_for_gpu(ry->inner_ref(), c * ci - s * si, s * ci + c * si, T, out,
-                              quad_owned, sphere_owned);
+                              quad_owned, sphere_owned, tri_owned);
     }
     if ((std::dynamic_pointer_cast<constant_medium>(o) ||
          std::dynamic_pointer_cast<heterogeneous_medium>(o)) &&
@@ -407,9 +474,10 @@ inline bool flatten_scene(const scene_data &scene, flat_scene &out) {
     std::vector<std::shared_ptr<hittable>> expanded;
     std::vector<std::shared_ptr<quad>> quad_owned;
     std::vector<std::shared_ptr<sphere>> sphere_owned;
+    std::vector<std::shared_ptr<triangle>> tri_owned;
     for (const auto &o : scene.objs) {
         if (!expand_for_gpu(o, 1.0, 0.0, vec3(0, 0, 0), expanded, quad_owned,
-                            sphere_owned))
+                            sphere_owned, tri_owned))
             return false;
     }
     // Reject unknown shapes up front (image textures unlimited now).
