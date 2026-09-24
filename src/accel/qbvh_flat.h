@@ -155,6 +155,7 @@ struct GPUQNode {
     float bmin[4][4], bmax[4][4];
     int child[4], start[4], count[4];
 };
+static_assert(sizeof(GPUQNode) == 176, "GPUQNode must be 176 bytes to match GLSL std430 layout");
 
 inline GPUQNode to_gpu_qnode(const flat_qnode &qn) {
     GPUQNode g{};

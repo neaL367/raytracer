@@ -20,6 +20,7 @@ struct GPURef {
     int type = -1; // 0 sphere, 1 quad, 2 tri
     int index = -1;
 };
+static_assert(sizeof(GPURef) == 8, "GPURef must be 8 bytes to match GLSL ivec2 layout");
 
 struct GPUImage {
     int w = 0, h = 0;

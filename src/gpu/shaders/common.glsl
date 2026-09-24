@@ -1,19 +1,10 @@
 // Shared scene structs + intersection. Included by normal/path kernels.
 // 4-wide QBVH traversal over the same SAH collapse the CPU walks.
 
-// Material types matching C++ MatType enum class
-const int MAT_SOLID     = 0;
-const int MAT_RESERVED  = 1;
-const int MAT_GLASS     = 2;
-const int MAT_EMIT      = 3;
-const int MAT_CHECKER   = 4;
-const int MAT_IMAGE     = 5;
-const int MAT_FOG       = 6;
-const int MAT_CONDUCTOR = 7;
-const int MAT_HET       = 8;
-const int MAT_NOISE     = 9;
-const int MAT_ANISO     = 10;
-const int MAT_DISNEY    = 11;
+#extension GL_GOOGLE_include_directive : enable
+
+// Material types shared with C++ via single-source header
+#include "material_types.inc"
 struct GPUSphere {
     vec4 c_r;
     vec4 c1;

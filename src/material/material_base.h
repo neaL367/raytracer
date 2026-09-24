@@ -11,20 +11,35 @@
 #include "../geometry/hittable.h"
 #include <memory>
 
+#include "../gpu/shaders/material_types.inc"
+
 enum class MatType : int {
-    SOLID     = 0,
-    RESERVED  = 1, // fuzz-era deleted; do not renumber
-    GLASS     = 2,
-    EMIT      = 3,
-    CHECKER   = 4,
-    IMAGE     = 5,
-    FOG       = 6,
-    CONDUCTOR = 7,
-    HET       = 8,
-    NOISE     = 9,
-    ANISO     = 10,
-    DISNEY    = 11
+    SOLID     = MAT_SOLID,
+    RESERVED  = MAT_RESERVED, // fuzz-era deleted; do not renumber
+    GLASS     = MAT_GLASS,
+    EMIT      = MAT_EMIT,
+    CHECKER   = MAT_CHECKER,
+    IMAGE     = MAT_IMAGE,
+    FOG       = MAT_FOG,
+    CONDUCTOR = MAT_CONDUCTOR,
+    HET       = MAT_HET,
+    NOISE     = MAT_NOISE,
+    ANISO     = MAT_ANISO,
+    DISNEY    = MAT_DISNEY
 };
+
+// Static assertions ensuring C++ MatType enum exactly mirrors GLSL shader constants
+static_assert(static_cast<int>(MatType::SOLID) == MAT_SOLID, "MatType::SOLID mismatch");
+static_assert(static_cast<int>(MatType::GLASS) == MAT_GLASS, "MatType::GLASS mismatch");
+static_assert(static_cast<int>(MatType::EMIT) == MAT_EMIT, "MatType::EMIT mismatch");
+static_assert(static_cast<int>(MatType::CHECKER) == MAT_CHECKER, "MatType::CHECKER mismatch");
+static_assert(static_cast<int>(MatType::IMAGE) == MAT_IMAGE, "MatType::IMAGE mismatch");
+static_assert(static_cast<int>(MatType::FOG) == MAT_FOG, "MatType::FOG mismatch");
+static_assert(static_cast<int>(MatType::CONDUCTOR) == MAT_CONDUCTOR, "MatType::CONDUCTOR mismatch");
+static_assert(static_cast<int>(MatType::HET) == MAT_HET, "MatType::HET mismatch");
+static_assert(static_cast<int>(MatType::NOISE) == MAT_NOISE, "MatType::NOISE mismatch");
+static_assert(static_cast<int>(MatType::ANISO) == MAT_ANISO, "MatType::ANISO mismatch");
+static_assert(static_cast<int>(MatType::DISNEY) == MAT_DISNEY, "MatType::DISNEY mismatch");
 
 inline constexpr MatType kAllActiveMatTypes[] = {
     MatType::SOLID,

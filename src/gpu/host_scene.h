@@ -25,6 +25,12 @@ struct GPUCam {
     float lens[4]; // x = thin-lens radius (aperture/2, 0 = pinhole)
 };
 
+// std430 and UBO layout guarantees between C++ host and GLSL compute kernels
+static_assert(sizeof(GPUSphere) == 112, "GPUSphere must be 112 bytes to match GLSL std430 layout");
+static_assert(sizeof(GPUQuad)   == 112, "GPUQuad must be 112 bytes to match GLSL std430 layout");
+static_assert(sizeof(GPUTri)    == 256, "GPUTri must be 256 bytes to match GLSL std430 layout");
+static_assert(sizeof(GPUCam)    == 80,  "GPUCam must be 80 bytes to match GLSL UBO layout");
+
 struct gpu_scene {    GPUCam cam;
     std::vector<GPUSphere> spheres;
     std::vector<GPUQuad> quads; // emissive first (NEE indexes leading quads)
