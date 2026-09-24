@@ -10,6 +10,8 @@
 #include "geometry/quad.h"
 #include "geometry/disk.h"
 #include "geometry/cylinder.h"
+#include "geometry/capsule.h"
+#include "geometry/cone.h"
 #include "geometry/volume.h"
 #include "io/bloom.h"
 #include "accel/bvh.h"
@@ -780,7 +782,48 @@ static void t_disk_cylinder_bloom() {
     EXPECT_TRUE(cyl.bounding_box(cbox));
     EXPECT_TRUE(cbox.minimum.y() <= 0.0 && cbox.maximum.y() >= 2.0);
 
-    // 3. Bloom filter test
+    // 3. Capsule primitive test
+    capsule cap(vec3(0, 0, 0), vec3(0, 2, 0), 0.5, mat);
+    // Hit cylindrical body from side
+    EXPECT_TRUE(cap.hit(ray(vec3(2, 1, 0), vec3(-1, 0, 0)), 0.001, 100.0, rec));
+    EXPECT_NEAR(rec.t, 1.5);
+    EXPECT_NEAR(rec.point.x(), 0.5);
+    EXPECT_NEAR(rec.normal.x(), 1.0);
+    // Hit top hemispherical cap from above
+    EXPECT_TRUE(cap.hit(ray(vec3(0, 4, 0), vec3(0, -1, 0)), 0.001, 100.0, rec));
+    EXPECT_NEAR(rec.t, 1.5); // top apex is at y = 2.0 + 0.5 = 2.5
+    EXPECT_NEAR(rec.point.y(), 2.5);
+    EXPECT_NEAR(rec.normal.y(), 1.0);
+    // Hit bottom hemispherical cap from below
+    EXPECT_TRUE(cap.hit(ray(vec3(0, -4, 0), vec3(0, 1, 0)), 0.001, 100.0, rec));
+    EXPECT_NEAR(rec.t, 3.5); // bottom apex is at y = 0.0 - 0.5 = -0.5
+    EXPECT_NEAR(rec.point.y(), -0.5);
+    EXPECT_NEAR(rec.normal.y(), -1.0);
+    aabb cap_box;
+    EXPECT_TRUE(cap.bounding_box(cap_box));
+    EXPECT_TRUE(cap_box.minimum.y() <= -0.5 && cap_box.maximum.y() >= 2.5);
+
+    // 4. Conical frustum primitive test
+    cone cn(vec3(0, 0, 0), vec3(0, 2, 0), 1.0, 0.5, mat, true); // r0=1.0 at y=0, r1=0.5 at y=2
+    // Hit mantle from side at y = 1.0 (where radius = 0.75)
+    EXPECT_TRUE(cn.hit(ray(vec3(2, 1, 0), vec3(-1, 0, 0)), 0.001, 100.0, rec));
+    EXPECT_NEAR(rec.t, 1.25);
+    EXPECT_NEAR(rec.point.x(), 0.75);
+    // Hit top cap from above
+    EXPECT_TRUE(cn.hit(ray(vec3(0.2, 4, 0), vec3(0, -1, 0)), 0.001, 100.0, rec));
+    EXPECT_NEAR(rec.t, 2.0);
+    EXPECT_NEAR(rec.point.y(), 2.0);
+    EXPECT_NEAR(rec.normal.y(), 1.0);
+    // Hit base cap from below
+    EXPECT_TRUE(cn.hit(ray(vec3(0.5, -3, 0), vec3(0, 1, 0)), 0.001, 100.0, rec));
+    EXPECT_NEAR(rec.t, 3.0);
+    EXPECT_NEAR(rec.point.y(), 0.0);
+    EXPECT_NEAR(rec.normal.y(), -1.0);
+    aabb cn_box;
+    EXPECT_TRUE(cn.bounding_box(cn_box));
+    EXPECT_TRUE(cn_box.minimum.y() <= 0.0 && cn_box.maximum.y() >= 2.0);
+
+    // 5. Bloom filter test
     int bw = 8, bh = 8;
     std::vector<vec3> test_hdr(bw * bh, vec3(0, 0, 0));
     test_hdr[4 * bw + 4] = vec3(10.0, 10.0, 10.0); // Bright center highlight

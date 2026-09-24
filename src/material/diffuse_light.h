@@ -11,6 +11,14 @@ public:
     diffuse_light(std::shared_ptr<texture> t) : tex(t) {}
     // GPU flatten reads the pattern for image textures.
     const std::shared_ptr<texture> &tex_ref() const { return tex; }
+    vec3 get_emit() const {
+        if (auto s = dynamic_cast<const solid_color *>(tex.get()))
+            return s->rgb();
+        return vec3(0, 0, 0);
+    }
+    void set_emit(const vec3 &c) {
+        tex = std::make_shared<solid_color>(c);
+    }
     bool scatter(const ray &, const hit_record &,
                  vec3 &, ray &) const override {
         return false;

@@ -82,10 +82,10 @@ Interactive real-time previewer with 6-DOF fly camera and progressive path traci
 - **M**: Toggle Multi-Scale Bloom & Optical Glare (pyramid highlight glow)
 - **; / ' / /**: Color temperature grading (Semicolon: Cooler, Apostrophe: Warmer, Slash: Reset)
 - **9 / F5**: Toggle Lens Chromatic Aberration & Spectral Fringe (radial dispersion)
-- **- / =**: Nudge Selected Material Roughness (-0.05 / +0.05)
+- **- / =**: Nudge Selected Material Roughness (-0.05 / +0.05) or Light Emission (0.8x / 1.25x)
 - **, / .**: Nudge Selected Material IOR (-0.05 / +0.05)
 - **Z**: Toggle Temporal Motion Smoothing (noise-free interactive flight)
-- **1 - 4**: Instant camera bookmarks (1: Bunny close-up, 2: Crystals, 3: Disney flanks, 4: Wide)
+- **1 - 4**: Instant camera bookmarks (Scene-aware: Bunny / Crystals / Flanks / Overview for `showcase`; Cauchy / Ruby / Pedestal / Overview for `studio`)
 - **F1 - F3**: Live Display Mode (F1: Beauty, F2: Albedo AOV Guide, F3: Normal AOV Guide)
 - **X**: Toggle accumulation pause / resume (freeze converged view)
 - **G**: Toggle GPU compute vs CPU multi-threading in real time

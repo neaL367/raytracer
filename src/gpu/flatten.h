@@ -10,6 +10,8 @@
 #include "../geometry/instance.h"
 #include "../geometry/disk.h"
 #include "../geometry/cylinder.h"
+#include "../geometry/capsule.h"
+#include "../geometry/cone.h"
 #include "../scene/scene.h"
 
 #include <algorithm>
@@ -442,6 +444,93 @@ inline bool expand_for_gpu(const std::shared_ptr<hittable> &o, double c, double 
             tri_owned.push_back(cap_t);
             out.push_back(cap_b);
             out.push_back(cap_t);
+        }
+        return true;
+    }
+    if (auto cap = std::dynamic_pointer_cast<capsule>(o)) {
+        vec3 p0 = instance_detail::rot_point(cap->get_a(), c, s) + T;
+        vec3 p1 = instance_detail::rot_point(cap->get_b(), c, s) + T;
+        vec3 ax = p1 - p0;
+        double len = ax.length();
+        vec3 ax_u = (len > 1e-8) ? ax / len : vec3(0, 1, 0);
+        vec3 up = (std::abs(ax_u.x()) > 0.9) ? vec3(0, 1, 0) : vec3(1, 0, 0);
+        vec3 u_ax = unit_vector(cross(ax_u, up));
+        vec3 v_ax = cross(ax_u, u_ax);
+        int segs = 16;
+        double r = cap->get_radius();
+        double dtheta = 2.0 * 3.1415926535897932385 / (double)segs;
+        for (int k = 0; k < segs; ++k) {
+            double th0 = (double)k * dtheta;
+            double th1 = th0 + dtheta;
+            vec3 r0 = std::cos(th0) * u_ax + std::sin(th0) * v_ax;
+            vec3 r1 = std::cos(th1) * u_ax + std::sin(th1) * v_ax;
+            vec3 b0 = p0 + r * r0, b1 = p0 + r * r1;
+            vec3 t0 = p1 + r * r0, t1 = p1 + r * r1;
+            auto sw1 = std::make_shared<triangle>(b0, b1, t1, cap->mat_ptr());
+            auto sw2 = std::make_shared<triangle>(b0, t1, t0, cap->mat_ptr());
+            tri_owned.push_back(sw1); tri_owned.push_back(sw2);
+            out.push_back(sw1); out.push_back(sw2);
+        }
+        int rings = 6;
+        for (int ri = 0; ri < rings; ++ri) {
+            double phi0 = (double)ri / rings * (3.1415926535897932385 * 0.5);
+            double phi1 = (double)(ri + 1) / rings * (3.1415926535897932385 * 0.5);
+            double z0 = std::sin(phi0) * r, z1 = std::sin(phi1) * r;
+            double rad0 = std::cos(phi0) * r, rad1 = std::cos(phi1) * r;
+            for (int k = 0; k < segs; ++k) {
+                double th0 = (double)k * dtheta, th1 = th0 + dtheta;
+                vec3 r0 = std::cos(th0) * u_ax + std::sin(th0) * v_ax;
+                vec3 r1 = std::cos(th1) * u_ax + std::sin(th1) * v_ax;
+                vec3 tb0 = p1 + rad0 * r0 + z0 * ax_u, tb1 = p1 + rad0 * r1 + z0 * ax_u;
+                vec3 tt0 = p1 + rad1 * r0 + z1 * ax_u, tt1 = p1 + rad1 * r1 + z1 * ax_u;
+                auto t_tri1 = std::make_shared<triangle>(tb0, tb1, tt1, cap->mat_ptr());
+                auto t_tri2 = std::make_shared<triangle>(tb0, tt1, tt0, cap->mat_ptr());
+                tri_owned.push_back(t_tri1); tri_owned.push_back(t_tri2);
+                out.push_back(t_tri1); out.push_back(t_tri2);
+                vec3 ab0 = p0 + rad0 * r0 - z0 * ax_u, ab1 = p0 + rad0 * r1 - z0 * ax_u;
+                vec3 at0 = p0 + rad1 * r0 - z1 * ax_u, at1 = p0 + rad1 * r1 - z1 * ax_u;
+                auto a_tri1 = std::make_shared<triangle>(ab0, at1, ab1, cap->mat_ptr());
+                auto a_tri2 = std::make_shared<triangle>(ab0, at0, at1, cap->mat_ptr());
+                tri_owned.push_back(a_tri1); tri_owned.push_back(a_tri2);
+                out.push_back(a_tri1); out.push_back(a_tri2);
+            }
+        }
+        return true;
+    }
+    if (auto cn = std::dynamic_pointer_cast<cone>(o)) {
+        vec3 p0 = instance_detail::rot_point(cn->get_base(), c, s) + T;
+        vec3 p1 = instance_detail::rot_point(cn->get_top(), c, s) + T;
+        vec3 ax = p1 - p0;
+        double len = ax.length();
+        vec3 ax_u = (len > 1e-8) ? ax / len : vec3(0, 1, 0);
+        vec3 up = (std::abs(ax_u.x()) > 0.9) ? vec3(0, 1, 0) : vec3(1, 0, 0);
+        vec3 u_ax = unit_vector(cross(ax_u, up));
+        vec3 v_ax = cross(ax_u, u_ax);
+        int segs = 24;
+        double r0_val = cn->get_r0(), r1_val = cn->get_r1();
+        double dtheta = 2.0 * 3.1415926535897932385 / (double)segs;
+        for (int k = 0; k < segs; ++k) {
+            double th0 = (double)k * dtheta;
+            double th1 = th0 + dtheta;
+            vec3 r0 = std::cos(th0) * u_ax + std::sin(th0) * v_ax;
+            vec3 r1 = std::cos(th1) * u_ax + std::sin(th1) * v_ax;
+            vec3 b0 = p0 + r0_val * r0, b1 = p0 + r0_val * r1;
+            vec3 t0 = p1 + r1_val * r0, t1 = p1 + r1_val * r1;
+            if (r1_val > 1e-6) {
+                auto sw1 = std::make_shared<triangle>(b0, b1, t1, cn->mat_ptr());
+                auto sw2 = std::make_shared<triangle>(b0, t1, t0, cn->mat_ptr());
+                tri_owned.push_back(sw1); tri_owned.push_back(sw2);
+                out.push_back(sw1); out.push_back(sw2);
+                auto cap_t = std::make_shared<triangle>(p1, t0, t1, cn->mat_ptr());
+                tri_owned.push_back(cap_t); out.push_back(cap_t);
+            } else {
+                auto sw = std::make_shared<triangle>(b0, b1, p1, cn->mat_ptr());
+                tri_owned.push_back(sw); out.push_back(sw);
+            }
+            if (r0_val > 1e-6) {
+                auto cap_b = std::make_shared<triangle>(p0, b1, b0, cn->mat_ptr());
+                tri_owned.push_back(cap_b); out.push_back(cap_b);
+            }
         }
         return true;
     }

@@ -562,6 +562,11 @@ int run_interactive_renderer(int argc, char **argv) {
                             d->set_roughness(d->get_roughness() - 0.05);
                             std::cout << "rt_view: [Live Material Tweaker] Glass Roughness = " << d->get_roughness() << "\n";
                             cam_moved = true;
+                        } else if (auto dl = dynamic_cast<diffuse_light*>(selected_mat.get())) {
+                            dl->set_emit(dl->get_emit() * 0.8);
+                            std::cout << "rt_view: [Live Material Tweaker] Light Emission = ("
+                                      << dl->get_emit().x() << ", " << dl->get_emit().y() << ", " << dl->get_emit().z() << ")\n";
+                            cam_moved = true;
                         }
                     }
                 } else if (e.key.key == SDLK_EQUALS) {
@@ -573,6 +578,11 @@ int run_interactive_renderer(int argc, char **argv) {
                         } else if (auto d = dynamic_cast<dielectric*>(selected_mat.get())) {
                             d->set_roughness(d->get_roughness() + 0.05);
                             std::cout << "rt_view: [Live Material Tweaker] Glass Roughness = " << d->get_roughness() << "\n";
+                            cam_moved = true;
+                        } else if (auto dl = dynamic_cast<diffuse_light*>(selected_mat.get())) {
+                            dl->set_emit(dl->get_emit() * 1.25);
+                            std::cout << "rt_view: [Live Material Tweaker] Light Emission = ("
+                                      << dl->get_emit().x() << ", " << dl->get_emit().y() << ", " << dl->get_emit().z() << ")\n";
                             cam_moved = true;
                         }
                     }
@@ -618,34 +628,49 @@ int run_interactive_renderer(int argc, char **argv) {
                     cam_moved = true;
                     std::cout << "rt_view: Camera reset to origin.\n";
                 } else if (e.key.key == SDLK_1) {
-                    fly_cam.eye = vec3(0.0, 0.68, 0.35);
-                    fly_cam.yaw = -90.0;
-                    fly_cam.pitch = -10.0;
-                    fly_cam.vfov = 38.0;
-                    focus_dist = 1.05;
+                    if (scene_name == "studio") {
+                        fly_cam.eye = vec3(0.0, 1.15, 1.45);
+                        fly_cam.yaw = -90.0; fly_cam.pitch = -4.0; fly_cam.vfov = 34.0;
+                        focus_dist = 1.45;
+                        std::cout << "rt_view: [Studio Bookmark 1] Centerpiece Cauchy Glass Sphere (dist=" << focus_dist << "m)\n";
+                    } else {
+                        fly_cam.eye = vec3(0.0, 0.68, 0.35);
+                        fly_cam.yaw = -90.0; fly_cam.pitch = -10.0; fly_cam.vfov = 38.0;
+                        focus_dist = 1.05;
+                        std::cout << "rt_view: [Bookmark 1] Focus on Centerpiece Stanford Bunny (dist=" << focus_dist << "m)\n";
+                    }
                     cam_moved = true;
-                    std::cout << "rt_view: [Bookmark 1] Focus on Centerpiece Stanford Bunny (dist=" << focus_dist << "m)\n";
                 } else if (e.key.key == SDLK_2) {
-                    fly_cam.eye = vec3(0.0, 0.30, 1.35);
-                    fly_cam.yaw = -90.0;
-                    fly_cam.pitch = -9.0;
-                    fly_cam.vfov = 44.0;
-                    focus_dist = 1.45;
+                    if (scene_name == "studio") {
+                        fly_cam.eye = vec3(-0.95, 0.90, 1.35);
+                        fly_cam.yaw = -90.0; fly_cam.pitch = -5.0; fly_cam.vfov = 30.0;
+                        focus_dist = 1.0;
+                        std::cout << "rt_view: [Studio Bookmark 2] Macro on Ruby Gemstone (dist=" << focus_dist << "m)\n";
+                    } else {
+                        fly_cam.eye = vec3(0.0, 0.30, 1.35);
+                        fly_cam.yaw = -90.0; fly_cam.pitch = -9.0; fly_cam.vfov = 44.0;
+                        focus_dist = 1.45;
+                        std::cout << "rt_view: [Bookmark 2] Focus on Soap Bubble & Cauchy Crystal Pair (dist=" << focus_dist << "m)\n";
+                    }
                     cam_moved = true;
-                    std::cout << "rt_view: [Bookmark 2] Focus on Soap Bubble & Cauchy Crystal Pair (dist=" << focus_dist << "m)\n";
                 } else if (e.key.key == SDLK_3) {
-                    fly_cam.eye = vec3(0.0, 0.15, 1.85);
-                    fly_cam.yaw = -90.0;
-                    fly_cam.pitch = -6.0;
-                    fly_cam.vfov = 52.0;
-                    focus_dist = 2.30;
+                    if (scene_name == "studio") {
+                        fly_cam.eye = vec3(1.2, 0.85, 1.7);
+                        fly_cam.yaw = -125.0; fly_cam.pitch = -8.0; fly_cam.vfov = 40.0;
+                        focus_dist = 1.6;
+                        std::cout << "rt_view: [Studio Bookmark 3] Pedestal Gold Ring & Columns (dist=" << focus_dist << "m)\n";
+                    } else {
+                        fly_cam.eye = vec3(0.0, 0.15, 1.85);
+                        fly_cam.yaw = -90.0; fly_cam.pitch = -6.0; fly_cam.vfov = 52.0;
+                        focus_dist = 2.30;
+                        std::cout << "rt_view: [Bookmark 3] Focus on Disney Car Paint & Velvet Flanks (dist=" << focus_dist << "m)\n";
+                    }
                     cam_moved = true;
-                    std::cout << "rt_view: [Bookmark 3] Focus on Disney Car Paint & Velvet Flanks (dist=" << focus_dist << "m)\n";
                 } else if (e.key.key == SDLK_4) {
                     fly_cam.init_from_camera(sdata.cam, initial_vfov);
-                    focus_dist = 4.0;
+                    focus_dist = (scene_name == "studio") ? 3.2 : 4.0;
                     cam_moved = true;
-                    std::cout << "rt_view: [Bookmark 4] Wide Studio Masterpiece View (dist=" << focus_dist << "m)\n";
+                    std::cout << "rt_view: [Bookmark 4] Wide Studio Overview (dist=" << focus_dist << "m)\n";
                 } else if (e.key.key == SDLK_F1) {
                     view_mode = ViewMode::BEAUTY;
                     std::cout << "rt_view: Display mode [F1: Beauty]\n";
