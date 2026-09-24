@@ -14,9 +14,12 @@ public:
         normal = unit_vector(n);
         D = dot(normal, Q);
         w = n / dot(n, n);
+        wv = cross(v, w);
+        wu = cross(w, u);
     }
 
-    bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const override {        double denom = dot(normal, r.direction());
+    bool hit(const ray &r, double t_min, double t_max, hit_record &rec) const override {
+        double denom = dot(normal, r.direction());
         if (fabs(denom) < 1e-8)
             return false; // parallel
         double t = (D - dot(normal, r.origin())) / denom;
@@ -24,9 +27,11 @@ public:
             return false;
         vec3 p = r.at(t);
         vec3 pq = p - Q;
-        double alpha = dot(w, cross(pq, v));
-        double beta = dot(w, cross(u, pq));
-        if (alpha < 0 || alpha > 1 || beta < 0 || beta > 1)
+        double alpha = dot(pq, wv);
+        if (alpha < 0 || alpha > 1)
+            return false;
+        double beta = dot(pq, wu);
+        if (beta < 0 || beta > 1)
             return false;
         rec.t = t;
         rec.point = p;
@@ -51,9 +56,11 @@ public:
             return false;
         vec3 p = r.at(t);
         vec3 pq = p - Q;
-        double alpha = dot(w, cross(pq, v));
-        double beta = dot(w, cross(u, pq));
-        return (alpha >= 0.0 && alpha <= 1.0 && beta >= 0.0 && beta <= 1.0);
+        double alpha = dot(pq, wv);
+        if (alpha < 0.0 || alpha > 1.0)
+            return false;
+        double beta = dot(pq, wu);
+        return (beta >= 0.0 && beta <= 1.0);
     }
 
     bool bounding_box(aabb &box) const override {
@@ -83,6 +90,7 @@ public:
 
 private:
     vec3 Q, u, v, w, normal;
+    vec3 wv, wu;
     double D = 0;
     std::shared_ptr<material> mat;
 };

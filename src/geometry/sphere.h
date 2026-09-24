@@ -6,17 +6,23 @@
 // Moving variant lerps centers over [t0,t1]; static when c0==c1.
 class sphere : public hittable {
 public:
-    sphere() {}
+    sphere() { init_static(); }
     sphere(const vec3 &c, double r, std::shared_ptr<material> m)
-        : c0(c), c1(c), radius(r), mat(m), tm0(0), tm1(1) {}
+        : c0(c), c1(c), radius(r), mat(m), tm0(0), tm1(1) { init_static(); }
     sphere(const vec3 &a, const vec3 &b, double t0, double t1, double r,
            std::shared_ptr<material> m)
-        : c0(a), c1(b), radius(r), mat(m), tm0(t0), tm1(t1) {}
+        : c0(a), c1(b), radius(r), mat(m), tm0(t0), tm1(t1) { init_static(); }
     sphere(const vec3 &a, const vec3 &b, double r, std::shared_ptr<material> m)
-        : c0(a), c1(b), radius(r), mat(m), tm0(0), tm1(1) {}
+        : c0(a), c1(b), radius(r), mat(m), tm0(0), tm1(1) { init_static(); }
+
+    void init_static() {
+        radius_sq = radius * radius;
+        inv_radius = (radius != 0.0) ? (1.0 / radius) : 0.0;
+        is_moving = (tm1 > tm0) && ((c1 - c0).length_squared() > 1e-12);
+    }
 
     vec3 center(double time) const {
-        if (tm1 <= tm0)
+        if (!is_moving)
             return c0;
         double f = (time - tm0) / (tm1 - tm0);
         f = f < 0 ? 0 : (f > 1 ? 1 : f);
@@ -28,7 +34,7 @@ public:
         vec3 oc = r.origin() - cen;
         double a = dot(r.direction(), r.direction());
         double half_b = dot(oc, r.direction());
-        double c = dot(oc, oc) - radius * radius;
+        double c = dot(oc, oc) - radius_sq;
         double discriminant = half_b * half_b - a * c;
         if (discriminant < 0)
             return false;
@@ -42,7 +48,7 @@ public:
         }
         rec.t = root;
         rec.point = r.at(root);
-        vec3 outward = (rec.point - cen) / radius;
+        vec3 outward = (rec.point - cen) * inv_radius;
         rec.set_face_normal(r, outward);
         rec.mat = mat;
         rec.hit_obj = nullptr; // clear medium tag: shared tmp reuse must not
@@ -50,7 +56,7 @@ public:
         rec.hit_prim = this; // nesting identity (M57)
         // Spherical UVs: azimuth -> u, polar -> v. Seam at -x, poles pinch.
         {
-            vec3 op = (rec.point - cen) / radius;
+            vec3 op = outward;
             double theta = std::acos(op.y() < -1 ? -1 : (op.y() > 1 ? 1 : op.y()));
             double phi = std::atan2(-op.z(), op.x()) + 3.1415926535897932385;
             rec.u = phi / (2 * 3.1415926535897932385);
@@ -70,7 +76,7 @@ public:
         vec3 oc = r.origin() - cen;
         double a = dot(r.direction(), r.direction());
         double half_b = dot(oc, r.direction());
-        double c = dot(oc, oc) - radius * radius;
+        double c = dot(oc, oc) - radius_sq;
         double discriminant = half_b * half_b - a * c;
         if (discriminant < 0.0)
             return false;
@@ -107,4 +113,7 @@ private:
     double radius = 0;
     std::shared_ptr<material> mat;
     double tm0 = 0, tm1 = 1;
+    double radius_sq = 0;
+    double inv_radius = 0;
+    bool is_moving = false;
 };

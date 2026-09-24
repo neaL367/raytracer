@@ -1009,71 +1009,86 @@ int run_interactive_renderer(int argc, char **argv) {
         if (view_mode == ViewMode::BEAUTY) {
             double inv_spp = (accum_spp > 0) ? (1.0 / (double)accum_spp) : 1.0;
             std::vector<vec3> beauty_hdr((size_t)W * H);
-            for (size_t i = 0; i < (size_t)W * H; ++i)
-                beauty_hdr[i] = accum_fb[i] * inv_spp;
+            std::atomic<int> next_row_hdr{0};
+            pool.parallel_run([&](unsigned) {
+                for (;;) {
+                    int y = next_row_hdr.fetch_add(1, std::memory_order_relaxed);
+                    if (y >= H)
+                        break;
+                    size_t row_offset = (size_t)y * W;
+                    for (int x = 0; x < W; ++x)
+                        beauty_hdr[row_offset + x] = accum_fb[row_offset + x] * inv_spp;
+                }
+            });
             if (live_denoise && accum_spp >= 2)
                 beauty_hdr = bilateral_denoise(beauty_hdr, W, H, 1.5, 0.15);
             if (bloom_enabled)
                 beauty_hdr = bloom::apply_bloom(beauty_hdr, W, H, 1.0, 0.08);
             double half_w = W * 0.5, half_h = H * 0.5;
-            for (int y = 0; y < H; ++y) {
-                double dy = (y - half_h) / half_h;
-                for (int x = 0; x < W; ++x) {
-                    double dx = (x - half_w) / half_w;
-                    size_t i = (size_t)y * W + x;
-                    vec3 hdr = beauty_hdr[i];
-                    if (chromatic_aberration) {
-                        double r2 = dx * dx + dy * dy;
-                        int offset_x = (int)std::round(dx * r2 * 4.0);
-                        int offset_y = (int)std::round(dy * r2 * 4.0);
-                        int rx = std::clamp(x + offset_x, 0, W - 1);
-                        int ry = std::clamp(y + offset_y, 0, H - 1);
-                        int bx = std::clamp(x - offset_x, 0, W - 1);
-                        int by = std::clamp(y - offset_y, 0, H - 1);
-                        hdr = vec3(beauty_hdr[(size_t)ry * W + rx].x(),
-                                   hdr.y(),
-                                   beauty_hdr[(size_t)by * W + bx].z());
-                    }
-                    if (color_temp != 0.0)
-                        hdr = vec3(hdr.x() * (1.0 + color_temp), hdr.y(), hdr.z() * (1.0 - color_temp));
-                    if (optical_vignette) {
-                        hdr *= 1.0 / (1.0 + 0.45 * (dx * dx + dy * dy));
-                    }
-                    vec3 ldr = use_aces ? tonemap(hdr, exposure)
-                                        : vec3(srgb_encode(hdr.x() * exposure),
-                                               srgb_encode(hdr.y() * exposure),
-                                               srgb_encode(hdr.z() * exposure));
-                    if (focus_peaking) {
-                        auto get_lum = [&](int px, int py) {
-                            px = std::clamp(px, 0, W - 1);
-                            py = std::clamp(py, 0, H - 1);
-                            vec3 c = beauty_hdr[(size_t)py * W + px];
-                            return 0.2126 * c.x() + 0.7152 * c.y() + 0.0722 * c.z();
-                        };
-                        double y_c = get_lum(x, y);
-                        double y_l = get_lum(x - 1, y);
-                        double y_r = get_lum(x + 1, y);
-                        double y_u = get_lum(x, y - 1);
-                        double y_d = get_lum(x, y + 1);
-                        double lap = std::abs(4.0 * y_c - y_l - y_r - y_u - y_d) / (y_c + 0.05);
-                        if (lap > 0.22) {
-                            ldr = 0.25 * ldr + 0.75 * vec3(0.0, 1.0, 0.4);
+            std::atomic<int> next_row_disp{0};
+            pool.parallel_run([&](unsigned) {
+                for (;;) {
+                    int y = next_row_disp.fetch_add(1, std::memory_order_relaxed);
+                    if (y >= H)
+                        break;
+                    double dy = (y - half_h) / half_h;
+                    for (int x = 0; x < W; ++x) {
+                        double dx = (x - half_w) / half_w;
+                        size_t i = (size_t)y * W + x;
+                        vec3 hdr = beauty_hdr[i];
+                        if (chromatic_aberration) {
+                            double r2 = dx * dx + dy * dy;
+                            int offset_x = (int)std::round(dx * r2 * 4.0);
+                            int offset_y = (int)std::round(dy * r2 * 4.0);
+                            int rx = std::clamp(x + offset_x, 0, W - 1);
+                            int ry = std::clamp(y + offset_y, 0, H - 1);
+                            int bx = std::clamp(x - offset_x, 0, W - 1);
+                            int by = std::clamp(y - offset_y, 0, H - 1);
+                            hdr = vec3(beauty_hdr[(size_t)ry * W + rx].x(),
+                                       hdr.y(),
+                                       beauty_hdr[(size_t)by * W + bx].z());
+                        }
+                        if (color_temp != 0.0)
+                            hdr = vec3(hdr.x() * (1.0 + color_temp), hdr.y(), hdr.z() * (1.0 - color_temp));
+                        if (optical_vignette) {
+                            hdr *= 1.0 / (1.0 + 0.45 * (dx * dx + dy * dy));
+                        }
+                        vec3 ldr = use_aces ? tonemap(hdr, exposure)
+                                            : vec3(srgb_encode(hdr.x() * exposure),
+                                                   srgb_encode(hdr.y() * exposure),
+                                                   srgb_encode(hdr.z() * exposure));
+                        if (focus_peaking) {
+                            auto get_lum = [&](int px, int py) {
+                                px = std::clamp(px, 0, W - 1);
+                                py = std::clamp(py, 0, H - 1);
+                                vec3 c = beauty_hdr[(size_t)py * W + px];
+                                return 0.2126 * c.x() + 0.7152 * c.y() + 0.0722 * c.z();
+                            };
+                            double y_c = get_lum(x, y);
+                            double y_l = get_lum(x - 1, y);
+                            double y_r = get_lum(x + 1, y);
+                            double y_u = get_lum(x, y - 1);
+                            double y_d = get_lum(x, y + 1);
+                            double lap = std::abs(4.0 * y_c - y_l - y_r - y_u - y_d) / (y_c + 0.05);
+                            if (lap > 0.22) {
+                                ldr = 0.25 * ldr + 0.75 * vec3(0.0, 1.0, 0.4);
+                            }
+                        }
+                        uint8_t r = (uint8_t)(std::clamp(ldr.x(), 0.0, 1.0) * 255.999);
+                        uint8_t g = (uint8_t)(std::clamp(ldr.y(), 0.0, 1.0) * 255.999);
+                        uint8_t b = (uint8_t)(std::clamp(ldr.z(), 0.0, 1.0) * 255.999);
+                        if (temporal_smooth && accum_spp <= 2 && prev_display_rgb.size() == display_rgb.size() && prev_display_rgb[i * 3 + 0] != 0) {
+                            display_rgb[i * 3 + 0] = (uint8_t)(0.40f * r + 0.60f * prev_display_rgb[i * 3 + 0]);
+                            display_rgb[i * 3 + 1] = (uint8_t)(0.40f * g + 0.60f * prev_display_rgb[i * 3 + 1]);
+                            display_rgb[i * 3 + 2] = (uint8_t)(0.40f * b + 0.60f * prev_display_rgb[i * 3 + 2]);
+                        } else {
+                            display_rgb[i * 3 + 0] = r;
+                            display_rgb[i * 3 + 1] = g;
+                            display_rgb[i * 3 + 2] = b;
                         }
                     }
-                    uint8_t r = (uint8_t)(std::clamp(ldr.x(), 0.0, 1.0) * 255.999);
-                    uint8_t g = (uint8_t)(std::clamp(ldr.y(), 0.0, 1.0) * 255.999);
-                    uint8_t b = (uint8_t)(std::clamp(ldr.z(), 0.0, 1.0) * 255.999);
-                    if (temporal_smooth && accum_spp <= 2 && prev_display_rgb.size() == display_rgb.size() && prev_display_rgb[i * 3 + 0] != 0) {
-                        display_rgb[i * 3 + 0] = (uint8_t)(0.40f * r + 0.60f * prev_display_rgb[i * 3 + 0]);
-                        display_rgb[i * 3 + 1] = (uint8_t)(0.40f * g + 0.60f * prev_display_rgb[i * 3 + 1]);
-                        display_rgb[i * 3 + 2] = (uint8_t)(0.40f * b + 0.60f * prev_display_rgb[i * 3 + 2]);
-                    } else {
-                        display_rgb[i * 3 + 0] = r;
-                        display_rgb[i * 3 + 1] = g;
-                        display_rgb[i * 3 + 2] = b;
-                    }
                 }
-            }
+            });
             prev_display_rgb = display_rgb;
         } else if (view_mode == ViewMode::ALBEDO) {
             if (use_gpu && gpu.has_scene) {
