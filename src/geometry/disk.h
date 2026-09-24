@@ -65,12 +65,14 @@ public:
         return 3.1415926535897932385 * (radius * radius - inner_radius * inner_radius);
     }
 
-    vec3 sample_point() const {
-        double r1 = random_double();
-        double r2 = random_double();
-        double r = std::sqrt(inner_radius * inner_radius + r1 * (radius * radius - inner_radius * inner_radius));
-        double theta = 2.0 * 3.1415926535897932385 * r2;
+    vec3 sample_point(double u1, double u2) const {
+        double r = std::sqrt(inner_radius * inner_radius + u1 * (radius * radius - inner_radius * inner_radius));
+        double theta = 2.0 * 3.1415926535897932385 * u2;
         return center + r * (std::cos(theta) * u_axis + std::sin(theta) * v_axis);
+    }
+
+    vec3 sample_point() const {
+        return sample_point(random_double(), random_double());
     }
 
     vec3 light_normal() const { return normal; }

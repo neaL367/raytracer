@@ -13,6 +13,7 @@
 #include "geometry/capsule.h"
 #include "geometry/cone.h"
 #include "geometry/bump_map.h"
+#include "geometry/light.h"
 #include "geometry/volume.h"
 #include "io/bloom.h"
 #include "accel/bvh.h"
@@ -858,6 +859,30 @@ static void t_disk_cylinder_bloom() {
     dl_test.set_temperature(3000.0, 15.0);
     EXPECT_NEAR(dl_test.get_temperature(), 3000.0);
     EXPECT_TRUE(dl_test.get_emit().x() > dl_test.get_emit().z());
+
+    // 8. Cylinder, capsule, and cone light sampling and area tests
+    auto cyl_shape = std::make_shared<cylinder>(vec3(0, 0, 0), vec3(0, 2, 0), 0.5, mat);
+    light cyl_light(cyl_shape);
+    EXPECT_NEAR(light_area(cyl_light), 2.0 * 3.1415926535897932385 * 0.5 * 2.0);
+    vec3 lp_cyl = light_point(cyl_light, 0.5, 0.25, 0.0);
+    EXPECT_NEAR(lp_cyl.y(), 1.0);
+    vec3 ln_cyl = light_normal_at(cyl_light, lp_cyl, 0.0);
+    EXPECT_NEAR(ln_cyl.length(), 1.0);
+    EXPECT_NEAR(ln_cyl.y(), 0.0);
+
+    auto cap_shape = std::make_shared<capsule>(vec3(0, 0, 0), vec3(0, 2, 0), 0.5, mat);
+    light cap_light(cap_shape);
+    EXPECT_TRUE(light_area(cap_light) > light_area(cyl_light));
+    vec3 lp_cap = light_point(cap_light, 0.1, 0.25, 0.0);
+    vec3 ln_cap = light_normal_at(cap_light, lp_cap, 0.0);
+    EXPECT_NEAR(ln_cap.length(), 1.0);
+
+    auto cone_shape = std::make_shared<cone>(vec3(0, 0, 0), vec3(0, 2, 0), 1.0, 0.5, mat);
+    light cone_light(cone_shape);
+    EXPECT_TRUE(light_area(cone_light) > 0.0);
+    vec3 lp_cone = light_point(cone_light, 0.5, 0.25, 0.0);
+    vec3 ln_cone = light_normal_at(cone_light, lp_cone, 0.0);
+    EXPECT_NEAR(ln_cone.length(), 1.0);
 }
 
 void run_geometry_tests() {

@@ -60,7 +60,10 @@ inline vec3 cross(const vec3 &u, const vec3 &v) {
                 u.e[2]*v.e[0] - u.e[0]*v.e[2],
                 u.e[0]*v.e[1] - u.e[1]*v.e[0]);
 }
-inline vec3 unit_vector(const vec3 &v) { return v / v.length(); }
+inline vec3 unit_vector(const vec3 &v) {
+    double len = v.length();
+    return (len > 0.0) ? (v * (1.0 / len)) : vec3(0, 0, 0);
+}
 
 // reflect: v mirrored about n. Roughness-0 conductors use it exact.
 inline vec3 reflect(const vec3 &v, const vec3 &n) { return v - 2 * dot(v, n) * n; }
