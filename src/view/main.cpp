@@ -415,6 +415,9 @@ int run_interactive_renderer(int argc, char **argv) {
     bool optical_vignette = false;
     bool bloom_enabled = false;
     bool chromatic_aberration = false;
+    bool focus_peaking = false;
+    bool turntable_mode = false;
+    double turntable_rpm = 2.5;
     double color_temp = 0.0;
     std::shared_ptr<material> selected_mat = nullptr;
 
@@ -443,8 +446,11 @@ int run_interactive_renderer(int argc, char **argv) {
               << "  J            : Toggle Anamorphic Lens Squeeze (1.0x Spherical <-> 2.0x Oval)\n"
               << "  Y            : Toggle Radial Lens Distortion (0.0 Rectilinear <-> 0.20 Barrel)\n"
               << "  9 / F5       : Toggle Lens Chromatic Aberration [ON/OFF]\n"
-              << "  - / =        : Nudge Selected Material Roughness (-0.05 / +0.05)\n"
-              << "  , / .        : Nudge Selected Material IOR (-0.05 / +0.05)\n"
+              << "  F6           : Toggle Focus Peaking / Cinema Z-Peaking Overlay [ON/OFF]\n"
+              << "  F8           : Toggle Cinematic 360 Turntable Orbit [ON/OFF]\n"
+              << "  Arrow Keys   : Dynamic Sun Orbit (Left/Right: Azimuth, Up/Down: Elevation)\n"
+              << "  - / =        : Nudge Roughness (-0.05 / +0.05) or Light Emission (0.8x / 1.25x)\n"
+              << "  , / .        : Nudge Glass IOR (-0.05 / +0.05) or Light Temperature (-500K / +500K)\n"
               << "  Z            : Toggle Temporal Motion Smoothing [ON/OFF]\n"
               << "  N            : Toggle Live Bilateral AOV Denoiser [ON/OFF]\n"
               << "  V            : Toggle Optical Vignetting [ON/OFF]\n"
@@ -469,6 +475,20 @@ int run_interactive_renderer(int argc, char **argv) {
         if (dt > 0.1) dt = 0.1;
 
         bool cam_moved = false;
+
+        if (turntable_mode) {
+            double d_angle_deg = (turntable_rpm * 360.0 / 60.0) * dt;
+            vec3 target = fly_cam.eye + fly_cam.forward_dir() * focus_dist;
+            double rad = d_angle_deg * (3.1415926535897932385 / 180.0);
+            double dx = fly_cam.eye.x() - target.x();
+            double dz = fly_cam.eye.z() - target.z();
+            double cos_r = std::cos(rad), sin_r = std::sin(rad);
+            double new_dx = dx * cos_r - dz * sin_r;
+            double new_dz = dx * sin_r + dz * cos_r;
+            fly_cam.eye = vec3(target.x() + new_dx, fly_cam.eye.y(), target.z() + new_dz);
+            fly_cam.yaw += d_angle_deg;
+            cam_moved = true;
+        }
 
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -552,6 +572,40 @@ int run_interactive_renderer(int argc, char **argv) {
                     chromatic_aberration = !chromatic_aberration;
                     std::cout << "rt_view: Lens Chromatic Aberration ["
                               << (chromatic_aberration ? "ON" : "OFF") << "]\n";
+                } else if (e.key.key == SDLK_F6) {
+                    focus_peaking = !focus_peaking;
+                    std::cout << "rt_view: Focus Peaking (Z-Peaking) [" << (focus_peaking ? "ON" : "OFF") << "]\n";
+                } else if (e.key.key == SDLK_F8) {
+                    turntable_mode = !turntable_mode;
+                    std::cout << "rt_view: Cinematic 360 Turntable Orbit [" << (turntable_mode ? "ON" : "OFF") << "]\n";
+                } else if (e.key.key == SDLK_LEFT) {
+                    double az, el;
+                    env_light::get_sun_angles(az, el);
+                    az = std::fmod(az - 5.0 + 360.0, 360.0);
+                    env_light::set_sun_angles(az, el);
+                    cam_moved = true;
+                    std::cout << "rt_view: [Sun Orbit] Azimuth = " << az << " deg, Elevation = " << el << " deg\n";
+                } else if (e.key.key == SDLK_RIGHT) {
+                    double az, el;
+                    env_light::get_sun_angles(az, el);
+                    az = std::fmod(az + 5.0, 360.0);
+                    env_light::set_sun_angles(az, el);
+                    cam_moved = true;
+                    std::cout << "rt_view: [Sun Orbit] Azimuth = " << az << " deg, Elevation = " << el << " deg\n";
+                } else if (e.key.key == SDLK_UP) {
+                    double az, el;
+                    env_light::get_sun_angles(az, el);
+                    el = std::clamp(el + 2.5, 2.0, 88.0);
+                    env_light::set_sun_angles(az, el);
+                    cam_moved = true;
+                    std::cout << "rt_view: [Sun Orbit] Azimuth = " << az << " deg, Elevation = " << el << " deg\n";
+                } else if (e.key.key == SDLK_DOWN) {
+                    double az, el;
+                    env_light::get_sun_angles(az, el);
+                    el = std::clamp(el - 2.5, 2.0, 88.0);
+                    env_light::set_sun_angles(az, el);
+                    cam_moved = true;
+                    std::cout << "rt_view: [Sun Orbit] Azimuth = " << az << " deg, Elevation = " << el << " deg\n";
                 } else if (e.key.key == SDLK_MINUS) {
                     if (selected_mat) {
                         if (auto m = dynamic_cast<metal*>(selected_mat.get())) {
@@ -592,6 +646,12 @@ int run_interactive_renderer(int argc, char **argv) {
                             d->set_ior(d->ior() - 0.05);
                             std::cout << "rt_view: [Live Material Tweaker] Glass IOR = " << d->ior() << "\n";
                             cam_moved = true;
+                        } else if (auto dl = dynamic_cast<diffuse_light*>(selected_mat.get())) {
+                            dl->set_temperature(dl->get_temperature() - 500.0);
+                            std::cout << "rt_view: [Live Material Tweaker] Light Temperature = "
+                                      << dl->get_temperature() << "K (Warmer) | Emission = ("
+                                      << dl->get_emit().x() << ", " << dl->get_emit().y() << ", " << dl->get_emit().z() << ")\n";
+                            cam_moved = true;
                         }
                     }
                 } else if (e.key.key == SDLK_PERIOD) {
@@ -599,6 +659,12 @@ int run_interactive_renderer(int argc, char **argv) {
                         if (auto d = dynamic_cast<dielectric*>(selected_mat.get())) {
                             d->set_ior(d->ior() + 0.05);
                             std::cout << "rt_view: [Live Material Tweaker] Glass IOR = " << d->ior() << "\n";
+                            cam_moved = true;
+                        } else if (auto dl = dynamic_cast<diffuse_light*>(selected_mat.get())) {
+                            dl->set_temperature(dl->get_temperature() + 500.0);
+                            std::cout << "rt_view: [Live Material Tweaker] Light Temperature = "
+                                      << dl->get_temperature() << "K (Cooler) | Emission = ("
+                                      << dl->get_emit().x() << ", " << dl->get_emit().y() << ", " << dl->get_emit().z() << ")\n";
                             cam_moved = true;
                         }
                     }
@@ -697,8 +763,11 @@ int run_interactive_renderer(int argc, char **argv) {
                               << " J            : Toggle Anamorphic Lens Squeeze (1.0x vs 2.0x Oval Bokeh)\n"
                               << " Y            : Toggle Lens Radial Distortion (0.0 Rectilinear vs 0.20 Barrel)\n"
                               << " 9 / F5       : Toggle Lens Chromatic Aberration & Spectral Fringe\n"
-                              << " - / =        : Nudge Selected Material Roughness (-0.05 / +0.05)\n"
-                              << " , / .        : Nudge Selected Material IOR (-0.05 / +0.05)\n"
+                              << " F6           : Toggle Focus Peaking / Cinema Z-Peaking Overlay\n"
+                              << " F8           : Toggle Cinematic 360 Turntable Orbit\n"
+                              << " Arrow Keys   : Dynamic Sun Orbit (Left/Right: Azimuth, Up/Down: Elevation)\n"
+                              << " - / =        : Nudge Roughness (-0.05 / +0.05) or Light Emission (0.8x / 1.25x)\n"
+                              << " , / .        : Nudge Glass IOR (-0.05 / +0.05) or Light Temperature (-500K / +500K)\n"
                               << " N            : Toggle Live Bilateral AOV Denoising\n"
                               << " V            : Toggle Optical Vignetting\n"
                               << " M            : Toggle Multi-Scale Bloom & Optical Glare\n"
@@ -909,6 +978,23 @@ int run_interactive_renderer(int argc, char **argv) {
                                         : vec3(srgb_encode(hdr.x() * exposure),
                                                srgb_encode(hdr.y() * exposure),
                                                srgb_encode(hdr.z() * exposure));
+                    if (focus_peaking) {
+                        auto get_lum = [&](int px, int py) {
+                            px = std::clamp(px, 0, W - 1);
+                            py = std::clamp(py, 0, H - 1);
+                            vec3 c = beauty_hdr[(size_t)py * W + px];
+                            return 0.2126 * c.x() + 0.7152 * c.y() + 0.0722 * c.z();
+                        };
+                        double y_c = get_lum(x, y);
+                        double y_l = get_lum(x - 1, y);
+                        double y_r = get_lum(x + 1, y);
+                        double y_u = get_lum(x, y - 1);
+                        double y_d = get_lum(x, y + 1);
+                        double lap = std::abs(4.0 * y_c - y_l - y_r - y_u - y_d) / (y_c + 0.05);
+                        if (lap > 0.22) {
+                            ldr = 0.25 * ldr + 0.75 * vec3(0.0, 1.0, 0.4);
+                        }
+                    }
                     uint8_t r = (uint8_t)(std::clamp(ldr.x(), 0.0, 1.0) * 255.999);
                     uint8_t g = (uint8_t)(std::clamp(ldr.y(), 0.0, 1.0) * 255.999);
                     uint8_t b = (uint8_t)(std::clamp(ldr.z(), 0.0, 1.0) * 255.999);

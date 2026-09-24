@@ -12,6 +12,7 @@
 #include "geometry/cylinder.h"
 #include "geometry/capsule.h"
 #include "geometry/cone.h"
+#include "geometry/bump_map.h"
 #include "geometry/volume.h"
 #include "io/bloom.h"
 #include "accel/bvh.h"
@@ -834,6 +835,29 @@ static void t_disk_cylinder_bloom() {
     // Neighbor pixels should now receive bloom flare > 0
     EXPECT_TRUE(bloomed[4 * bw + 3].x() > 0.0);
     EXPECT_TRUE(bloomed[3 * bw + 4].x() > 0.0);
+
+    // 6. Procedural bump_map wrapper test
+    auto base_sphere = std::make_shared<sphere>(vec3(0, 0, 0), 1.0, mat);
+    bump_map bumped_sphere(base_sphere, BumpPattern::RIPPLE, 2.0, 0.3);
+    EXPECT_TRUE(bumped_sphere.hit(ray(vec3(0, 0, 3), vec3(0, 0, -1)), 0.001, 100.0, rec));
+    EXPECT_NEAR(rec.t, 2.0);
+    EXPECT_NEAR(rec.point.z(), 1.0);
+    // Normal length must be normalized
+    EXPECT_NEAR(rec.normal.length(), 1.0);
+    aabb b_box;
+    EXPECT_TRUE(bumped_sphere.bounding_box(b_box));
+    EXPECT_NEAR(b_box.minimum.z(), -1.0);
+    EXPECT_NEAR(b_box.maximum.z(), 1.0);
+
+    // 7. Blackbody color spectrum and diffuse_light temperature test
+    vec3 c_warm = spectrum::blackbody_to_rgb(2000.0); // Warm candlelight
+    EXPECT_TRUE(c_warm.x() > c_warm.y() && c_warm.y() > c_warm.z());
+    vec3 c_cool = spectrum::blackbody_to_rgb(10000.0); // Cool skylight
+    EXPECT_TRUE(c_cool.z() > c_cool.x());
+    diffuse_light dl_test(vec3(10, 10, 10));
+    dl_test.set_temperature(3000.0, 15.0);
+    EXPECT_NEAR(dl_test.get_temperature(), 3000.0);
+    EXPECT_TRUE(dl_test.get_emit().x() > dl_test.get_emit().z());
 }
 
 void run_geometry_tests() {

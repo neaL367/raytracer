@@ -7,8 +7,11 @@
 class diffuse_light : public material {
 public:
     diffuse_light(const vec3 &c)
-        : tex(std::make_shared<solid_color>(c)) {}
-    diffuse_light(std::shared_ptr<texture> t) : tex(t) {}
+        : tex(std::make_shared<solid_color>(c)), m_kelvin(6500.0) {}
+    diffuse_light(std::shared_ptr<texture> t) : tex(t), m_kelvin(6500.0) {}
+    diffuse_light(double kelvin, double intensity) : m_kelvin(kelvin) {
+        set_temperature(kelvin, intensity);
+    }
     // GPU flatten reads the pattern for image textures.
     const std::shared_ptr<texture> &tex_ref() const { return tex; }
     vec3 get_emit() const {
@@ -18,6 +21,17 @@ public:
     }
     void set_emit(const vec3 &c) {
         tex = std::make_shared<solid_color>(c);
+    }
+    double get_temperature() const { return m_kelvin; }
+    void set_temperature(double kelvin, double intensity = -1.0) {
+        m_kelvin = std::clamp(kelvin, 1000.0, 40000.0);
+        vec3 rgb = spectrum::blackbody_to_rgb(m_kelvin);
+        if (intensity <= 0.0) {
+            vec3 cur = get_emit();
+            double cur_lum = std::max({cur.x(), cur.y(), cur.z()});
+            intensity = (cur_lum > 0.0) ? cur_lum : 10.0;
+        }
+        set_emit(rgb * intensity);
     }
     bool scatter(const ray &, const hit_record &,
                  vec3 &, ray &) const override {
@@ -62,4 +76,5 @@ public:
 
 private:
     std::shared_ptr<texture> tex;
+    double m_kelvin = 6500.0;
 };

@@ -14,6 +14,7 @@
 #include "hdri.h"
 
 #include <cmath>
+#include <algorithm>
 
 namespace env_light {
 
@@ -24,7 +25,26 @@ inline hdri_env *&g_hdri() {
     return p;
 }
 
-inline vec3 sun_dir() { return unit_vector(vec3(0.5, 0.8, 0.35)); }
+inline vec3 &custom_sun_dir() {
+    static vec3 s_sun = unit_vector(vec3(0.5, 0.8, 0.35));
+    return s_sun;
+}
+inline vec3 sun_dir() { return custom_sun_dir(); }
+inline void set_sun_dir(const vec3 &d) { custom_sun_dir() = unit_vector(d); }
+inline void get_sun_angles(double &az_deg, double &el_deg) {
+    vec3 d = custom_sun_dir();
+    double el = std::asin(std::clamp(d.y(), -1.0, 1.0));
+    double az = std::atan2(d.x(), d.z());
+    el_deg = el * (180.0 / 3.1415926535897932385);
+    az_deg = az * (180.0 / 3.1415926535897932385);
+    if (az_deg < 0.0) az_deg += 360.0;
+}
+inline void set_sun_angles(double az_deg, double el_deg) {
+    double az = az_deg * (3.1415926535897932385 / 180.0);
+    double el = el_deg * (3.1415926535897932385 / 180.0);
+    double cos_el = std::cos(el);
+    custom_sun_dir() = unit_vector(vec3(cos_el * std::sin(az), std::sin(el), cos_el * std::cos(az)));
+}
 
 // Legacy background gradient, now the single source for both paths.
 inline vec3 sky(const vec3 &d) {

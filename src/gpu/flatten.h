@@ -12,6 +12,7 @@
 #include "../geometry/cylinder.h"
 #include "../geometry/capsule.h"
 #include "../geometry/cone.h"
+#include "../geometry/bump_map.h"
 #include "../scene/scene.h"
 
 #include <algorithm>
@@ -366,6 +367,9 @@ inline bool expand_for_gpu(const std::shared_ptr<hittable> &o, double c, double 
         }
         return expand_for_gpu(bn->child(false), c, s, T, out, quad_owned, sphere_owned, tri_owned) &&
                expand_for_gpu(bn->child(true), c, s, T, out, quad_owned, sphere_owned, tri_owned);
+    }
+    if (auto bm = std::dynamic_pointer_cast<bump_map>(o)) {
+        return expand_for_gpu(bm->inner_ref(), c, s, T, out, quad_owned, sphere_owned, tri_owned);
     }
     if (auto qn = std::dynamic_pointer_cast<qbvh_node>(o)) {
         std::vector<std::shared_ptr<hittable>> prims;

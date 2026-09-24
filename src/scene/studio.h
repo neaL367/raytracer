@@ -4,6 +4,7 @@
 #include "common.h"
 #include "../geometry/disk.h"
 #include "../geometry/cylinder.h"
+#include "../geometry/bump_map.h"
 
 inline scene_data build_studio(double aspect, double aperture,
                                double sh0 = 0, double sh1 = 0,
@@ -44,7 +45,8 @@ inline scene_data build_studio(double aspect, double aperture,
     // 3. Central Tiered Pedestal (Disks + Cylinder)
     s.objs.push_back(std::make_shared<disk>(vec3(0, 0.005, 0), vec3(0, 1, 0), 2.2, mat_pedestal)); // Base platform
     s.objs.push_back(std::make_shared<cylinder>(vec3(0, 0, 0), vec3(0, 0.45, 0), 1.5, mat_pedestal));
-    s.objs.push_back(std::make_shared<disk>(vec3(0, 0.455, 0), vec3(0, 1, 0), 1.6, mat_gold, 1.4)); // Gold outer ring
+    auto gold_ring = std::make_shared<disk>(vec3(0, 0.455, 0), vec3(0, 1, 0), 1.6, mat_gold, 1.4); // Gold outer ring
+    s.objs.push_back(std::make_shared<bump_map>(gold_ring, BumpPattern::BRUSHED, 1.0, 0.25));
 
     // 4. Architectural Fluted Columns (Cylinders) in background
     double col_rad = 0.28;

@@ -18,6 +18,7 @@
 
 #include <cmath>
 #include <complex>
+#include <algorithm>
 
 namespace spectrum {
 
@@ -116,6 +117,52 @@ inline bool conductor_nk(int preset, int channel, double &n, double &k) {
     n = nn[preset - 1][channel];
     k = kk[preset - 1][channel];
     return true;
+}
+
+// Tanner-Helland / Mitchell Charity blackbody radiation approximation to linear RGB
+inline vec3 blackbody_to_rgb(double kelvin) {
+    kelvin = std::clamp(kelvin, 1000.0, 40000.0);
+    double temp = kelvin / 100.0;
+    double red, green, blue;
+
+    // Red
+    if (temp <= 66.0) {
+        red = 255.0;
+    } else {
+        red = temp - 60.0;
+        red = 329.698727446 * std::pow(red, -0.1332047592);
+        red = std::clamp(red, 0.0, 255.0);
+    }
+
+    // Green
+    if (temp <= 66.0) {
+        green = temp;
+        green = 99.4708025861 * std::log(green) - 161.1195681661;
+        green = std::clamp(green, 0.0, 255.0);
+    } else {
+        green = temp - 60.0;
+        green = 288.1221695283 * std::pow(green, -0.0755148492);
+        green = std::clamp(green, 0.0, 255.0);
+    }
+
+    // Blue
+    if (temp >= 66.0) {
+        blue = 255.0;
+    } else if (temp <= 19.0) {
+        blue = 0.0;
+    } else {
+        blue = temp - 10.0;
+        blue = 138.5177312231 * std::log(blue) - 305.0447927307;
+        blue = std::clamp(blue, 0.0, 255.0);
+    }
+
+    // Convert sRGB [0..1] to linear RGB
+    auto to_lin = [](double c) {
+        return (c <= 0.04045) ? (c / 12.92) : std::pow((c + 0.055) / 1.055, 2.4);
+    };
+    vec3 col(to_lin(red / 255.0), to_lin(green / 255.0), to_lin(blue / 255.0));
+    double mx = std::max({col.x(), col.y(), col.z()});
+    return (mx > 0.0) ? (col / mx) : vec3(1, 1, 1);
 }
 
 } // namespace spectrum
