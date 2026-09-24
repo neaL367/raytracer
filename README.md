@@ -71,11 +71,15 @@ Interactive real-time previewer with 6-DOF fly camera and progressive path traci
 - **Right Drag / F**: Look around (pitch & yaw) / Toggle captured mouse look
 - **Mouse Wheel**: Adjust movement speed
 - **Middle Click / F4**: Click-to-Focus on object under cursor / Center autofocus (calculates exact focal plane)
+- **Alt + Left Click**: Material & Object Inspector (queries hit distance, position, normals, UVs, and material)
 - **U / I / O**: Adjust Aperture size (U: -0.02, I: +0.02, O: Toggle pinhole / bokeh)
 - **K / L**: Adjust Focus Distance manually (K: -0.2m, L: +0.2m)
 - **B**: Toggle Bokeh Iris Shape (Hexagonal 6-Blade vs Circular aperture)
+- **J**: Toggle Anamorphic Lens Squeeze (1.0x Spherical vs 2.0x Oval Bokeh)
+- **Y**: Toggle Radial Lens Distortion (0.0 Rectilinear vs 0.20 Barrel)
 - **N**: Toggle Live Bilateral AOV Denoising (edge-preserving spatial filter)
 - **V**: Toggle Optical Vignetting (cos^4 lens falloff simulation)
+- **M**: Toggle Multi-Scale Bloom & Optical Glare (pyramid highlight glow)
 - **; / ' / /**: Color temperature grading (Semicolon: Cooler, Apostrophe: Warmer, Slash: Reset)
 - **Z**: Toggle Temporal Motion Smoothing (noise-free interactive flight)
 - **1 - 4**: Instant camera bookmarks (1: Bunny close-up, 2: Crystals, 3: Disney flanks, 4: Wide)
@@ -174,7 +178,7 @@ python tools/parity.py --save-baseline tools/parity_baseline.json
 src/core/      vec3, ray, RNG, sampler (stratified/Sobol), ONB, AABB, textures
                (+mipmaps, noise), OBJ/MTL loader
 src/camera/    pinhole + thin-lens defocus + shutter timing
-src/geometry/  sphere/triangle/quad, hittable list, constant + hetero volumes,
+src/geometry/  sphere/triangle/quad/disk/cylinder, hittable list, constant + hetero volumes,
                instances (translate/rotate_y)
 src/material/  lambertian/metal/dielectric/isotropic/diffuse_light, GGX
                (iso + aniso conductors, rough glass), Ns mapping
@@ -187,7 +191,7 @@ src/gpu/       Vulkan compute host (chunked submit, HDR average), flatten
                (instances bake, black_bg), shaders (grad/normal/path/
                denoise/joint), CPU-mirrored camera
 src/output/    PPM writer, ACES film, PFM float dump
-src/io/        denoise (bilateral + joint), compare/heatmap, PPM + stb images
+src/io/        bloom, denoise (bilateral + joint), compare/heatmap, PPM + stb images
 src/app/       CPU wiring, tile thread pool, bench counters
 src/view/      SDL3 preview + inspector
 tests/         dependency-free asserts via ctest (seeded, deterministic)

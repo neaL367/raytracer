@@ -55,14 +55,31 @@ public:
         return r * ((1.0 - t) * v0 + t * v1);
     }
 
+    void set_anamorphic(double squeeze) { anamorphic = squeeze; }
+    double get_anamorphic() const { return anamorphic; }
+    void set_distortion(double dist) { distortion = dist; }
+    double get_distortion() const { return distortion; }
+
     ray get_ray(double s, double t) const {
+        double cur_s = s;
+        double cur_t = t;
+        if (distortion != 0.0) {
+            double ds = s - 0.5;
+            double dt = t - 0.5;
+            double r2 = ds * ds + dt * dt;
+            cur_s = 0.5 + ds * (1.0 + distortion * r2);
+            cur_t = 0.5 + dt * (1.0 + distortion * r2);
+        }
         vec3 rd = lens_radius * ((blades >= 3) ? random_in_polygon(blades) : random_in_unit_disk());
+        if (anamorphic > 0.0 && anamorphic != 1.0) {
+            rd = vec3(rd.x() / anamorphic, rd.y(), rd.z());
+        }
         vec3 offset = u * rd.x() + v * rd.y();
         // Closed shutter draws no RNG: default stream bit-exact.
         double tm = (shutter1 > shutter0) ? shutter0 + random_double() * (shutter1 - shutter0)
                                           : shutter0;
         return ray(origin + offset,
-                   lower_left + s * horizontal + t * vertical - origin - offset, tm);
+                   lower_left + cur_s * horizontal + cur_t * vertical - origin - offset, tm);
     }
 
     void set_shutter(double t0, double t1) {
@@ -85,5 +102,7 @@ private:
     vec3 origin, lower_left, horizontal, vertical, u, v, w;
     double lens_radius = 0;
     int blades = 0; // 0 = circular disk, >= 3 = regular N-gon iris
+    double anamorphic = 1.0; // 1.0 = spherical, >1.0 = anamorphic squeeze
+    double distortion = 0.0; // 0.0 = rectilinear, >0 = barrel, <0 = pincushion
     double shutter0 = 0, shutter1 = 0;
 };

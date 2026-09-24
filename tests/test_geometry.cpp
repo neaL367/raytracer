@@ -8,7 +8,10 @@
 #include "geometry/sphere.h"
 #include "geometry/triangle.h"
 #include "geometry/quad.h"
+#include "geometry/disk.h"
+#include "geometry/cylinder.h"
 #include "geometry/volume.h"
+#include "io/bloom.h"
 #include "accel/bvh.h"
 #include "accel/qbvh.h"
 #include "accel/qbvh_flat.h"
@@ -732,6 +735,64 @@ static void t_nesting() {
     EXPECT_NEAR(rec.nest_eta, 0);
 }
 
+static void t_disk_cylinder_bloom() {
+    test_current = "disk_cylinder_bloom";
+    auto mat = std::make_shared<lambertian>(vec3(0.8, 0.2, 0.2));
+
+    // 1. Disk hit & miss test
+    disk d(vec3(0, 0, -2), vec3(0, 0, 1), 1.0, mat, 0.2); // radius 1.0, inner hole 0.2
+    hit_record rec;
+    // Direct center hit should miss because inner radius is 0.2
+    EXPECT_TRUE(!d.hit(ray(vec3(0, 0, 0), vec3(0, 0, -1)), 0.001, 100.0, rec));
+    // Hit at r = 0.5 should hit
+    EXPECT_TRUE(d.hit(ray(vec3(0.5, 0, 0), vec3(0, 0, -1)), 0.001, 100.0, rec));
+    EXPECT_NEAR(rec.t, 2.0);
+    EXPECT_NEAR(rec.normal.z(), 1.0);
+    EXPECT_TRUE(rec.u >= 0.0 && rec.u <= 1.0);
+    EXPECT_TRUE(rec.v >= 0.0 && rec.v <= 1.0);
+    // Hit at r = 1.5 should miss (outside radius)
+    EXPECT_TRUE(!d.hit(ray(vec3(1.5, 0, 0), vec3(0, 0, -1)), 0.001, 100.0, rec));
+
+    aabb dbox;
+    EXPECT_TRUE(d.bounding_box(dbox));
+    EXPECT_TRUE(dbox.minimum.z() <= -2.0 && dbox.maximum.z() >= -2.0);
+    EXPECT_TRUE(d.area() > 0.0);
+
+    // 2. Finite capped cylinder test
+    cylinder cyl(vec3(0, 0, 0), vec3(0, 2, 0), 0.5, mat, true);
+    // Hit curved body from side
+    EXPECT_TRUE(cyl.hit(ray(vec3(2, 1, 0), vec3(-1, 0, 0)), 0.001, 100.0, rec));
+    EXPECT_NEAR(rec.t, 1.5);
+    EXPECT_NEAR(rec.point.x(), 0.5);
+    EXPECT_NEAR(rec.normal.x(), 1.0);
+    EXPECT_NEAR(rec.normal.y(), 0.0);
+
+    // Hit top cap from above
+    EXPECT_TRUE(cyl.hit(ray(vec3(0.2, 4, 0), vec3(0, -1, 0)), 0.001, 100.0, rec));
+    EXPECT_NEAR(rec.t, 2.0);
+    EXPECT_NEAR(rec.point.y(), 2.0);
+    EXPECT_NEAR(rec.normal.y(), 1.0);
+
+    // Ray passing completely outside cylinder
+    EXPECT_TRUE(!cyl.hit(ray(vec3(2, 1, 2), vec3(-1, 0, 0)), 0.001, 100.0, rec));
+
+    aabb cbox;
+    EXPECT_TRUE(cyl.bounding_box(cbox));
+    EXPECT_TRUE(cbox.minimum.y() <= 0.0 && cbox.maximum.y() >= 2.0);
+
+    // 3. Bloom filter test
+    int bw = 8, bh = 8;
+    std::vector<vec3> test_hdr(bw * bh, vec3(0, 0, 0));
+    test_hdr[4 * bw + 4] = vec3(10.0, 10.0, 10.0); // Bright center highlight
+    std::vector<vec3> bloomed = bloom::apply_bloom(test_hdr, bw, bh, 1.0, 0.2);
+    EXPECT_TRUE(bloomed.size() == test_hdr.size());
+    // Center pixel should be >= original
+    EXPECT_TRUE(bloomed[4 * bw + 4].x() >= 10.0);
+    // Neighbor pixels should now receive bloom flare > 0
+    EXPECT_TRUE(bloomed[4 * bw + 3].x() > 0.0);
+    EXPECT_TRUE(bloomed[3 * bw + 4].x() > 0.0);
+}
+
 void run_geometry_tests() {
     t_sphere();
     t_list();
@@ -752,4 +813,5 @@ void run_geometry_tests() {
     t_transmit();
     t_tangents();
     t_nesting();
+    t_disk_cylinder_bloom();
 }

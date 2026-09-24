@@ -44,11 +44,14 @@ public:
         return unit_vector(cross(forward_dir(), vec3(0, 1, 0)));
     }
 
-    camera build_camera(double aspect, double aperture = 0.0, double focus_dist = 1.0, int blades = 0) const {
+    camera build_camera(double aspect, double aperture = 0.0, double focus_dist = 1.0, int blades = 0,
+                        double anamorphic = 1.0, double distortion = 0.0) const {
         vec3 fwd = forward_dir();
         vec3 target = eye + fwd * focus_dist;
         camera c(eye, target, vec3(0, 1, 0), vfov, aspect, aperture, focus_dist);
         c.set_blades(blades);
+        c.set_anamorphic(anamorphic);
+        c.set_distortion(distortion);
         return c;
     }
 

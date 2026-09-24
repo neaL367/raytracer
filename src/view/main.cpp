@@ -33,6 +33,7 @@
 #include "io/compare.h"
 #include "io/ppm_image.h"
 #include "io/denoise.h"
+#include "io/bloom.h"
 
 #include <SDL3/SDL.h>
 
@@ -260,7 +261,9 @@ int run_interactive_renderer(int argc, char **argv) {
     fly_cam.init_from_camera(sdata.cam, initial_vfov);
     double focus_dist = 4.0;
     int blades = 0;
-    camera active_cam = fly_cam.build_camera(aspect, aperture, focus_dist, blades);
+    double anamorphic = 1.0;
+    double distortion = 0.0;
+    camera active_cam = fly_cam.build_camera(aspect, aperture, focus_dist, blades, anamorphic, distortion);
 
     // Build CPU QBVH
     std::cout << "rt_view: Building CPU QBVH acceleration structure (" << sdata.objs.size() << " primitives)...\n";
@@ -291,7 +294,8 @@ int run_interactive_renderer(int argc, char **argv) {
             gpu_scene &gscene = flat.gs;
             gscene.cam = gpu_cam_from_cpu(active_cam.eye(), active_cam.corner(),
                                           active_cam.span_u(), active_cam.span_v(),
-                                          active_cam.lens_r(), blades);
+                                          active_cam.lens_r(), blades,
+                                          anamorphic, distortion);
 
             std::vector<int> img_table;
             std::vector<float> img_blob;
@@ -409,6 +413,7 @@ int run_interactive_renderer(int argc, char **argv) {
     bool temporal_smooth = true;
     bool live_denoise = false;
     bool optical_vignette = false;
+    bool bloom_enabled = false;
     double color_temp = 0.0;
 
     unsigned num_threads = std::max(1u, std::thread::hardware_concurrency());
@@ -429,12 +434,16 @@ int run_interactive_renderer(int argc, char **argv) {
               << "  Right Drag/F : Mouse Look / Toggle Cursor Lock\n"
               << "  Mouse Wheel  : Adjust flight speed (current: " << fly_cam.speed << ")\n"
               << "  Mid Click/F4 : Click-to-Focus / Center Autofocus (sets focal plane)\n"
+              << "  Alt + Left   : Material & Object Inspector (queries primitive under cursor)\n"
               << "  U / I / O    : Adjust Aperture (U: -0.02, I: +0.02, O: Toggle pinhole/bokeh)\n"
               << "  K / L        : Adjust Focus Distance (K: -0.2m, L: +0.2m)\n"
               << "  B            : Toggle Bokeh Iris Shape (Circular <-> 6-Blade Hexagon)\n"
+              << "  J            : Toggle Anamorphic Lens Squeeze (1.0x Spherical <-> 2.0x Oval)\n"
+              << "  Y            : Toggle Radial Lens Distortion (0.0 Rectilinear <-> 0.20 Barrel)\n"
               << "  Z            : Toggle Temporal Motion Smoothing [ON/OFF]\n"
-              << "  D            : Toggle Live Bilateral AOV Denoiser [ON/OFF]\n"
+              << "  N            : Toggle Live Bilateral AOV Denoiser [ON/OFF]\n"
               << "  V            : Toggle Optical Vignetting [ON/OFF]\n"
+              << "  M            : Toggle Multi-Scale Bloom & Optical Glare [ON/OFF]\n"
               << "  ; / ' / /    : Color Temperature ( ; Cooler, ' Warmer, / Reset )\n"
               << "  1 - 4        : Camera bookmarks (Bunny, Crystals, Disney, Wide)\n"
               << "  F1 - F3      : Display Mode (F1: Beauty, F2: Albedo AOV, F3: Normal AOV)\n"
@@ -521,6 +530,19 @@ int run_interactive_renderer(int argc, char **argv) {
                 } else if (e.key.key == SDLK_V) {
                     optical_vignette = !optical_vignette;
                     std::cout << "rt_view: Optical Vignetting [" << (optical_vignette ? "ON" : "OFF") << "]\n";
+                } else if (e.key.key == SDLK_M) {
+                    bloom_enabled = !bloom_enabled;
+                    std::cout << "rt_view: Multi-Scale Bloom & Optical Glare [" << (bloom_enabled ? "ON" : "OFF") << "]\n";
+                } else if (e.key.key == SDLK_J) {
+                    anamorphic = (anamorphic == 1.0) ? 2.0 : 1.0;
+                    std::cout << "rt_view: Anamorphic Squeeze = " << anamorphic << "x ["
+                              << (anamorphic > 1.0 ? "2.0x Oval Bokeh" : "1.0x Spherical") << "]\n";
+                    cam_moved = true;
+                } else if (e.key.key == SDLK_Y) {
+                    distortion = (distortion == 0.0) ? 0.20 : 0.0;
+                    std::cout << "rt_view: Lens Distortion = " << distortion << " ["
+                              << (distortion != 0.0 ? "0.20 Barrel" : "0.0 Rectilinear") << "]\n";
+                    cam_moved = true;
                 } else if (e.key.key == SDLK_SEMICOLON) {
                     color_temp = std::max(-0.4, color_temp - 0.05);
                     std::cout << "rt_view: Color Temperature = " << color_temp << " (Cooler)\n";
@@ -598,8 +620,11 @@ int run_interactive_renderer(int argc, char **argv) {
                               << " U / I / O    : Adjust Aperture (U: -0.02, I: +0.02, O: Toggle pinhole/bokeh)\n"
                               << " K / L        : Adjust Focus Distance (K: -0.2m, L: +0.2m)\n"
                               << " B            : Toggle Bokeh Iris Shape (Hexagonal 6-Blade vs Circular)\n"
+                              << " J            : Toggle Anamorphic Lens Squeeze (1.0x vs 2.0x Oval Bokeh)\n"
+                              << " Y            : Toggle Lens Radial Distortion (0.0 Rectilinear vs 0.20 Barrel)\n"
                               << " N            : Toggle Live Bilateral AOV Denoising\n"
                               << " V            : Toggle Optical Vignetting\n"
+                              << " M            : Toggle Multi-Scale Bloom & Optical Glare\n"
                               << " ; / ' / /    : Color Temperature (Cooler / Warmer / Reset to 0.0)\n"
                               << " Z            : Toggle Temporal Motion Smoothing [ON/OFF]\n"
                               << " 1 - 4        : Camera bookmarks (Bunny / Crystals / Disney / Wide)\n"
@@ -654,6 +679,30 @@ int run_interactive_renderer(int argc, char **argv) {
                     } else {
                         std::cout << "rt_view: [Click-to-Focus] Missed geometry (infinity)\n";
                     }
+                } else if (e.button.button == SDL_BUTTON_LEFT && (SDL_GetModState() & SDL_KMOD_ALT)) {
+                    int mx = std::clamp((int)e.button.x / scale, 0, W - 1);
+                    int my = std::clamp((int)e.button.y / scale, 0, H - 1);
+                    double u = (mx + 0.5) / (double)W;
+                    double v = (H - 1 - my + 0.5) / (double)H;
+                    camera probe_cam = fly_cam.build_camera(aspect, 0.0, 1.0);
+                    ray probe_r = probe_cam.get_ray(u, v);
+                    hit_record probe_rec;
+                    if (world.hit(probe_r, 1e-4, 1e30, probe_rec)) {
+                        std::cout << "\n=== [Object Inspector] ===\n"
+                                  << "  Screen Pixel   : (" << mx << ", " << my << ")\n"
+                                  << "  Hit Distance   : " << probe_rec.t << " m\n"
+                                  << "  World Position : (" << probe_rec.point.x() << ", "
+                                  << probe_rec.point.y() << ", " << probe_rec.point.z() << ")\n"
+                                  << "  Shading Normal : (" << probe_rec.normal.x() << ", "
+                                  << probe_rec.normal.y() << ", " << probe_rec.normal.z() << ")\n"
+                                  << "  Geo Normal     : (" << probe_rec.geo_normal.x() << ", "
+                                  << probe_rec.geo_normal.y() << ", " << probe_rec.geo_normal.z() << ")\n"
+                                  << "  Surface UV     : (" << probe_rec.u << ", " << probe_rec.v << ")\n"
+                                  << "  Primitive Ptr  : " << probe_rec.hit_prim << "\n"
+                                  << "  Material Ptr   : " << probe_rec.mat.get() << "\n\n";
+                    } else {
+                        std::cout << "rt_view: [Object Inspector] Missed geometry (background / sky)\n";
+                    }
                 }
             } else if (e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
                 if (e.button.button == SDL_BUTTON_RIGHT) {
@@ -694,11 +743,12 @@ int run_interactive_renderer(int argc, char **argv) {
         if (cam_moved) {
             accum_spp = 0;
             std::fill(accum_fb.begin(), accum_fb.end(), vec3(0, 0, 0));
-            active_cam = fly_cam.build_camera(aspect, aperture, focus_dist, blades);
+            active_cam = fly_cam.build_camera(aspect, aperture, focus_dist, blades, anamorphic, distortion);
             if (gpu.has_scene) {
                 GPUCam gcam = gpu_cam_from_cpu(active_cam.eye(), active_cam.corner(),
                                                active_cam.span_u(), active_cam.span_v(),
-                                               active_cam.lens_r(), blades);
+                                               active_cam.lens_r(), blades,
+                                               anamorphic, distortion);
                 gpu_update_camera(gpu, &gcam, sizeof(gcam));
             }
         }
@@ -750,6 +800,8 @@ int run_interactive_renderer(int argc, char **argv) {
                 beauty_hdr[i] = accum_fb[i] * inv_spp;
             if (live_denoise && accum_spp >= 2)
                 beauty_hdr = bilateral_denoise(beauty_hdr, W, H, 1.5, 0.15);
+            if (bloom_enabled)
+                beauty_hdr = bloom::apply_bloom(beauty_hdr, W, H, 1.0, 0.08);
             double half_w = W * 0.5, half_h = H * 0.5;
             for (int y = 0; y < H; ++y) {
                 double dy = (y - half_h) / half_h;
@@ -851,14 +903,16 @@ int run_interactive_renderer(int argc, char **argv) {
             const char *mode_str = (view_mode == ViewMode::BEAUTY) ? "Beauty" :
                                    (view_mode == ViewMode::ALBEDO) ? "Albedo AOV" : "Normal AOV";
             std::snprintf(title_buf, sizeof(title_buf),
-                          "rt_view [%s] %s | %s%s | SPP: %d | %.1f FPS (%.1f ms) | Ap: %.2f | Foc: %.2fm | TS: %s | Bokeh: %s | Den: %s | Vig: %s",
+                          "rt_view [%s] %s | %s%s | SPP: %d | %.1f FPS (%.1f ms) | Ap: %.2f | Foc: %.2fm | TS: %s | Bokeh: %s | Den: %s | Vig: %s | Bloom: %s | Anam: %.1fx",
                           use_gpu ? "GPU" : "CPU", scene_name.c_str(), mode_str,
                           accum_paused ? " [PAUSED]" : "", accum_spp,
                           current_fps, current_ms, aperture, focus_dist,
                           temporal_smooth ? "ON" : "OFF",
                           (blades >= 3 ? "Hex" : "Circ"),
                           (live_denoise ? "ON" : "OFF"),
-                          (optical_vignette ? "ON" : "OFF"));
+                          (optical_vignette ? "ON" : "OFF"),
+                          (bloom_enabled ? "ON" : "OFF"),
+                          anamorphic);
             SDL_SetWindowTitle(win, title_buf);
         }
     }

@@ -104,7 +104,7 @@ inline GPUCam build_gpu_camera(int W, int H, const std::string &name,
 // Needs camera/camera.h (included by the caller, not here).
 inline GPUCam gpu_cam_from_cpu(const vec3 &origin, const vec3 &lower_left,
                                const vec3 &horiz, const vec3 &vert, double lens_radius,
-                               int blades = 0) {
+                               int blades = 0, double anamorphic = 1.0, double distortion = 0.0) {
     GPUCam cam = {};
     cam.o[0] = (float)origin.x();
     cam.o[1] = (float)origin.y();
@@ -120,5 +120,7 @@ inline GPUCam gpu_cam_from_cpu(const vec3 &origin, const vec3 &lower_left,
     cam.v[2] = (float)vert.z();
     cam.lens[0] = (float)lens_radius;
     cam.lens[1] = (float)blades;
+    cam.lens[2] = (float)anamorphic;
+    cam.lens[3] = (float)distortion;
     return cam;
 }
