@@ -4,6 +4,12 @@ project(raytracer LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+if(MSVC)
+    add_compile_options(/arch:AVX2)
+else()
+    add_compile_options(-mavx2)
+endif()
+
 add_executable(raytracer src/app/main.cpp src/io/stb_image.cpp)
 target_include_directories(raytracer PRIVATE src external)
 if(MSVC)

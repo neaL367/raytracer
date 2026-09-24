@@ -7,7 +7,10 @@
 #include <memory>
 #include <vector>
 
-#if defined(_M_X64) || defined(_M_AMD64) || defined(__SSE2__) || defined(__x86_64__)
+#if defined(__AVX2__)
+#define QBVH_AVX2 1
+#include <immintrin.h>
+#elif defined(_M_X64) || defined(_M_AMD64) || defined(__SSE2__) || defined(__x86_64__)
 #define QBVH_SSE2 1
 #include <emmintrin.h>
 #endif
@@ -216,7 +219,34 @@ private:
     // Entry distances are the narrowed t_min values already computed by the
     // slab test, so callers can sort slots without repeating box tests.
     unsigned box_mask(const ray &r, double t_min, double t_max, double entry[4]) const {
-#ifdef QBVH_SSE2
+#if defined(QBVH_AVX2)
+        const vec3 &o = r.origin();
+        const vec3 &inv = r.inv_direction();
+        const __m256d o4[3] = { _mm256_set1_pd(o.x()), _mm256_set1_pd(o.y()), _mm256_set1_pd(o.z()) };
+        const __m256d iv[3] = { _mm256_set1_pd(inv.x()), _mm256_set1_pd(inv.y()), _mm256_set1_pd(inv.z()) };
+        const bool inv_neg[3] = { inv.x() < 0.0, inv.y() < 0.0, inv.z() < 0.0 };
+        const double *mns[3] = {mnx, mny, mnz};
+        const double *mxs[3] = {mxx, mxy, mxz};
+        __m256d tmn = _mm256_set1_pd(t_min);
+        __m256d tmx = _mm256_set1_pd(t_max);
+        for (int a = 0; a < 3; ++a) {
+            __m256d lo = _mm256_loadu_pd(mns[a]);
+            __m256d hi = _mm256_loadu_pd(mxs[a]);
+            if (inv_neg[a]) {
+                __m256d t = lo;
+                lo = hi;
+                hi = t;
+            }
+            __m256d t0 = _mm256_mul_pd(_mm256_sub_pd(lo, o4[a]), iv[a]);
+            __m256d t1 = _mm256_mul_pd(_mm256_sub_pd(hi, o4[a]), iv[a]);
+            __m256d gt0 = _mm256_cmp_pd(t0, tmn, _CMP_GT_OQ);
+            tmn = _mm256_blendv_pd(tmn, t0, gt0);
+            __m256d lt1 = _mm256_cmp_pd(t1, tmx, _CMP_LT_OQ);
+            tmx = _mm256_blendv_pd(tmx, t1, lt1);
+        }
+        _mm256_storeu_pd(entry, tmn);
+        return (unsigned)_mm256_movemask_pd(_mm256_cmp_pd(tmx, tmn, _CMP_GT_OQ)) & 0xF;
+#elif defined(QBVH_SSE2)
         const vec3 &o = r.origin();
         const vec3 &inv = r.inv_direction();
         const __m128d o4[3] = { _mm_set1_pd(o.x()), _mm_set1_pd(o.y()), _mm_set1_pd(o.z()) };
