@@ -257,7 +257,8 @@ int run_interactive_renderer(int argc, char **argv) {
     if (scene_name == "default") initial_vfov = 20.0;
     fly_camera fly_cam;
     fly_cam.init_from_camera(sdata.cam, initial_vfov);
-    camera active_cam = fly_cam.build_camera(aspect, aperture);
+    double focus_dist = 4.0;
+    camera active_cam = fly_cam.build_camera(aspect, aperture, focus_dist);
 
     // Build CPU QBVH
     std::cout << "rt_view: Building CPU QBVH acceleration structure (" << sdata.objs.size() << " primitives)...\n";
@@ -396,12 +397,14 @@ int run_interactive_renderer(int argc, char **argv) {
     // Buffers for progressive accumulation and AOV inspection
     std::vector<vec3> accum_fb((size_t)W * H, vec3(0, 0, 0));
     std::vector<uint8_t> display_rgb((size_t)W * H * 3, 0);
+    std::vector<uint8_t> prev_display_rgb((size_t)W * H * 3, 0);
     std::vector<float> aov_alb((size_t)W * H * 4, 0.0f);
     std::vector<float> aov_nrm((size_t)W * H * 4, 0.0f);
     int accum_spp = 0;
     bool use_aces = true;
     bool relative_mouse = false;
     bool right_mouse_down = false;
+    bool temporal_smooth = true;
 
     unsigned num_threads = std::max(1u, std::thread::hardware_concurrency());
 
@@ -420,6 +423,10 @@ int run_interactive_renderer(int argc, char **argv) {
               << "  Shift / Ctrl : Sprint (3x) / Sneak (0.25x precision)\n"
               << "  Right Drag/F : Mouse Look / Toggle Cursor Lock\n"
               << "  Mouse Wheel  : Adjust flight speed (current: " << fly_cam.speed << ")\n"
+              << "  Mid Click/F4 : Click-to-Focus / Center Autofocus (sets focal plane)\n"
+              << "  U / I / O    : Adjust Aperture (U: -0.02, I: +0.02, O: Toggle pinhole/bokeh)\n"
+              << "  K / L        : Adjust Focus Distance (K: -0.2m, L: +0.2m)\n"
+              << "  Z            : Toggle Temporal Motion Smoothing [ON/OFF]\n"
               << "  1 - 4        : Camera bookmarks (Bunny, Crystals, Disney, Wide)\n"
               << "  F1 - F3      : Display Mode (F1: Beauty, F2: Albedo AOV, F3: Normal AOV)\n"
               << "  X            : Toggle Accumulation Pause / Resume\n"
@@ -472,8 +479,43 @@ int run_interactive_renderer(int argc, char **argv) {
                 } else if (e.key.key == SDLK_RIGHTBRACKET) {
                     exposure = std::min(50.0, exposure * 1.25);
                     std::cout << "rt_view: Exposure = " << exposure << "\n";
+                } else if (e.key.key == SDLK_U) {
+                    aperture = std::max(0.0, aperture - 0.02);
+                    std::cout << "rt_view: Aperture = " << aperture << " (Focal Dist = " << focus_dist << "m)\n";
+                    cam_moved = true;
+                } else if (e.key.key == SDLK_I) {
+                    aperture = std::min(1.0, aperture + 0.02);
+                    std::cout << "rt_view: Aperture = " << aperture << " (Focal Dist = " << focus_dist << "m)\n";
+                    cam_moved = true;
+                } else if (e.key.key == SDLK_O) {
+                    aperture = (aperture <= 0.001) ? 0.08 : 0.0;
+                    std::cout << "rt_view: Aperture toggled to = " << aperture << "\n";
+                    cam_moved = true;
+                } else if (e.key.key == SDLK_K) {
+                    focus_dist = std::max(0.1, focus_dist - 0.2);
+                    std::cout << "rt_view: Focus Distance = " << focus_dist << "m (Aperture = " << aperture << ")\n";
+                    cam_moved = true;
+                } else if (e.key.key == SDLK_L) {
+                    focus_dist = std::min(50.0, focus_dist + 0.2);
+                    std::cout << "rt_view: Focus Distance = " << focus_dist << "m (Aperture = " << aperture << ")\n";
+                    cam_moved = true;
+                } else if (e.key.key == SDLK_Z) {
+                    temporal_smooth = !temporal_smooth;
+                    std::cout << "rt_view: Temporal Motion Smoothing [" << (temporal_smooth ? "ON" : "OFF") << "]\n";
+                } else if (e.key.key == SDLK_F4) {
+                    double u = 0.5, v = 0.5;
+                    camera probe_cam = fly_cam.build_camera(aspect, 0.0, 1.0);
+                    ray probe_r = probe_cam.get_ray(u, v);
+                    hit_record probe_rec;
+                    if (world.hit(probe_r, 1e-4, 1e30, probe_rec)) {
+                        focus_dist = std::max(0.05, probe_rec.t);
+                        std::cout << "rt_view: [Autofocus Center] Locked target at dist = " << focus_dist
+                                  << " m | Aperture: " << aperture << "\n";
+                        cam_moved = true;
+                    }
                 } else if (e.key.key == SDLK_R) {
                     fly_cam.init_from_camera(sdata.cam, initial_vfov);
+                    focus_dist = 4.0;
                     cam_moved = true;
                     std::cout << "rt_view: Camera reset to origin.\n";
                 } else if (e.key.key == SDLK_1) {
@@ -481,26 +523,30 @@ int run_interactive_renderer(int argc, char **argv) {
                     fly_cam.yaw = -90.0;
                     fly_cam.pitch = -10.0;
                     fly_cam.vfov = 38.0;
+                    focus_dist = 1.05;
                     cam_moved = true;
-                    std::cout << "rt_view: [Bookmark 1] Focus on Centerpiece Stanford Bunny\n";
+                    std::cout << "rt_view: [Bookmark 1] Focus on Centerpiece Stanford Bunny (dist=" << focus_dist << "m)\n";
                 } else if (e.key.key == SDLK_2) {
                     fly_cam.eye = vec3(0.0, 0.30, 1.35);
                     fly_cam.yaw = -90.0;
                     fly_cam.pitch = -9.0;
                     fly_cam.vfov = 44.0;
+                    focus_dist = 1.45;
                     cam_moved = true;
-                    std::cout << "rt_view: [Bookmark 2] Focus on Soap Bubble & Cauchy Crystal Pair\n";
+                    std::cout << "rt_view: [Bookmark 2] Focus on Soap Bubble & Cauchy Crystal Pair (dist=" << focus_dist << "m)\n";
                 } else if (e.key.key == SDLK_3) {
                     fly_cam.eye = vec3(0.0, 0.15, 1.85);
                     fly_cam.yaw = -90.0;
                     fly_cam.pitch = -6.0;
                     fly_cam.vfov = 52.0;
+                    focus_dist = 2.30;
                     cam_moved = true;
-                    std::cout << "rt_view: [Bookmark 3] Focus on Disney Car Paint & Velvet Flanks\n";
+                    std::cout << "rt_view: [Bookmark 3] Focus on Disney Car Paint & Velvet Flanks (dist=" << focus_dist << "m)\n";
                 } else if (e.key.key == SDLK_4) {
                     fly_cam.init_from_camera(sdata.cam, initial_vfov);
+                    focus_dist = 4.0;
                     cam_moved = true;
-                    std::cout << "rt_view: [Bookmark 4] Wide Studio Masterpiece View\n";
+                    std::cout << "rt_view: [Bookmark 4] Wide Studio Masterpiece View (dist=" << focus_dist << "m)\n";
                 } else if (e.key.key == SDLK_F1) {
                     view_mode = ViewMode::BEAUTY;
                     std::cout << "rt_view: Display mode [F1: Beauty]\n";
@@ -515,20 +561,24 @@ int run_interactive_renderer(int argc, char **argv) {
                     std::cout << "rt_view: Accumulation " << (accum_paused ? "[PAUSED]" : "[RESUMED]") << "\n";
                 } else if (e.key.key == SDLK_H) {
                     std::cout << "\n=== rt_view Interactive Controls ===\n"
-                              << " WASD       : Fly forward / backward / strafe left / right\n"
-                              << " Space / C  : Fly vertically up / down (also E / Q)\n"
-                              << " Shift/Ctrl : Sprint 3x / Sneak 0.25x precision\n"
-                              << " Right Drag : Look around (pitch & yaw)\n"
-                              << " F          : Toggle captured mouse look mode\n"
-                              << " 1 - 4      : Camera bookmarks (Bunny / Crystals / Disney / Wide)\n"
-                              << " F1 - F3    : Display Mode (F1: Beauty, F2: Albedo AOV, F3: Normal AOV)\n"
-                              << " X          : Toggle Accumulation Pause / Resume\n"
-                              << " G          : Toggle GPU compute vs CPU multi-threading\n"
-                              << " T          : Toggle ACES film tonemapping vs Linear/sRGB\n"
-                              << " [ / ]      : Exposure decrease / increase\n"
-                              << " R          : Reset camera to origin\n"
-                              << " P / F12    : Save viewport snapshot to out/viewport.ppm\n"
-                              << " Esc        : Exit viewport\n\n";
+                              << " WASD         : Fly forward / backward / strafe left / right\n"
+                              << " Space / C    : Fly vertically up / down (also E / Q)\n"
+                              << " Shift/Ctrl   : Sprint 3x / Sneak 0.25x precision\n"
+                              << " Right Drag   : Look around (pitch & yaw)\n"
+                              << " F            : Toggle captured mouse look mode\n"
+                              << " Mid Click/F4 : Click-to-Focus / Center Autofocus (sets focal plane)\n"
+                              << " U / I / O    : Adjust Aperture (U: -0.02, I: +0.02, O: Toggle pinhole/bokeh)\n"
+                              << " K / L        : Adjust Focus Distance (K: -0.2m, L: +0.2m)\n"
+                              << " Z            : Toggle Temporal Motion Smoothing [ON/OFF]\n"
+                              << " 1 - 4        : Camera bookmarks (Bunny / Crystals / Disney / Wide)\n"
+                              << " F1 - F3      : Display Mode (F1: Beauty, F2: Albedo AOV, F3: Normal AOV)\n"
+                              << " X            : Toggle Accumulation Pause / Resume\n"
+                              << " G            : Toggle GPU compute vs CPU multi-threading\n"
+                              << " T            : Toggle ACES film tonemapping vs Linear/sRGB\n"
+                              << " [ / ]        : Exposure decrease / increase\n"
+                              << " R            : Reset camera to origin\n"
+                              << " P / F12      : Save viewport snapshot to out/viewport.ppm\n"
+                              << " Esc          : Exit viewport\n\n";
                 } else if (e.key.key == SDLK_P || e.key.key == SDLK_F12) {
                     std::cout << "\n// Camera Snapshot (SPP: " << accum_spp << "):\n"
                               << "vec3 lookfrom(" << fly_cam.eye.x() << ", "
@@ -537,6 +587,8 @@ int run_interactive_renderer(int argc, char **argv) {
                               << (fly_cam.eye + fly_cam.forward_dir()).y() << ", "
                               << (fly_cam.eye + fly_cam.forward_dir()).z() << ");\n"
                               << "double vfov = " << fly_cam.vfov << ";\n"
+                              << "double focus_dist = " << focus_dist << ";\n"
+                              << "double aperture = " << aperture << ";\n"
                               << "// yaw = " << fly_cam.yaw << ", pitch = " << fly_cam.pitch << "\n";
 
                     std::filesystem::create_directories("out");
@@ -553,6 +605,23 @@ int run_interactive_renderer(int argc, char **argv) {
                 if (e.button.button == SDL_BUTTON_RIGHT) {
                     right_mouse_down = true;
                     SDL_SetWindowRelativeMouseMode(win, true);
+                } else if (e.button.button == SDL_BUTTON_MIDDLE ||
+                           (e.button.button == SDL_BUTTON_LEFT && (SDL_GetModState() & SDL_KMOD_CTRL))) {
+                    int mx = std::clamp((int)e.button.x / scale, 0, W - 1);
+                    int my = std::clamp((int)e.button.y / scale, 0, H - 1);
+                    double u = (mx + 0.5) / (double)W;
+                    double v = (H - 1 - my + 0.5) / (double)H;
+                    camera probe_cam = fly_cam.build_camera(aspect, 0.0, 1.0);
+                    ray probe_r = probe_cam.get_ray(u, v);
+                    hit_record probe_rec;
+                    if (world.hit(probe_r, 1e-4, 1e30, probe_rec)) {
+                        focus_dist = std::max(0.05, probe_rec.t);
+                        std::cout << "rt_view: [Click-to-Focus] Locked target at (" << mx << ", " << my
+                                  << ") -> dist = " << focus_dist << " m | Aperture: " << aperture << "\n";
+                        cam_moved = true;
+                    } else {
+                        std::cout << "rt_view: [Click-to-Focus] Missed geometry (infinity)\n";
+                    }
                 }
             } else if (e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
                 if (e.button.button == SDL_BUTTON_RIGHT) {
@@ -593,7 +662,7 @@ int run_interactive_renderer(int argc, char **argv) {
         if (cam_moved) {
             accum_spp = 0;
             std::fill(accum_fb.begin(), accum_fb.end(), vec3(0, 0, 0));
-            active_cam = fly_cam.build_camera(aspect, aperture);
+            active_cam = fly_cam.build_camera(aspect, aperture, focus_dist);
             if (gpu.has_scene) {
                 GPUCam gcam = gpu_cam_from_cpu(active_cam.eye(), active_cam.corner(),
                                                active_cam.span_u(), active_cam.span_v(),
@@ -650,10 +719,20 @@ int run_interactive_renderer(int argc, char **argv) {
                                     : vec3(srgb_encode(hdr.x() * exposure),
                                            srgb_encode(hdr.y() * exposure),
                                            srgb_encode(hdr.z() * exposure));
-                display_rgb[i * 3 + 0] = (uint8_t)(std::clamp(ldr.x(), 0.0, 1.0) * 255.999);
-                display_rgb[i * 3 + 1] = (uint8_t)(std::clamp(ldr.y(), 0.0, 1.0) * 255.999);
-                display_rgb[i * 3 + 2] = (uint8_t)(std::clamp(ldr.z(), 0.0, 1.0) * 255.999);
+                uint8_t r = (uint8_t)(std::clamp(ldr.x(), 0.0, 1.0) * 255.999);
+                uint8_t g = (uint8_t)(std::clamp(ldr.y(), 0.0, 1.0) * 255.999);
+                uint8_t b = (uint8_t)(std::clamp(ldr.z(), 0.0, 1.0) * 255.999);
+                if (temporal_smooth && accum_spp <= 2 && prev_display_rgb[i * 3 + 0] != 0) {
+                    display_rgb[i * 3 + 0] = (uint8_t)(0.40f * r + 0.60f * prev_display_rgb[i * 3 + 0]);
+                    display_rgb[i * 3 + 1] = (uint8_t)(0.40f * g + 0.60f * prev_display_rgb[i * 3 + 1]);
+                    display_rgb[i * 3 + 2] = (uint8_t)(0.40f * b + 0.60f * prev_display_rgb[i * 3 + 2]);
+                } else {
+                    display_rgb[i * 3 + 0] = r;
+                    display_rgb[i * 3 + 1] = g;
+                    display_rgb[i * 3 + 2] = b;
+                }
             }
+            prev_display_rgb = display_rgb;
         } else if (view_mode == ViewMode::ALBEDO) {
             if (use_gpu && gpu.has_scene) {
                 gpu_read_aov(gpu, aov_alb, aov_nrm);
@@ -724,10 +803,11 @@ int run_interactive_renderer(int argc, char **argv) {
             const char *mode_str = (view_mode == ViewMode::BEAUTY) ? "Beauty" :
                                    (view_mode == ViewMode::ALBEDO) ? "Albedo AOV" : "Normal AOV";
             std::snprintf(title_buf, sizeof(title_buf),
-                          "rt_view [%s] %s | %s%s | %dx%d | SPP: %d | %.1f FPS (%.1f ms) | Eye: (%.2f, %.2f, %.2f) | Speed: %.1f",
+                          "rt_view [%s] %s | %s%s | SPP: %d | %.1f FPS (%.1f ms) | Ap: %.2f | Foc: %.2fm | TS: %s",
                           use_gpu ? "GPU" : "CPU", scene_name.c_str(), mode_str,
-                          accum_paused ? " [PAUSED]" : "", W, H, accum_spp,
-                          current_fps, current_ms, fly_cam.eye.x(), fly_cam.eye.y(), fly_cam.eye.z(), fly_cam.speed);
+                          accum_paused ? " [PAUSED]" : "", accum_spp,
+                          current_fps, current_ms, aperture, focus_dist,
+                          temporal_smooth ? "ON" : "OFF");
             SDL_SetWindowTitle(win, title_buf);
         }
     }

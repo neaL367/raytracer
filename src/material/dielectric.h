@@ -48,8 +48,9 @@ public:
             return scatter_smooth(in, rec, attenuation, scattered);
         // Walter microfacet BTDF: H ~ VNDF, reflect w.p. F else refract.
         // Choice probs cancel the Fresnel: both lobes weigh G2/G1(V) <= 1.
+        vec3 eff_n = resolve_normal(rec);
         onb frame;
-        frame.build_from_w(rec.normal);
+        frame.build_from_w(eff_n);
         vec3 V = unit_vector(-in.direction());
         vec3 Vl(dot(V, frame.u), dot(V, frame.v), dot(V, frame.w));
         double alpha = ggx::alpha_of(roughness);
@@ -70,10 +71,12 @@ public:
             F = (sinT2 > 1.0) ? 1.0 : reflectance(fmin(cosVH, 1.0), eta);
         }
         vec3 Ll;
+        bool is_refl = false;
         if (sinT2 > 1.0 || random_double() < F) {
             Ll = H * (2.0 * cosVH) - Vl; // reflect incident (-V) about H
             if (Ll.z() <= 0)
                 return false;
+            is_refl = true;
         } else {
             // Refract: L = eta*I + H*(eta*cosI - sqrt(k)), I = -V.
             double k = 1.0 - sinT2;
@@ -88,7 +91,11 @@ public:
         }
         double w = ggx::weight_ratio(alpha, Vl.z(), fabs(Ll.z()));
         attenuation = vec3(w, w, w); // glass absorbs nothing; weight <= 1
-        scattered = ray(rec.point, frame.local(Ll));
+        vec3 sc_dir = frame.local(Ll);
+        if (is_refl && rec.has_geo_normal && dot(sc_dir, rec.geo_normal) < 0.0) {
+            sc_dir = unit_vector(sc_dir - 2.0 * dot(sc_dir, rec.geo_normal) * rec.geo_normal);
+        }
+        scattered = ray(rec.point, sc_dir);
         return true;
     }
     // Legacy delta path: bit-exact pre-roughness behavior (roughness 0).
@@ -98,15 +105,18 @@ public:
         double iri = ior_at(spectrum::hero_channel());
         double ratio = rec.nest_set ? rec.nest_eta : (rec.front_face ? (1.0 / iri) : iri);
         vec3 unit = unit_vector(in.direction());
-        double cos_t = fmin(dot(-unit, rec.normal), 1.0);
+        vec3 eff_n = resolve_normal(rec);
+        double cos_t = fmin(dot(-unit, eff_n), 1.0);
         double sin_t = std::sqrt(1.0 - cos_t * cos_t);
         bool cannot_refract = ratio * sin_t > 1.0;
         double frefl = cannot_refract ? 1.0
                      : (film_d > 0) ? film_prob(cos_t, iri, rec.front_face)
                                     : reflectance(cos_t, ratio);
-        vec3 dir = (cannot_refract || frefl > random_double())
-                        ? reflect(unit, rec.normal)
-                        : refract(unit, rec.normal, ratio);
+        bool do_reflect = cannot_refract || (frefl > random_double());
+        vec3 dir = do_reflect ? reflect(unit, eff_n) : refract(unit, eff_n, ratio);
+        if (do_reflect && rec.has_geo_normal && dot(dir, rec.geo_normal) < 0.0) {
+            dir = unit_vector(dir - 2.0 * dot(dir, rec.geo_normal) * rec.geo_normal);
+        }
         scattered = ray(rec.point, dir);
         return true;
     }

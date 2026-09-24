@@ -70,6 +70,10 @@ Interactive real-time previewer with 6-DOF fly camera and progressive path traci
 - **Shift / Ctrl**: Sprint (3x speed) / Slow precision sneak (0.25x speed)
 - **Right Drag / F**: Look around (pitch & yaw) / Toggle captured mouse look
 - **Mouse Wheel**: Adjust movement speed
+- **Middle Click / F4**: Click-to-Focus on object under cursor / Center autofocus (calculates exact focal plane)
+- **U / I / O**: Adjust Aperture size (U: -0.02, I: +0.02, O: Toggle pinhole / bokeh)
+- **K / L**: Adjust Focus Distance manually (K: -0.2m, L: +0.2m)
+- **Z**: Toggle Temporal Motion Smoothing (noise-free interactive flight)
 - **1 - 4**: Instant camera bookmarks (1: Bunny close-up, 2: Crystals, 3: Disney flanks, 4: Wide)
 - **F1 - F3**: Live Display Mode (F1: Beauty, F2: Albedo AOV Guide, F3: Normal AOV Guide)
 - **X**: Toggle accumulation pause / resume (freeze converged view)
