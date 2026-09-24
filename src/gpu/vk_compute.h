@@ -46,12 +46,16 @@ struct GpuContext {
     VkDeviceMemory nrm_mem = VK_NULL_HANDLE;
     VkImageView nrm_view = VK_NULL_HANDLE;
     GpuBuffer staging;
+    void *staging_mapped = nullptr;
     VkDescriptorSetLayout layout = VK_NULL_HANDLE;
     VkDescriptorPool pool = VK_NULL_HANDLE;
-    VkDescriptorSet set = VK_NULL_HANDLE;    VkPipeline pipe = VK_NULL_HANDLE;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    VkPipeline pipe = VK_NULL_HANDLE;
     VkPipelineLayout pipe_layout = VK_NULL_HANDLE;
+    std::string current_spv;
     VkCommandPool cmd_pool = VK_NULL_HANDLE;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
     VkQueryPool query_pool = VK_NULL_HANDLE;
     GpuBuffer scene_bufs[11];
     bool has_scene = false;
@@ -193,6 +197,7 @@ inline void gpu_init(GpuContext &g, int W, int H) {
                                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         VKC_CHECK(vkAllocateMemory(g.device, &ai, nullptr, &g.staging.mem));
         VKC_CHECK(vkBindBufferMemory(g.device, g.staging.buf, g.staging.mem, 0));
+        VKC_CHECK(vkMapMemory(g.device, g.staging.mem, 0, g.staging.bytes, 0, &g.staging_mapped));
     }
     {
         VkDescriptorSetLayoutBinding b[14]{};
@@ -233,6 +238,7 @@ inline void gpu_init(GpuContext &g, int W, int H) {
     {
         VkCommandPoolCreateInfo ci{};
         ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        ci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
         ci.queueFamilyIndex = g.qfam;
         VKC_CHECK(vkCreateCommandPool(g.device, &ci, nullptr, &g.cmd_pool));
         VkCommandBufferAllocateInfo ai{};
@@ -241,6 +247,9 @@ inline void gpu_init(GpuContext &g, int W, int H) {
         ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         ai.commandBufferCount = 1;
         VKC_CHECK(vkAllocateCommandBuffers(g.device, &ai, &g.cmd));
+        VkFenceCreateInfo fi{};
+        fi.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        VKC_CHECK(vkCreateFence(g.device, &fi, nullptr, &g.fence));
         VkQueryPoolCreateInfo qi{};
         qi.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
         qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
@@ -360,46 +369,58 @@ inline void gpu_update_camera(GpuContext &g, const void *cam_ptr, size_t cam_byt
 // out_rgba receives W*H*4 floats, top-first rows.
 inline double gpu_run(GpuContext &g, const std::string &spv_path, const PushConstants &push,
                       std::vector<float> &out_rgba) {
-    std::ifstream f(spv_path, std::ios::binary | std::ios::ate);
-    if (!f) {
-        std::cerr << "missing shader: " << spv_path << "\n";
-        std::exit(1);
-    }
-    size_t n = (size_t)f.tellg();
-    f.seekg(0);
-    std::vector<char> code(n);
-    f.read(code.data(), (std::streamsize)n);
+    if (!g.pipe || g.current_spv != spv_path) {
+        if (g.pipe) {
+            vkDestroyPipeline(g.device, g.pipe, nullptr);
+            g.pipe = VK_NULL_HANDLE;
+        }
+        if (g.pipe_layout) {
+            vkDestroyPipelineLayout(g.device, g.pipe_layout, nullptr);
+            g.pipe_layout = VK_NULL_HANDLE;
+        }
+        std::ifstream f(spv_path, std::ios::binary | std::ios::ate);
+        if (!f) {
+            std::cerr << "missing shader: " << spv_path << "\n";
+            std::exit(1);
+        }
+        size_t n = (size_t)f.tellg();
+        f.seekg(0);
+        std::vector<char> code(n);
+        f.read(code.data(), (std::streamsize)n);
 
-    VkShaderModule mod;
-    {
-        VkShaderModuleCreateInfo mi{};
-        mi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-        mi.codeSize = code.size();
-        mi.pCode = (const uint32_t *)code.data();
-        VKC_CHECK(vkCreateShaderModule(g.device, &mi, nullptr, &mod));
+        VkShaderModule mod;
+        {
+            VkShaderModuleCreateInfo mi{};
+            mi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+            mi.codeSize = code.size();
+            mi.pCode = (const uint32_t *)code.data();
+            VKC_CHECK(vkCreateShaderModule(g.device, &mi, nullptr, &mod));
+        }
+        {
+            VkPushConstantRange pc{};
+            pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            pc.size = (uint32_t)kPushByteSize;
+            VkPipelineLayoutCreateInfo li{};
+            li.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+            li.setLayoutCount = 1;
+            li.pSetLayouts = &g.layout;
+            li.pushConstantRangeCount = 1;
+            li.pPushConstantRanges = &pc;
+            VKC_CHECK(vkCreatePipelineLayout(g.device, &li, nullptr, &g.pipe_layout));
+            VkComputePipelineCreateInfo pi{};
+            pi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+            pi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            pi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            pi.stage.module = mod;
+            pi.stage.pName = "main";
+            pi.layout = g.pipe_layout;
+            VKC_CHECK(vkCreateComputePipelines(g.device, VK_NULL_HANDLE, 1, &pi, nullptr, &g.pipe));
+            vkDestroyShaderModule(g.device, mod, nullptr);
+            g.current_spv = spv_path;
+        }
     }
     {
-        VkPushConstantRange pc{};
-        pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        pc.size = (uint32_t)kPushByteSize;
-        VkPipelineLayoutCreateInfo li{};
-        li.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        li.setLayoutCount = 1;
-        li.pSetLayouts = &g.layout;
-        li.pushConstantRangeCount = 1;
-        li.pPushConstantRanges = &pc;
-        VKC_CHECK(vkCreatePipelineLayout(g.device, &li, nullptr, &g.pipe_layout));
-        VkComputePipelineCreateInfo pi{};
-        pi.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-        pi.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        pi.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        pi.stage.module = mod;
-        pi.stage.pName = "main";
-        pi.layout = g.pipe_layout;
-        VKC_CHECK(vkCreateComputePipelines(g.device, VK_NULL_HANDLE, 1, &pi, nullptr, &g.pipe));
-        vkDestroyShaderModule(g.device, mod, nullptr);
-    }
-    {
+        VKC_CHECK(vkResetCommandBuffer(g.cmd, 0));
         VkCommandBufferBeginInfo bi{};
         bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -444,17 +465,13 @@ inline double gpu_run(GpuContext &g, const std::string &spv_path, const PushCons
     }
     double dispatch_ms = 0;
     {
-        VkFence fence;
-        VkFenceCreateInfo fi{};
-        fi.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        VKC_CHECK(vkCreateFence(g.device, &fi, nullptr, &fence));
+        VKC_CHECK(vkResetFences(g.device, 1, &g.fence));
         VkSubmitInfo si{};
         si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         si.commandBufferCount = 1;
         si.pCommandBuffers = &g.cmd;
-        VKC_CHECK(vkQueueSubmit(g.queue, 1, &si, fence));
-        VKC_CHECK(vkWaitForFences(g.device, 1, &fence, VK_TRUE, UINT64_MAX));
-        vkDestroyFence(g.device, fence, nullptr);
+        VKC_CHECK(vkQueueSubmit(g.queue, 1, &si, g.fence));
+        VKC_CHECK(vkWaitForFences(g.device, 1, &g.fence, VK_TRUE, UINT64_MAX));
         uint64_t stamps[2] = {};
         VKC_CHECK(vkGetQueryPoolResults(g.device, g.query_pool, 0, 2, sizeof stamps,
                                         stamps, sizeof(uint64_t),
@@ -464,16 +481,9 @@ inline double gpu_run(GpuContext &g, const std::string &spv_path, const PushCons
         dispatch_ms = (double)(stamps[1] - stamps[0]) * props.limits.timestampPeriod / 1e6;
     }
     {
-        void *mapped = nullptr;
-        VKC_CHECK(vkMapMemory(g.device, g.staging.mem, 0, g.staging.bytes, 0, &mapped));
-        out_rgba.assign((const float *)mapped,
-                        (const float *)mapped + (size_t)g.W * g.H * 4);
-        vkUnmapMemory(g.device, g.staging.mem);
+        const float *ptr = (const float *)g.staging_mapped;
+        out_rgba.assign(ptr, ptr + (size_t)g.W * g.H * 4);
     }
-    vkDestroyPipeline(g.device, g.pipe, nullptr);
-    g.pipe = VK_NULL_HANDLE;
-    vkDestroyPipelineLayout(g.device, g.pipe_layout, nullptr);
-    g.pipe_layout = VK_NULL_HANDLE;
     return dispatch_ms;
 }
 
@@ -986,6 +996,7 @@ inline void gpu_read_aov(GpuContext &g, std::vector<float> &out_alb,
     VkImage imgs[2] = {g.alb_img, g.nrm_img};
     std::vector<float> *outs[2] = {&out_alb, &out_nrm};
     for (int k = 0; k < 2; ++k) {
+        VKC_CHECK(vkResetCommandBuffer(g.cmd, 0));
         VkCommandBufferBeginInfo bi{};
         bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -1007,22 +1018,15 @@ inline void gpu_read_aov(GpuContext &g, std::vector<float> &out_alb,
         vkCmdCopyImageToBuffer(g.cmd, imgs[k], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                g.staging.buf, 1, &region);
         VKC_CHECK(vkEndCommandBuffer(g.cmd));
-        VkFence fence;
-        VkFenceCreateInfo fi{};
-        fi.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-        VKC_CHECK(vkCreateFence(g.device, &fi, nullptr, &fence));
+        VKC_CHECK(vkResetFences(g.device, 1, &g.fence));
         VkSubmitInfo si{};
         si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         si.commandBufferCount = 1;
         si.pCommandBuffers = &g.cmd;
-        VKC_CHECK(vkQueueSubmit(g.queue, 1, &si, fence));
-        VKC_CHECK(vkWaitForFences(g.device, 1, &fence, VK_TRUE, UINT64_MAX));
-        vkDestroyFence(g.device, fence, nullptr);
-        void *mapped = nullptr;
-        VKC_CHECK(vkMapMemory(g.device, g.staging.mem, 0, g.staging.bytes, 0, &mapped));
-        outs[k]->assign((const float *)mapped,
-                        (const float *)mapped + (size_t)g.W * g.H * 4);
-        vkUnmapMemory(g.device, g.staging.mem);
+        VKC_CHECK(vkQueueSubmit(g.queue, 1, &si, g.fence));
+        VKC_CHECK(vkWaitForFences(g.device, 1, &g.fence, VK_TRUE, UINT64_MAX));
+        const float *ptr = (const float *)g.staging_mapped;
+        outs[k]->assign(ptr, ptr + (size_t)g.W * g.H * 4);
     }
 }
 
@@ -1031,6 +1035,12 @@ inline void gpu_shutdown(GpuContext &g) {
         vkDestroyPipeline(g.device, g.pipe, nullptr);
     if (g.pipe_layout)
         vkDestroyPipelineLayout(g.device, g.pipe_layout, nullptr);
+    if (g.fence)
+        vkDestroyFence(g.device, g.fence, nullptr);
+    if (g.staging_mapped) {
+        vkUnmapMemory(g.device, g.staging.mem);
+        g.staging_mapped = nullptr;
+    }
     for (auto &hb : g.scene_bufs) {
         if (hb.buf)
             vkDestroyBuffer(g.device, hb.buf, nullptr);

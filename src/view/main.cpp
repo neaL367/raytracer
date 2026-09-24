@@ -478,6 +478,7 @@ int run_interactive_renderer(int argc, char **argv) {
 
     // Buffers for progressive accumulation and AOV inspection
     std::vector<vec3> accum_fb((size_t)W * H, vec3(0, 0, 0));
+    std::vector<vec3> beauty_hdr((size_t)W * H, vec3(0, 0, 0));
     std::vector<uint8_t> display_rgb((size_t)W * H * 3, 0);
     std::vector<uint8_t> prev_display_rgb((size_t)W * H * 3, 0);
     std::vector<float> aov_alb((size_t)W * H * 4, 0.0f);
@@ -1075,7 +1076,6 @@ int run_interactive_renderer(int argc, char **argv) {
         // Convert active view mode to display RGB24
         if (view_mode == ViewMode::BEAUTY) {
             double inv_spp = (accum_spp > 0) ? (1.0 / (double)accum_spp) : 1.0;
-            std::vector<vec3> beauty_hdr((size_t)W * H);
             std::atomic<int> next_row_hdr{0};
             pool.parallel_run([&](unsigned) {
                 for (;;) {
