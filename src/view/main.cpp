@@ -283,6 +283,8 @@ int run_interactive_renderer(int argc, char **argv) {
     int max_depth = 8; // fast bounce depth for responsive interactive navigation
     double aperture = 0.0;
     std::string hdri_env_path;
+    bool show_hud = true;
+    bool adaptive_res = true;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -306,6 +308,10 @@ int run_interactive_renderer(int argc, char **argv) {
             force_cpu = true;
         else if (a == "--gpu")
             force_gpu = true;
+        else if (a == "--no-hud")
+            show_hud = false;
+        else if (a == "--no-dynamic-res")
+            adaptive_res = false;
     }
 
     std::cout << "rt_view: Initializing interactive scene '" << scene_name
@@ -490,6 +496,8 @@ int run_interactive_renderer(int argc, char **argv) {
     double turntable_rpm = 2.5;
     double color_temp = 0.0;
     std::shared_ptr<material> selected_mat = nullptr;
+    int motion_frames = 0;
+    bool was_motion_rendering = false;
 
     unsigned num_threads = std::max(1u, std::thread::hardware_concurrency());
     cpu_render_pool pool(num_threads);
@@ -511,6 +519,8 @@ int run_interactive_renderer(int argc, char **argv) {
               << "  Mouse Wheel  : Adjust flight speed (current: " << fly_cam.speed << ")\n"
               << "  Mid Click/F4 : Click-to-Focus / Center Autofocus (sets focal plane)\n"
               << "  Alt + Left   : Material & Object Inspector (queries primitive under cursor)\n"
+              << "  Tab / F11    : Toggle On-Screen Heads-Up Display (HUD) [ON/OFF]\n"
+              << "  F7           : Toggle Adaptive Viewport Resolution (0.5x Dynamic Motion Scale)\n"
               << "  U / I / O    : Adjust Aperture (U: -0.02, I: +0.02, O: Toggle pinhole/bokeh)\n"
               << "  K / L        : Adjust Focus Distance (K: -0.2m, L: +0.2m)\n"
               << "  B            : Toggle Bokeh Iris Shape (Circular <-> 6-Blade Hexagon)\n"
@@ -646,6 +656,13 @@ int run_interactive_renderer(int argc, char **argv) {
                 } else if (e.key.key == SDLK_F6) {
                     focus_peaking = !focus_peaking;
                     std::cout << "rt_view: Focus Peaking (Z-Peaking) [" << (focus_peaking ? "ON" : "OFF") << "]\n";
+                } else if (e.key.key == SDLK_F7) {
+                    adaptive_res = !adaptive_res;
+                    std::cout << "rt_view: Adaptive Viewport Resolution ["
+                              << (adaptive_res ? "ON (0.5x Dynamic Motion Scale)" : "OFF (Full 1.0x)") << "]\n";
+                } else if (e.key.key == SDLK_TAB || e.key.key == SDLK_F11) {
+                    show_hud = !show_hud;
+                    std::cout << "rt_view: Heads-Up Display (HUD) [" << (show_hud ? "ON" : "OFF") << "]\n";
                 } else if (e.key.key == SDLK_F8) {
                     turntable_mode = !turntable_mode;
                     std::cout << "rt_view: Cinematic 360 Turntable Orbit [" << (turntable_mode ? "ON" : "OFF") << "]\n";
@@ -828,6 +845,8 @@ int run_interactive_renderer(int argc, char **argv) {
                               << " Right Drag   : Look around (pitch & yaw)\n"
                               << " F            : Toggle captured mouse look mode\n"
                               << " Mid Click/F4 : Click-to-Focus / Center Autofocus (sets focal plane)\n"
+                              << " Tab / F11    : Toggle On-Screen Heads-Up Display (HUD)\n"
+                              << " F7           : Toggle Adaptive Viewport Resolution (0.5x Dynamic Motion Scale)\n"
                               << " U / I / O    : Adjust Aperture (U: -0.02, I: +0.02, O: Toggle pinhole/bokeh)\n"
                               << " K / L        : Adjust Focus Distance (K: -0.2m, L: +0.2m)\n"
                               << " B            : Toggle Bokeh Iris Shape (Hexagonal 6-Blade vs Circular)\n"
@@ -958,6 +977,21 @@ int run_interactive_renderer(int argc, char **argv) {
                 cam_moved = true;
         }
 
+        if (cam_moved || right_mouse_down || relative_mouse || turntable_mode) {
+            motion_frames = 2;
+        }
+
+        bool is_motion_rendering = adaptive_res && !use_gpu && (motion_frames > 0);
+        if (motion_frames > 0)
+            motion_frames--;
+
+        // Clean reset when stopping motion to start crisp 1.0x progressive accumulation
+        if (was_motion_rendering && !is_motion_rendering) {
+            accum_spp = 0;
+            std::fill(accum_fb.begin(), accum_fb.end(), vec3(0, 0, 0));
+        }
+        was_motion_rendering = is_motion_rendering;
+
         // Reset accumulation on camera movement
         if (cam_moved) {
             accum_spp = 0;
@@ -983,25 +1017,58 @@ int run_interactive_renderer(int argc, char **argv) {
                 }
                 accum_spp += 1;
             } else {
-                // Multi-threaded CPU progressive slice with persistent pool & dynamic scanline work-stealing
-                std::atomic<int> next_row{0};
-                pool.parallel_run([&](unsigned t) {
-                    rng_seed(42u + (unsigned)accum_spp * 10007u + t * 997u);
-                    for (;;) {
-                        int sy = next_row.fetch_add(1, std::memory_order_relaxed);
-                        if (sy >= H)
-                            break;
-                        int j = H - 1 - sy; // Screen row 0 is top; ray v=0 is bottom
-                        for (int i = 0; i < W; ++i) {
-                            double u = (i + random_double()) / (double)W;
-                            double v = (j + random_double()) / (double)H;
-                            ray r = active_cam.get_ray(u, v);
-                            vec3 col = tracer.Li(r, params);
-                            accum_fb[(size_t)sy * W + i] += col;
+                if (is_motion_rendering) {
+                    // Adaptive 0.5x dynamic motion scale (4x CPU performance boost during flight)
+                    int sub_w = (W + 1) / 2;
+                    int sub_h = (H + 1) / 2;
+                    std::atomic<int> next_sub_row{0};
+                    pool.parallel_run([&](unsigned t) {
+                        rng_seed(42u + (unsigned)accum_spp * 10007u + t * 997u);
+                        for (;;) {
+                            int sry = next_sub_row.fetch_add(1, std::memory_order_relaxed);
+                            if (sry >= sub_h)
+                                break;
+                            int fy0 = sry * 2;
+                            int fy1 = std::min(fy0 + 2, H);
+                            int j = H - 1 - (fy0 + fy1) / 2;
+                            for (int srx = 0; srx < sub_w; ++srx) {
+                                int fx0 = srx * 2;
+                                int fx1 = std::min(fx0 + 2, W);
+                                double u = ((fx0 + fx1) * 0.5 + 0.5) / (double)W;
+                                double v = (j + 0.5) / (double)H;
+                                ray r = active_cam.get_ray(u, v);
+                                vec3 col = tracer.Li(r, params);
+                                for (int y = fy0; y < fy1; ++y) {
+                                    size_t row_idx = (size_t)y * W;
+                                    for (int x = fx0; x < fx1; ++x) {
+                                        accum_fb[row_idx + x] = col;
+                                    }
+                                }
+                            }
                         }
-                    }
-                });
-                accum_spp += 1;
+                    });
+                    accum_spp = 1;
+                } else {
+                    // Multi-threaded CPU progressive slice with persistent pool & dynamic scanline work-stealing
+                    std::atomic<int> next_row{0};
+                    pool.parallel_run([&](unsigned t) {
+                        rng_seed(42u + (unsigned)accum_spp * 10007u + t * 997u);
+                        for (;;) {
+                            int sy = next_row.fetch_add(1, std::memory_order_relaxed);
+                            if (sy >= H)
+                                break;
+                            int j = H - 1 - sy; // Screen row 0 is top; ray v=0 is bottom
+                            for (int i = 0; i < W; ++i) {
+                                double u = (i + random_double()) / (double)W;
+                                double v = (j + random_double()) / (double)H;
+                                ray r = active_cam.get_ray(u, v);
+                                vec3 col = tracer.Li(r, params);
+                                accum_fb[(size_t)sy * W + i] += col;
+                            }
+                        }
+                    });
+                    accum_spp += 1;
+                }
             }
         }
 
@@ -1145,6 +1212,130 @@ int run_interactive_renderer(int argc, char **argv) {
         SDL_UpdateTexture(tex, nullptr, display_rgb.data(), W * 3);
         SDL_RenderClear(ren);
         SDL_RenderTexture(ren, tex, nullptr, nullptr);
+
+        // On-Screen Heads-Up Display (HUD) Glassmorphism Overlay
+        if (show_hud) {
+            int win_w = 0, win_h = 0;
+            SDL_GetRenderOutputSize(ren, &win_w, &win_h);
+            if (win_w <= 0) win_w = W * scale;
+            if (win_h <= 0) win_h = H * scale;
+
+            float hud_x = 14.0f;
+            float hud_y = 14.0f;
+            float hud_w = std::min((float)win_w - 28.0f, 490.0f);
+            float hud_h = 196.0f;
+
+            // Translucent glassmorphism background
+            SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+            SDL_FRect bg_rect{ hud_x, hud_y, hud_w, hud_h };
+            SDL_SetRenderDrawColor(ren, 10, 14, 22, 215); // Deep slate
+            SDL_RenderFillRect(ren, &bg_rect);
+
+            // Subtle border
+            SDL_SetRenderDrawColor(ren, 45, 80, 115, 220);
+            SDL_RenderRect(ren, &bg_rect);
+
+            float text_x = hud_x + 12.0f;
+            float text_y = hud_y + 10.0f;
+            float line_step = 13.5f;
+            char line_buf[256];
+
+            // 1. Header Title & Backend
+            SDL_SetRenderDrawColor(ren, 50, 220, 255, 255); // Cyan
+            std::snprintf(line_buf, sizeof(line_buf), "RT_VIEW :: %s", scene_name.c_str());
+            SDL_RenderDebugText(ren, text_x, text_y, line_buf);
+
+            const char *backend_str = use_gpu ? "[GPU: Vulkan Path Tracer]" : "[CPU: Multithreaded QBVH]";
+            SDL_SetRenderDrawColor(ren, use_gpu ? 90 : 255, use_gpu ? 240 : 190, use_gpu ? 140 : 70, 255);
+            SDL_RenderDebugText(ren, hud_x + hud_w - 215.0f, text_y, backend_str);
+            text_y += line_step + 2.0f;
+
+            // Separator line
+            SDL_SetRenderDrawColor(ren, 40, 65, 95, 180);
+            SDL_RenderLine(ren, hud_x + 8.0f, text_y, hud_x + hud_w - 8.0f, text_y);
+            text_y += 5.0f;
+
+            // 2. Performance & Accumulation
+            SDL_SetRenderDrawColor(ren, 120, 255, 140, 255); // Lime
+            std::snprintf(line_buf, sizeof(line_buf), "PERF: %.1f FPS (%.1f ms/frame)", current_fps, current_ms);
+            SDL_RenderDebugText(ren, text_x, text_y, line_buf);
+
+            const char *mode_str = (view_mode == ViewMode::BEAUTY) ? "Beauty" :
+                                   (view_mode == ViewMode::ALBEDO) ? "Albedo AOV" : "Normal AOV";
+            SDL_SetRenderDrawColor(ren, 205, 215, 230, 255);
+            std::snprintf(line_buf, sizeof(line_buf), "MODE: %s", mode_str);
+            SDL_RenderDebugText(ren, text_x + 235.0f, text_y, line_buf);
+            text_y += line_step;
+
+            // SPP & Scale
+            SDL_SetRenderDrawColor(ren, accum_paused ? 255 : 240, accum_paused ? 180 : 245, accum_paused ? 50 : 255, 255);
+            const char *dyn_scale_str = (!use_gpu && is_motion_rendering) ? "0.5x Dynamic (Motion Boost)" : "1.0x Native";
+            std::snprintf(line_buf, sizeof(line_buf), "SPP : %d %s | SCALE: %s",
+                          accum_spp, accum_paused ? "[PAUSED]" : "", dyn_scale_str);
+            SDL_RenderDebugText(ren, text_x, text_y, line_buf);
+            text_y += line_step + 2.0f;
+
+            // 3. Camera & Optics
+            SDL_SetRenderDrawColor(ren, 170, 190, 215, 255);
+            std::snprintf(line_buf, sizeof(line_buf), "EYE : (%.2f, %.2f, %.2f) | FOV: %.1f deg",
+                          fly_cam.eye.x(), fly_cam.eye.y(), fly_cam.eye.z(), fly_cam.vfov);
+            SDL_RenderDebugText(ren, text_x, text_y, line_buf);
+            text_y += line_step;
+
+            std::snprintf(line_buf, sizeof(line_buf), "ROT : Yaw %.1f deg | Pitch %.1f deg",
+                          fly_cam.yaw, fly_cam.pitch);
+            SDL_RenderDebugText(ren, text_x, text_y, line_buf);
+            text_y += line_step;
+
+            std::snprintf(line_buf, sizeof(line_buf), "LENS: Focus %.2fm | Aperture f/%.2f | %s",
+                          focus_dist, aperture, (blades >= 3 ? "Hex 6-Blade" : "Circular"));
+            SDL_RenderDebugText(ren, text_x, text_y, line_buf);
+            text_y += line_step;
+
+            std::snprintf(line_buf, sizeof(line_buf), "ANAM: %.1fx | Distort: %.2f | Vignette: %s",
+                          anamorphic, distortion, optical_vignette ? "ON" : "OFF");
+            SDL_RenderDebugText(ren, text_x, text_y, line_buf);
+            text_y += line_step + 2.0f;
+
+            // 4. Atmosphere & Post-FX
+            double cur_az = 0.0, cur_el = 0.0;
+            env_light::get_sun_angles(cur_az, cur_el);
+            SDL_SetRenderDrawColor(ren, 255, 215, 120, 255); // Sun gold
+            std::snprintf(line_buf, sizeof(line_buf), "SUN : Az %.1f deg | El %.1f deg | C-Temp: %+.2f",
+                          cur_az, cur_el, color_temp);
+            SDL_RenderDebugText(ren, text_x, text_y, line_buf);
+            text_y += line_step;
+
+            SDL_SetRenderDrawColor(ren, 175, 195, 220, 255);
+            std::snprintf(line_buf, sizeof(line_buf), "FX  : Bloom:%s Denoise:%s Peak:%s DynRes:%s",
+                          bloom_enabled ? "ON" : "OFF",
+                          live_denoise ? "ON" : "OFF",
+                          focus_peaking ? "ON" : "OFF",
+                          adaptive_res ? "ON" : "OFF");
+            SDL_RenderDebugText(ren, text_x, text_y, line_buf);
+            text_y += line_step;
+
+            if (selected_mat) {
+                SDL_SetRenderDrawColor(ren, 255, 150, 220, 255);
+                SDL_RenderDebugText(ren, text_x, text_y, "INSPECT: Selected material active for [-/=], [, / .]");
+            }
+
+            // Bottom quick hint ribbon
+            if (win_h > 260) {
+                float bar_h = 22.0f;
+                float bar_y = (float)win_h - bar_h - 8.0f;
+                SDL_FRect bar_bg{ 14.0f, bar_y, (float)win_w - 28.0f, bar_h };
+                SDL_SetRenderDrawColor(ren, 10, 14, 22, 195);
+                SDL_RenderFillRect(ren, &bar_bg);
+                SDL_SetRenderDrawColor(ren, 40, 65, 95, 160);
+                SDL_RenderRect(ren, &bar_bg);
+
+                SDL_SetRenderDrawColor(ren, 185, 205, 225, 255);
+                SDL_RenderDebugText(ren, 22.0f, bar_y + 7.0f,
+                                    "[Tab] HUD  [WASD] Fly  [Right-Drag] Look  [F4] Focus  [Alt+Click] Inspect  [F7] DynRes  [P] Snapshot  [H] Help");
+            }
+        }
+
         SDL_RenderPresent(ren);
 
         // Calculate and update live performance metrics
