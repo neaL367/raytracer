@@ -2,6 +2,7 @@
 #include "material_base.h"
 #include "../core/onb.h"
 #include "../core/ggx.h"
+#include "../core/thinfilm.h"
 #include <algorithm>
 #include <cmath>
 
@@ -12,6 +13,7 @@
 // - Specular tint towards base color
 // - Velvet / cloth grazing sheen
 // - Secondary clearcoat reflection layer with GTR1 distribution
+// - Optional physical thin-film interference on the clearcoat layer (M73)
 class disney_material : public material {
 public:
     vec3 base_color{0.8, 0.8, 0.8};
@@ -24,6 +26,8 @@ public:
     double clearcoat = 0.0;
     double clearcoat_gloss = 1.0;
     double subsurface = 0.0;
+    double coat_film_d = 0.0; // film thickness in nm; 0 = standard clearcoat (M73)
+    double coat_film_n = 1.6; // film refractive index
 
     disney_material() = default;
     explicit disney_material(const vec3 &color, double metal = 0.0, double rough = 0.5)
@@ -36,6 +40,13 @@ public:
     disney_material &set_specular_tint(double st) { specular_tint = st; return *this; }
     disney_material &set_sheen(double sh, double sht = 0.5) { sheen = sh; sheen_tint = sht; return *this; }
     disney_material &set_clearcoat(double cc, double gloss = 1.0) { clearcoat = cc; clearcoat_gloss = gloss; return *this; }
+    disney_material &set_clearcoat_film(double d_nm, double n_film = 1.6) {
+        coat_film_d = d_nm < 0 ? 0 : d_nm;
+        coat_film_n = n_film;
+        return *this;
+    }
+    double clearcoat_film_thickness() const { return coat_film_d; }
+    double clearcoat_film_ior() const { return coat_film_n; }
     disney_material &set_subsurface(double ss) { subsurface = ss; return *this; }
 
     bool is_diffuse() const override {
@@ -60,7 +71,7 @@ public:
     bool scatter(const ray &in, const hit_record &rec,
                  vec3 &attenuation, ray &scattered) const override {
         const double pi_val = 3.1415926535897932385;
-        vec3 n = rec.normal;
+        vec3 n = resolve_normal(rec);
         vec3 V = -unit_vector(in.direction());
         if (dot(n, V) < 0.0)
             n = -n;
@@ -153,9 +164,19 @@ public:
 
             L = uvw.local(Ll);
             double cos_vh = std::max(dot(Vl, H_local), 0.0);
-            double F_coat = 0.04 + (1.0 - 0.04) * std::pow(std::max(1.0 - cos_vh, 0.0), 5.0);
+            vec3 F_coat_rgb;
+            if (coat_film_d > 0.0) {
+                F_coat_rgb = thinfilm::film_R_rgb(1.0, coat_film_n, coat_film_d, 1.5, 0.0, cos_vh);
+            } else {
+                double F_coat = 0.04 + (1.0 - 0.04) * std::pow(std::max(1.0 - cos_vh, 0.0), 5.0);
+                F_coat_rgb = vec3(F_coat, F_coat, F_coat);
+            }
 
-            attenuation = vec3(1.0, 1.0, 1.0) * (0.25 * clearcoat * F_coat * (w_sum / std::max(w_coat, 1e-6)));
+            attenuation = F_coat_rgb * (0.25 * clearcoat * (w_sum / std::max(w_coat, 1e-6)));
+        }
+
+        if (rec.has_geo_normal && dot(L, rec.geo_normal) < 0.0) {
+            L = unit_vector(L - 2.0 * dot(L, rec.geo_normal) * rec.geo_normal);
         }
 
         scattered = ray(rec.point, L, in.time());
@@ -177,12 +198,12 @@ public:
         emit[0] = static_cast<float>(clearcoat);
         emit[1] = static_cast<float>(clearcoat_gloss);
         emit[2] = static_cast<float>(subsurface);
-        emit[3] = 0.0f;
+        emit[3] = static_cast<float>(coat_film_d); // M73: clearcoat thin-film thickness in nm
 
         prm[0] = static_cast<float>(MatType::DISNEY);
         prm[1] = static_cast<float>(roughness);
         prm[2] = 1.5f; // default IOR
-        prm[3] = 0.0f;
+        prm[3] = static_cast<float>(coat_film_n); // M73: clearcoat film IOR
         return true;
     }
 };

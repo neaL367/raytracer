@@ -391,7 +391,7 @@ bool is_occluded(vec3 o, vec3 d, float rtime, float tmax, int skip_ty, int skip_
 void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
               out vec4 alb, out vec4 alb2, out vec4 emit, out vec4 params,
                out int light_idx, out int light_ty, out vec2 huv,
-               out vec3 tang, out bool has_tang, out bool any,
+               out vec3 tang, out bool has_tang, out vec3 geo_n, out bool any,
                out int solid_ty, out int solid_idx,
                int skip_ty, int skip_idx, float skip_t) {
     int stack[16];
@@ -405,6 +405,7 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
     light_ty = -1;
     huv = vec2(0.0);
     has_tang = false;
+    geo_n = vec3(0.0, 1.0, 0.0);
     vec3 inv = 1.0 / d;
     while (sp > 0) {
         GPUQNode nd = nodes[stack[--sp]];
@@ -484,6 +485,7 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
 
     if (any) {
         if (solid_ty == 0) {
+            geo_n = n;
             GPUSphere s = spheres[solid_idx];
             alb = s.alb;
             alb2 = s.alb2;
@@ -502,6 +504,7 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
             light_idx = lit ? solid_idx : -1;
             light_ty = lit ? 1 : -1;
         } else if (solid_ty == 1) {
+            geo_n = n;
             GPUQuad q = quads[solid_idx];
             alb = q.alb;
             alb2 = q.alb2;
@@ -533,23 +536,30 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
             vec3 vb = mix(tr.b.xyz, tr.b1.xyz, tf);
             vec3 vc = mix(tr.c.xyz, tr.c1.xyz, tf);
             vec3 te1 = vb - va, te2 = vc - va;
-            vec2 td1, td2;
-            if (tr.params.w > 0.5) {
-                td1 = vec2(tr.tuvA.z - tr.tuvA.x, tr.tuvA.w - tr.tuvA.y);
-                td2 = vec2(tr.tuvB.x - tr.tuvA.x, tr.tuvB.y - tr.tuvA.y);
-            } else {
-                td1 = vec2(1.0, 0.0);
-                td2 = vec2(0.0, 1.0);
-            }
-            float tdet = td1.x * td2.y - td2.x * td1.y;
             vec3 tface = normalize(cross(te1, te2));
+            geo_n = (dot(d, tface) > 0.0) ? -tface : tface;
             has_tang = false;
-            if (abs(tdet) > 1e-12) {
-                vec3 ttv = (te1 * td2.y - te2 * td1.y) / tdet;
-                ttv = ttv - tface * dot(ttv, tface);
-                if (dot(ttv, ttv) > 1e-12) {
-                    tang = normalize(ttv);
-                    has_tang = true;
+            if (tr.params.w > 0.5) {
+                vec2 td1 = vec2(tr.tuvA.z - tr.tuvA.x, tr.tuvA.w - tr.tuvA.y);
+                vec2 td2 = vec2(tr.tuvB.x - tr.tuvA.x, tr.tuvB.y - tr.tuvA.y);
+                float tdet = td1.x * td2.y - td2.x * td1.y;
+                if (abs(tdet) > 1e-12) {
+                    vec3 ttv = (te1 * td2.y - te2 * td1.y) / tdet;
+                    ttv = ttv - tface * dot(ttv, tface);
+                    if (dot(ttv, ttv) > 1e-12) {
+                        tang = normalize(ttv);
+                        has_tang = true;
+                    }
+                }
+            } else {
+                bool is_smooth = dot(tr.n0.xyz - tr.n1.xyz, tr.n0.xyz - tr.n1.xyz) > 1e-6 ||
+                                 dot(tr.n1.xyz - tr.n2.xyz, tr.n1.xyz - tr.n2.xyz) > 1e-6;
+                if (!is_smooth) {
+                    vec3 ttv = te1 - tface * dot(te1, tface);
+                    if (dot(ttv, ttv) > 1e-12) {
+                        tang = normalize(ttv);
+                        has_tang = true;
+                    }
                 }
             }
             bool tr_emit_image = params.x == float(MAT_EMIT) && params.y > 0.5;
@@ -575,11 +585,11 @@ void traverse(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
 bool trace_solid(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 n,
                  out vec4 alb, out vec4 alb2, out vec4 emit, out vec4 params,
                  out int light_idx, out int light_ty, out vec2 huv, out vec3 tang,
-                 out bool has_tang, int skip_ty, int skip_idx, float skip_t,
+                 out bool has_tang, out vec3 geo_n, int skip_ty, int skip_idx, float skip_t,
                  out int solid_ty, out int solid_idx) {
     bool any;
     traverse(o, d, rtime, tmax, t, n, alb, alb2, emit, params, light_idx,
-             light_ty, huv, tang, has_tang, any, solid_ty, solid_idx,
+             light_ty, huv, tang, has_tang, geo_n, any, solid_ty, solid_idx,
              skip_ty, skip_idx, skip_t);
     return any;
 }

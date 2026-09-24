@@ -37,6 +37,7 @@ struct mtl_entry {
     vec3 Ks{0, 0, 0};
     double Ns = -1; // specular exponent, -1 = absent
     std::string map_Kd;
+    std::string map_Bump; // normal / bump map (M73)
 };
 
 inline void load_mtl(const std::string &path, std::map<std::string, mtl_entry> &out) {
@@ -68,6 +69,10 @@ inline void load_mtl(const std::string &path, std::map<std::string, mtl_entry> &
             std::string p;
             if (ls >> p)
                 out[cur].map_Kd = p;
+        } else if ((tag == "map_Bump" || tag == "bump" || tag == "norm") && !cur.empty()) {
+            std::string p;
+            if (ls >> p)
+                out[cur].map_Bump = p;
         } else if (tag == "Ns" && !cur.empty()) {
             double n;
             if (ls >> n)
@@ -86,18 +91,30 @@ inline double mtl_roughness(double Ns) { return std::sqrt(2.0 / (Ns + 2.0)); }
 
 inline std::shared_ptr<material> make_mtl_material(const mtl_entry &e,
                                                    const std::string &mtl_dir) {
+    std::shared_ptr<material> mat;
     if (!e.map_Kd.empty()) {
         ppm_io::image img;
         if (stb_loader::load_image(mtl_dir + e.map_Kd, img) && !img.px.empty())
-            return std::make_shared<lambertian>(
+            mat = std::make_shared<lambertian>(
                 std::make_shared<image_texture>(img.w, img.h, img.px));
-        std::cerr << "mtl map missing: " << mtl_dir + e.map_Kd << " (Kd fallback)\n";
+        else
+            std::cerr << "mtl map missing: " << mtl_dir + e.map_Kd << " (Kd fallback)\n";
     }
-    if (e.Ks.length_squared() > 0)
-        return std::make_shared<metal>(e.Ks, e.Ns >= 0 ? mtl_roughness(e.Ns) : 0.0);
-    if (e.Ns >= 0)
-        std::cerr << "mtl Ns without Ks ignored (needs a specular color)\n";
-    return std::make_shared<lambertian>(e.Kd);
+    if (!mat) {
+        if (e.Ks.length_squared() > 0)
+            mat = std::make_shared<metal>(e.Ks, e.Ns >= 0 ? mtl_roughness(e.Ns) : 0.0);
+        else
+            mat = std::make_shared<lambertian>(e.Kd);
+    }
+    if (!e.map_Bump.empty()) {
+        ppm_io::image bimg;
+        if (stb_loader::load_image(mtl_dir + e.map_Bump, bimg) && !bimg.px.empty()) {
+            mat->set_normal_map(std::make_shared<image_texture>(bimg.w, bimg.h, bimg.px));
+        } else {
+            std::cerr << "mtl bump map missing: " << mtl_dir + e.map_Bump << "\n";
+        }
+    }
+    return mat;
 }
 
 inline int fix_index(int idx, size_t n) {

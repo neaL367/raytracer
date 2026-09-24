@@ -75,9 +75,10 @@ inline scene_data build_showcase(double aspect, double aperture, double sh0 = 0,
     // Hero 9: Kinetic polished chrome metal
     auto chrome_mat = std::make_shared<metal>(vec3(0.96, 0.98, 1.0), 0.02);
 
-    // Hero 10: Disney Midnight Sapphire Car Paint (Burley metallic + clearcoat)
+    // Hero 10: Disney Midnight Sapphire Car Paint (Burley metallic + iridescent pearlescent clearcoat)
     auto car_paint_mat = std::make_shared<disney_material>(vec3(0.04, 0.22, 0.68), 0.85, 0.20);
     car_paint_mat->set_clearcoat(1.0, 0.95);
+    car_paint_mat->set_clearcoat_film(340.0, 1.65); // Iridescent pearlescent reflection flip (M73)
 
     // Hero 11: Disney Royal Crimson Velvet (Burley diffuse + golden sheen + SSS)
     auto velvet_mat = std::make_shared<disney_material>(vec3(0.70, 0.04, 0.12), 0.0, 0.65);
@@ -237,7 +238,7 @@ inline scene_data build_showcase(double aspect, double aperture, double sh0 = 0,
     scene.cam = camera(lookfrom, lookat, vup, vfov, aspect, aperture, focus_dist);
     scene.cam.set_shutter(sh0, sh1);
     scene.env_light = env;
-    scene.black_bg = !env; // Studio cyclorama captures light; void is enclosed
+    scene.black_bg = false; // Reflections outside cyclorama catch sky fill
 
     return scene;
 }

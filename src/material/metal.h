@@ -79,7 +79,7 @@ public:
             return true;
         }
         onb frame;
-        frame.build_from_w(rec.normal);
+        frame.build_from_w(resolve_normal(rec));
         vec3 V = unit_vector(-in.direction());
         vec3 Vl(dot(V, frame.u), dot(V, frame.v), dot(V, frame.w));
         double alpha = ggx::alpha_of(roughness);
@@ -93,14 +93,18 @@ public:
                  : (nk_id > 0) ? spectral_reflectance(cos_vh)
                                : ggx::fresnel_schlick(albedo, cos_vh);
         attenuation = F * ratio;
-        scattered = ray(rec.point, frame.local(Ll));
+        vec3 sc_dir = frame.local(Ll);
+        if (rec.has_geo_normal && dot(sc_dir, rec.geo_normal) < 0.0) {
+            sc_dir = unit_vector(sc_dir - 2.0 * dot(sc_dir, rec.geo_normal) * rec.geo_normal);
+        }
+        scattered = ray(rec.point, sc_dir);
         return true;
     }
     // Anisotropic scatter: T from the hit tangent (orthonormalized vs N),
     // ONB-u fallback by the same rule the GPU mirrors.
     bool scatter_aniso(const ray &in, const hit_record &rec, vec3 &attenuation,
                        ray &scattered) const {
-        vec3 N = rec.normal;
+        vec3 N = resolve_normal(rec);
         vec3 T = rec.has_tangent ? rec.tangent - N * dot(rec.tangent, N) : vec3(0, 0, 0);
         if (T.length_squared() <= 1e-12) {
             onb frame;
@@ -123,7 +127,11 @@ public:
                  : (nk_id > 0) ? spectral_reflectance(cos_vh)
                                : ggx::fresnel_schlick(albedo, cos_vh);
         attenuation = F * ratio;
-        scattered = ray(rec.point, T * Ll.x() + B * Ll.y() + N * Ll.z());
+        vec3 sc_dir = T * Ll.x() + B * Ll.y() + N * Ll.z();
+        if (rec.has_geo_normal && dot(sc_dir, rec.geo_normal) < 0.0) {
+            sc_dir = unit_vector(sc_dir - 2.0 * dot(sc_dir, rec.geo_normal) * rec.geo_normal);
+        }
+        scattered = ray(rec.point, sc_dir);
         return true;
     }
     vec3 surface_albedo(const hit_record &) const override {

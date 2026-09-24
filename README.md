@@ -70,11 +70,15 @@ Interactive real-time previewer with 6-DOF fly camera and progressive path traci
 - **Shift / Ctrl**: Sprint (3x speed) / Slow precision sneak (0.25x speed)
 - **Right Drag / F**: Look around (pitch & yaw) / Toggle captured mouse look
 - **Mouse Wheel**: Adjust movement speed
+- **1 - 4**: Instant camera bookmarks (1: Bunny close-up, 2: Crystals, 3: Disney flanks, 4: Wide)
+- **F1 - F3**: Live Display Mode (F1: Beauty, F2: Albedo AOV Guide, F3: Normal AOV Guide)
+- **X**: Toggle accumulation pause / resume (freeze converged view)
 - **G**: Toggle GPU compute vs CPU multi-threading in real time
 - **T**: Toggle ACES tonemapping vs standard sRGB gamma
 - **[ / ]**: Decrease / Increase exposure multiplier
 - **R**: Reset camera to initial scene view
-- **P**: Print camera code snippet to console & save snapshot to `out/viewport.ppm`
+- **P / F12**: Print camera code snippet to console & save snapshot to `out/viewport.ppm`
+- **H**: Print full interactive hotkey guide to console
 - **Esc**: Release mouse cursor lock / Quit
 
 ```bat
@@ -276,5 +280,16 @@ integrated Midnight Sapphire Car Paint and Royal Crimson Velvet into showcase ma
 M71 done: interactive real-time previewer in rt_view with 6-DOF fly-camera (WASD +
 mouse look), progressive path tracing with instant accumulation reset on motion, and
 real-time GPU/CPU dual-engine switching.
+M72 done: smooth mesh tangent continuity & geometric normal consistency clamping
+(continuous ONB derivation for smooth non-UV meshes; hemispherical reflection clamping
+preventing specular rays from tunneling into hollow meshes; camera bookmarks in rt_view).
+M73 done: tangent-space normal mapping & Disney pearlescent clearcoat (Option 2 & Option 3).
+Tangent-space normal mapping perturbing shading frames via TBN matrix on Lambertian,
+Conductor, and Disney BSDFs; procedural wave normal texture and OBJ MTL map_Bump/bump/norm
+parser support; first_hit_aov normal guide alignment. Iridescent pearlescent clearcoat
+layering physical thin-film interference (Airy equations) onto Disney GTR1 clearcoat
+on CPU & GPU with zero buffer layout disruption; integrated into Midnight Sapphire Car Paint;
+15,639 checks passed, 100% CPU/GPU parity.
 Trilogy mapping complete: every chapter implemented or superseded.
 Next: MoltenVK verify (blocked, no hardware).
+

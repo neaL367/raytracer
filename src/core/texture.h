@@ -206,3 +206,30 @@ private:
     int octaves, kind;
     vec3 col0, col1;
 };
+
+// Tangent-space normal map texture (M73).
+// Produces RGB colors encoding (Nx, Ny, Nz) in [0, 1] range:
+// flat surface is (0.5, 0.5, 1.0) = +Z in tangent space.
+class wave_normal_texture : public texture {
+public:
+    wave_normal_texture(double freq = 20.0, double strength = 0.3)
+        : frequency(freq), bump_strength(strength) {}
+
+    vec3 value(double u, double v, const vec3 &) const override {
+        const double pi_val = 3.1415926535897932385;
+        double su = std::sin(2.0 * pi_val * frequency * u);
+        double cu = std::cos(2.0 * pi_val * frequency * u);
+        double sv = std::sin(2.0 * pi_val * frequency * v);
+        double cv = std::cos(2.0 * pi_val * frequency * v);
+
+        double dhdu = 2.0 * pi_val * frequency * cu * sv;
+        double dhdv = 2.0 * pi_val * frequency * su * cv;
+
+        vec3 n_tan = unit_vector(vec3(-bump_strength * dhdu, -bump_strength * dhdv, 1.0));
+        return 0.5 * n_tan + vec3(0.5, 0.5, 0.5);
+    }
+
+private:
+    double frequency;
+    double bump_strength;
+};

@@ -30,7 +30,7 @@ inline void first_hit_aov(const ray &r, const hittable &world, vec3 &albedo, vec
     if (!hit)
         return;
     albedo = rec.mat->surface_albedo(rec);
-    normal = rec.normal;
+    normal = rec.mat->resolve_normal(rec);
     if (depth)
         *depth = rec.t;
 }

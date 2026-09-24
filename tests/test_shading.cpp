@@ -1013,7 +1013,46 @@ static void t_disney() {
     EXPECT_NEAR(pdf, 1.0 / pi);
 }
 
+static void t_normal_mapping_and_pearlescent() {
+    test_current = "normal_mapping_and_pearlescent";
+
+    // 1. Procedural wave_normal_texture validation
+    auto wave_nm = std::make_shared<wave_normal_texture>(10.0, 0.4);
+    vec3 c0 = wave_nm->value(0.0, 0.0, vec3(0, 0, 0));
+    EXPECT_NEAR(c0.x(), 0.5);
+    EXPECT_NEAR(c0.y(), 0.5);
+    EXPECT_TRUE(c0.z() > 0.5); // pointing up in tangent space
+
+    // 2. Resolve normal on hit_record with tangent frame
+    hit_record rec;
+    rec.point = vec3(0, 0, 0);
+    rec.normal = vec3(0, 0, 1);
+    rec.tangent = vec3(1, 0, 0);
+    rec.has_tangent = true;
+    rec.u = 0.25;
+    rec.v = 0.0;
+
+    auto m = std::make_shared<lambertian>(vec3(0.8, 0.8, 0.8));
+    m->set_normal_map(wave_nm);
+    vec3 perturbed_n = m->resolve_normal(rec);
+    EXPECT_TRUE(perturbed_n.length() > 0.99 && perturbed_n.length() < 1.01);
+    EXPECT_TRUE(dot(perturbed_n, rec.normal) > 0.0); // stays in upper hemisphere
+
+    // 3. Disney pearlescent clearcoat test
+    disney_material car_pearl(vec3(0.05, 0.2, 0.8), 0.9, 0.2);
+    car_pearl.set_clearcoat(1.0, 0.9);
+    car_pearl.set_clearcoat_film(380.0, 1.65);
+    EXPECT_NEAR(car_pearl.clearcoat_film_thickness(), 380.0);
+    EXPECT_NEAR(car_pearl.clearcoat_film_ior(), 1.65);
+
+    float alb[4], alb2[4], emit[4], prm[4];
+    car_pearl.export_gpu(alb, alb2, emit, prm);
+    EXPECT_NEAR(emit[3], 380.0f);
+    EXPECT_NEAR(prm[3], 1.65f);
+}
+
 void run_shading_tests() {
+    t_normal_mapping_and_pearlescent();
     t_disney();
     t_materials();
     t_material_completeness();

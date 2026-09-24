@@ -10,11 +10,12 @@ public:
     bool scatter(const ray &, const hit_record &rec,
                  vec3 &attenuation, ray &scattered) const override {
         // Cosine-weighted: pdf cos/PI cancels f*cos term, throughput *= albedo exact.
+        vec3 eff_n = resolve_normal(rec);
         onb frame;
-        frame.build_from_w(rec.normal);
+        frame.build_from_w(eff_n);
         vec3 dir = frame.local(random_cosine_direction());
         if (near_zero(dir))
-            dir = rec.normal; // degenerate guard
+            dir = eff_n; // degenerate guard
         scattered = ray(rec.point, dir);
         attenuation = tex->sample(rec.u, rec.v, rec.point, rec.t);
         return true;

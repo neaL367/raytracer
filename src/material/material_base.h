@@ -110,4 +110,30 @@ public:
         (void)prm;
         return false;
     }
+
+    // Tangent-space normal mapping (M73)
+    std::shared_ptr<texture> normal_map = nullptr;
+    void set_normal_map(std::shared_ptr<texture> nm) { normal_map = nm; }
+    const std::shared_ptr<texture> &get_normal_map() const { return normal_map; }
+
+    vec3 resolve_normal(const hit_record &rec) const {
+        if (!normal_map) return rec.normal;
+        vec3 t_norm = normal_map->sample(rec.u, rec.v, rec.point, rec.t);
+        vec3 n_tan = 2.0 * t_norm - vec3(1.0, 1.0, 1.0);
+        if (n_tan.length_squared() <= 1e-12) return rec.normal;
+        n_tan = unit_vector(n_tan);
+
+        vec3 N = rec.normal;
+        vec3 T = rec.has_tangent ? rec.tangent - N * dot(rec.tangent, N) : vec3(0, 0, 0);
+        if (T.length_squared() <= 1e-12) {
+            onb frame;
+            frame.build_from_w(N);
+            T = frame.u;
+        } else {
+            T = unit_vector(T);
+        }
+        vec3 B = cross(N, T);
+        vec3 perturbed = unit_vector(T * n_tan.x() + B * n_tan.y() + N * n_tan.z());
+        return (dot(perturbed, rec.normal) < 0.0) ? rec.normal : perturbed;
+    }
 };

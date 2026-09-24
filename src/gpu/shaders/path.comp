@@ -624,6 +624,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
         vec2 huv;
         vec3 tang;
         bool has_tang;
+        vec3 geo_n;
         int sty = -1, sidx = -1; // beauty-hit prim id (NEE shadow skips it)
         // Fog event (shared helper) vs solid surface: nearest wins.
         // RNG drawn only when fog exists: static streams bit-exact.
@@ -640,7 +641,7 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
         }
         bool solid =
             trace_solid(o, d, rtime, 1e30, t, n, alb, alb2, emit, params, light_idx,
-                        light_ty, huv, tang, has_tang, pty, pidx, 0.5, sty, sidx);
+                        light_ty, huv, tang, has_tang, geo_n, pty, pidx, 0.5, sty, sidx);
         if (!solid)
             t = 1e30;
         if (has_fog && fog_t < t) {
@@ -876,6 +877,9 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                 float ratio = (1.0 + lv) / (1.0 + lv + ggx_lambda(alpha, Ll.z));
                 attenuation = F * ratio;
                 sd = u * Ll.x + v * Ll.y + w * Ll.z;
+                if (dot(sd, geo_n) < 0.0) {
+                    sd = normalize(sd - 2.0 * dot(sd, geo_n) * geo_n);
+                }
             }
         } else if (mtype == MAT_ANISO) {
             // Anisotropic conductor (mirrors CPU metal aniso): TBN frame
@@ -938,6 +942,9 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                 float ratio = (1.0 + lv) / (1.0 + lv + ggx_lambda_aniso(ax, ay, La));
                 attenuation = F * ratio;
                 sd = T * La.x + B * La.y + nn * La.z;
+                if (dot(sd, geo_n) < 0.0) {
+                    sd = normalize(sd - 2.0 * dot(sd, geo_n) * geo_n);
+                }
             }
         } else if (mtype == MAT_GLASS) {
             float ir = params.z;
@@ -1134,6 +1141,9 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                             ok = false;
                         } else {
                             sd = u * Ll.x + v * Ll.y + w * Ll.z;
+                            if (dot(sd, geo_n) < 0.0) {
+                                sd = normalize(sd - 2.0 * dot(sd, geo_n) * geo_n);
+                            }
                             float cos_vh = max(dot(Vl, H), 0.0);
                             vec3 F = c_spec0 + (vec3(1.0) - c_spec0) * pow(max(1.0 - cos_vh, 0.0), 5.0);
 
@@ -1159,10 +1169,21 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                             ok = false;
                         } else {
                             sd = u * Ll.x + v * Ll.y + w * Ll.z;
+                            if (dot(sd, geo_n) < 0.0) {
+                                sd = normalize(sd - 2.0 * dot(sd, geo_n) * geo_n);
+                            }
                             float cos_vh = max(dot(Vl, H), 0.0);
-                            float F_coat = 0.04 + (1.0 - 0.04) * pow(max(1.0 - cos_vh, 0.0), 5.0);
+                            float coat_film_d = emit.w;
+                            vec3 F_coat_rgb;
+                            if (coat_film_d > 0.0) {
+                                float coat_film_n = params.w > 0.0 ? params.w : 1.6;
+                                F_coat_rgb = film_R_rgb(1.0, coat_film_n, coat_film_d, 1.5, 0.0, cos_vh);
+                            } else {
+                                float F_coat = 0.04 + (1.0 - 0.04) * pow(max(1.0 - cos_vh, 0.0), 5.0);
+                                F_coat_rgb = vec3(F_coat);
+                            }
 
-                            attenuation = vec3(0.25 * clearcoat * F_coat) * (w_sum / max(w_coat, 1e-6));
+                            attenuation = F_coat_rgb * (0.25 * clearcoat * (w_sum / max(w_coat, 1e-6)));
                         }
                     }
                 }
@@ -1280,9 +1301,10 @@ vec3 Li(vec3 o, vec3 d, float rtime, uint hbase, out vec3 guide_a,
                     vec2 fuv;
                     vec3 ftg;
                     bool fht;
+                    vec3 fgn;
                     int fsy, fsi;
                     if (trace_solid(hitp0, mud, rtime, 1e30, ft, fn, fa, fab, fe,
-                                    fp, fli, flt, fuv, ftg, fht, sty, sidx, 1e30,
+                                    fp, fli, flt, fuv, ftg, fht, fgn, sty, sidx, 1e30,
                                     fsy, fsi) &&
                         flt >= 0) {
                         // mud is unit: ft is the distance, mud the direction.

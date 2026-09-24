@@ -18,6 +18,10 @@ struct hit_record {
     // Shading tangent for anisotropy (shapes with UVs fill it; default off).
     vec3 tangent{0, 0, 0};
     bool has_tangent = false;
+    // Geometric (flat) face normal for smooth meshes (M72). Protects against
+    // shading-normal inconsistency where specular reflections plunge into mesh interiors.
+    vec3 geo_normal{0, 0, 0};
+    bool has_geo_normal = false;
     // Owning shape for volume transmittance march (media set this, shapes
     // leave null). Raw pointer: lifetime owned by the scene, never stored.
     const hittable *hit_obj = nullptr;

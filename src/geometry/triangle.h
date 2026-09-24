@@ -77,8 +77,12 @@ public:
             vec3 blended = unit_vector(n0 * w0 + n1 * u + n2 * v);
             // Orient toward ray via the face side (blended ~= face dir).
             rec.set_face_normal(r, dot(blended, flat) < 0 ? -blended : blended);
+            rec.geo_normal = dot(r.direction(), flat) < 0 ? flat : -flat;
+            rec.has_geo_normal = true;
         } else {
             rec.set_face_normal(r, flat);
+            rec.geo_normal = rec.normal;
+            rec.has_geo_normal = true;
         }
         rec.mat = mat;
         rec.hit_obj = nullptr; // clear medium tag (shared tmp reuse, M48)
@@ -92,17 +96,13 @@ public:
             rec.u = u; // barycentric weights as UVs (sum <= 1)
             rec.v = v;
         }
-        // Tangent from UV derivatives (Mikkelsen-lite) on lerped verts;
-        // barycentric UVs reduce to e1. Degenerate -> fallback flag off.
-        {
-            vec3 duv1, duv2;
-            if (has_uv) {
-                duv1 = vec3(t1.x() - t0.x(), t1.y() - t0.y(), 0);
-                duv2 = vec3(t2.x() - t0.x(), t2.y() - t0.y(), 0);
-            } else {
-                duv1 = vec3(1, 0, 0);
-                duv2 = vec3(0, 1, 0);
-            }
+        // Tangent from UV derivatives (Mikkelsen-lite) on lerped verts.
+        // For flat triangles without UVs, fallback to e1. Smooth meshes
+        // without UVs leave has_tangent false so shaders derive smooth ONB.
+        rec.has_tangent = false;
+        if (has_uv) {
+            vec3 duv1 = vec3(t1.x() - t0.x(), t1.y() - t0.y(), 0);
+            vec3 duv2 = vec3(t2.x() - t0.x(), t2.y() - t0.y(), 0);
             double uv_det = duv1.x() * duv2.y() - duv2.x() * duv1.y();
             if (fabs(uv_det) > 1e-12) {
                 vec3 tan_vec = (e1 * duv2.y() - e2 * duv1.y()) / uv_det;
@@ -111,6 +111,12 @@ public:
                     rec.tangent = unit_vector(tan_vec);
                     rec.has_tangent = true;
                 }
+            }
+        } else if (!smooth) {
+            vec3 tan_vec = e1 - flat * dot(e1, flat);
+            if (tan_vec.length_squared() > 1e-12) {
+                rec.tangent = unit_vector(tan_vec);
+                rec.has_tangent = true;
             }
         }
         return true;

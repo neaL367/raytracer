@@ -389,9 +389,15 @@ int run_interactive_renderer(int argc, char **argv) {
                                          SDL_TEXTUREACCESS_STREAMING, W, H);
     SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
 
-    // Buffers for progressive accumulation
+    enum class ViewMode { BEAUTY = 0, ALBEDO = 1, NORMAL = 2 };
+    ViewMode view_mode = ViewMode::BEAUTY;
+    bool accum_paused = false;
+
+    // Buffers for progressive accumulation and AOV inspection
     std::vector<vec3> accum_fb((size_t)W * H, vec3(0, 0, 0));
     std::vector<uint8_t> display_rgb((size_t)W * H * 3, 0);
+    std::vector<float> aov_alb((size_t)W * H * 4, 0.0f);
+    std::vector<float> aov_nrm((size_t)W * H * 4, 0.0f);
     int accum_spp = 0;
     bool use_aces = true;
     bool relative_mouse = false;
@@ -409,17 +415,21 @@ int run_interactive_renderer(int argc, char **argv) {
     char title_buf[256];
 
     std::cout << "\n=== Interactive Controls ===\n"
-              << "  WASD         : Fly forward / strafe\n"
+              << "  WASD         : Fly forward / backward / strafe left / right\n"
               << "  Space / C    : Fly up / down (also E / Q)\n"
-              << "  Shift / Ctrl : Sprint (3x) / Sneak (0.25x)\n"
+              << "  Shift / Ctrl : Sprint (3x) / Sneak (0.25x precision)\n"
               << "  Right Drag/F : Mouse Look / Toggle Cursor Lock\n"
-              << "  Mouse Wheel  : Adjust speed (current: " << fly_cam.speed << ")\n"
-              << "  G            : Toggle GPU / CPU Backend\n"
-              << "  T            : Toggle ACES Tonemapping\n"
+              << "  Mouse Wheel  : Adjust flight speed (current: " << fly_cam.speed << ")\n"
+              << "  1 - 4        : Camera bookmarks (Bunny, Crystals, Disney, Wide)\n"
+              << "  F1 - F3      : Display Mode (F1: Beauty, F2: Albedo AOV, F3: Normal AOV)\n"
+              << "  X            : Toggle Accumulation Pause / Resume\n"
+              << "  G            : Toggle GPU compute vs CPU multi-threading\n"
+              << "  T            : Toggle ACES film tonemapping vs Linear/sRGB\n"
               << "  [ / ]        : Adjust Exposure (current: " << exposure << ")\n"
-              << "  R            : Reset Camera\n"
-              << "  P            : Save Viewport PPM & Print Camera Code\n"
-              << "  Esc          : Exit\n\n";
+              << "  R            : Reset Camera to origin\n"
+              << "  P / F12      : Save Viewport PPM & Print Camera Code\n"
+              << "  H            : Print Interactive Hotkey Guide\n"
+              << "  Esc          : Exit Viewport\n\n";
 
     while (running) {
         auto frame_start = std::chrono::steady_clock::now();
@@ -466,7 +476,60 @@ int run_interactive_renderer(int argc, char **argv) {
                     fly_cam.init_from_camera(sdata.cam, initial_vfov);
                     cam_moved = true;
                     std::cout << "rt_view: Camera reset to origin.\n";
-                } else if (e.key.key == SDLK_P) {
+                } else if (e.key.key == SDLK_1) {
+                    fly_cam.eye = vec3(0.0, 0.68, 0.35);
+                    fly_cam.yaw = -90.0;
+                    fly_cam.pitch = -10.0;
+                    fly_cam.vfov = 38.0;
+                    cam_moved = true;
+                    std::cout << "rt_view: [Bookmark 1] Focus on Centerpiece Stanford Bunny\n";
+                } else if (e.key.key == SDLK_2) {
+                    fly_cam.eye = vec3(0.0, 0.30, 1.35);
+                    fly_cam.yaw = -90.0;
+                    fly_cam.pitch = -9.0;
+                    fly_cam.vfov = 44.0;
+                    cam_moved = true;
+                    std::cout << "rt_view: [Bookmark 2] Focus on Soap Bubble & Cauchy Crystal Pair\n";
+                } else if (e.key.key == SDLK_3) {
+                    fly_cam.eye = vec3(0.0, 0.15, 1.85);
+                    fly_cam.yaw = -90.0;
+                    fly_cam.pitch = -6.0;
+                    fly_cam.vfov = 52.0;
+                    cam_moved = true;
+                    std::cout << "rt_view: [Bookmark 3] Focus on Disney Car Paint & Velvet Flanks\n";
+                } else if (e.key.key == SDLK_4) {
+                    fly_cam.init_from_camera(sdata.cam, initial_vfov);
+                    cam_moved = true;
+                    std::cout << "rt_view: [Bookmark 4] Wide Studio Masterpiece View\n";
+                } else if (e.key.key == SDLK_F1) {
+                    view_mode = ViewMode::BEAUTY;
+                    std::cout << "rt_view: Display mode [F1: Beauty]\n";
+                } else if (e.key.key == SDLK_F2) {
+                    view_mode = ViewMode::ALBEDO;
+                    std::cout << "rt_view: Display mode [F2: Albedo AOV Guide]\n";
+                } else if (e.key.key == SDLK_F3) {
+                    view_mode = ViewMode::NORMAL;
+                    std::cout << "rt_view: Display mode [F3: Normal AOV Guide]\n";
+                } else if (e.key.key == SDLK_X) {
+                    accum_paused = !accum_paused;
+                    std::cout << "rt_view: Accumulation " << (accum_paused ? "[PAUSED]" : "[RESUMED]") << "\n";
+                } else if (e.key.key == SDLK_H) {
+                    std::cout << "\n=== rt_view Interactive Controls ===\n"
+                              << " WASD       : Fly forward / backward / strafe left / right\n"
+                              << " Space / C  : Fly vertically up / down (also E / Q)\n"
+                              << " Shift/Ctrl : Sprint 3x / Sneak 0.25x precision\n"
+                              << " Right Drag : Look around (pitch & yaw)\n"
+                              << " F          : Toggle captured mouse look mode\n"
+                              << " 1 - 4      : Camera bookmarks (Bunny / Crystals / Disney / Wide)\n"
+                              << " F1 - F3    : Display Mode (F1: Beauty, F2: Albedo AOV, F3: Normal AOV)\n"
+                              << " X          : Toggle Accumulation Pause / Resume\n"
+                              << " G          : Toggle GPU compute vs CPU multi-threading\n"
+                              << " T          : Toggle ACES film tonemapping vs Linear/sRGB\n"
+                              << " [ / ]      : Exposure decrease / increase\n"
+                              << " R          : Reset camera to origin\n"
+                              << " P / F12    : Save viewport snapshot to out/viewport.ppm\n"
+                              << " Esc        : Exit viewport\n\n";
+                } else if (e.key.key == SDLK_P || e.key.key == SDLK_F12) {
                     std::cout << "\n// Camera Snapshot (SPP: " << accum_spp << "):\n"
                               << "vec3 lookfrom(" << fly_cam.eye.x() << ", "
                               << fly_cam.eye.y() << ", " << fly_cam.eye.z() << ");\n"
@@ -539,54 +602,108 @@ int run_interactive_renderer(int argc, char **argv) {
             }
         }
 
-        // Render pass: dispatch progressive path tracing
-        if (use_gpu) {
-            push.spp = 1;
-            push.seed = (uint32_t)accum_spp + 1;
-            gpu_run(gpu, shader_path, push, gpu_rgba);
-            for (size_t i = 0; i < (size_t)W * H; ++i) {
-                accum_fb[i] += vec3(gpu_rgba[i * 4 + 0], gpu_rgba[i * 4 + 1], gpu_rgba[i * 4 + 2]);
-            }
-            accum_spp += 1;
-        } else {
-            // Multi-threaded CPU progressive slice
-            int chunk_h = (H + (int)num_threads - 1) / (int)num_threads;
-            std::vector<std::thread> workers;
-            workers.reserve(num_threads);
-            for (unsigned t = 0; t < num_threads; ++t) {
-                int y_start = (int)t * chunk_h;
-                int y_end = std::min(H, y_start + chunk_h);
-                if (y_start >= y_end) continue;
-                workers.emplace_back([&, y_start, y_end, t] {
-                    rng_seed(42u + (unsigned)accum_spp * 10007u + t * 997u);
-                    for (int sy = y_start; sy < y_end; ++sy) {
-                        int j = H - 1 - sy; // Screen row 0 is top; ray v=0 is bottom
-                        for (int i = 0; i < W; ++i) {
-                            double u = (i + random_double()) / (double)W;
-                            double v = (j + random_double()) / (double)H;
-                            ray r = active_cam.get_ray(u, v);
-                            vec3 col = tracer.Li(r, params);
-                            accum_fb[(size_t)sy * W + i] += col;
+        // Render pass: dispatch progressive path tracing when not paused
+        if (!accum_paused) {
+            if (use_gpu) {
+                push.spp = 1;
+                push.seed = (uint32_t)accum_spp + 1;
+                gpu_run(gpu, shader_path, push, gpu_rgba);
+                for (size_t i = 0; i < (size_t)W * H; ++i) {
+                    accum_fb[i] += vec3(gpu_rgba[i * 4 + 0], gpu_rgba[i * 4 + 1], gpu_rgba[i * 4 + 2]);
+                }
+                accum_spp += 1;
+            } else {
+                // Multi-threaded CPU progressive slice
+                int chunk_h = (H + (int)num_threads - 1) / (int)num_threads;
+                std::vector<std::thread> workers;
+                workers.reserve(num_threads);
+                for (unsigned t = 0; t < num_threads; ++t) {
+                    int y_start = (int)t * chunk_h;
+                    int y_end = std::min(H, y_start + chunk_h);
+                    if (y_start >= y_end) continue;
+                    workers.emplace_back([&, y_start, y_end, t] {
+                        rng_seed(42u + (unsigned)accum_spp * 10007u + t * 997u);
+                        for (int sy = y_start; sy < y_end; ++sy) {
+                            int j = H - 1 - sy; // Screen row 0 is top; ray v=0 is bottom
+                            for (int i = 0; i < W; ++i) {
+                                double u = (i + random_double()) / (double)W;
+                                double v = (j + random_double()) / (double)H;
+                                ray r = active_cam.get_ray(u, v);
+                                vec3 col = tracer.Li(r, params);
+                                accum_fb[(size_t)sy * W + i] += col;
+                            }
                         }
-                    }
-                });
+                    });
+                }
+                for (auto &w : workers)
+                    w.join();
+                accum_spp += 1;
             }
-            for (auto &w : workers)
-                w.join();
-            accum_spp += 1;
         }
 
-        // Convert accumulated HDR buffer to display RGB24
-        double inv_spp = 1.0 / (double)accum_spp;
-        for (size_t i = 0; i < (size_t)W * H; ++i) {
-            vec3 hdr = accum_fb[i] * inv_spp;
-            vec3 ldr = use_aces ? tonemap(hdr, exposure)
-                                : vec3(srgb_encode(hdr.x() * exposure),
-                                       srgb_encode(hdr.y() * exposure),
-                                       srgb_encode(hdr.z() * exposure));
-            display_rgb[i * 3 + 0] = (uint8_t)(std::clamp(ldr.x(), 0.0, 1.0) * 255.999);
-            display_rgb[i * 3 + 1] = (uint8_t)(std::clamp(ldr.y(), 0.0, 1.0) * 255.999);
-            display_rgb[i * 3 + 2] = (uint8_t)(std::clamp(ldr.z(), 0.0, 1.0) * 255.999);
+        // Convert active view mode to display RGB24
+        if (view_mode == ViewMode::BEAUTY) {
+            double inv_spp = (accum_spp > 0) ? (1.0 / (double)accum_spp) : 1.0;
+            for (size_t i = 0; i < (size_t)W * H; ++i) {
+                vec3 hdr = accum_fb[i] * inv_spp;
+                vec3 ldr = use_aces ? tonemap(hdr, exposure)
+                                    : vec3(srgb_encode(hdr.x() * exposure),
+                                           srgb_encode(hdr.y() * exposure),
+                                           srgb_encode(hdr.z() * exposure));
+                display_rgb[i * 3 + 0] = (uint8_t)(std::clamp(ldr.x(), 0.0, 1.0) * 255.999);
+                display_rgb[i * 3 + 1] = (uint8_t)(std::clamp(ldr.y(), 0.0, 1.0) * 255.999);
+                display_rgb[i * 3 + 2] = (uint8_t)(std::clamp(ldr.z(), 0.0, 1.0) * 255.999);
+            }
+        } else if (view_mode == ViewMode::ALBEDO) {
+            if (use_gpu && gpu.has_scene) {
+                gpu_read_aov(gpu, aov_alb, aov_nrm);
+                for (size_t i = 0; i < (size_t)W * H; ++i) {
+                    display_rgb[i * 3 + 0] = (uint8_t)(std::clamp(srgb_encode(aov_alb[i * 4 + 0]), 0.0, 1.0) * 255.999);
+                    display_rgb[i * 3 + 1] = (uint8_t)(std::clamp(srgb_encode(aov_alb[i * 4 + 1]), 0.0, 1.0) * 255.999);
+                    display_rgb[i * 3 + 2] = (uint8_t)(std::clamp(srgb_encode(aov_alb[i * 4 + 2]), 0.0, 1.0) * 255.999);
+                }
+            } else {
+                for (int y = 0; y < H; ++y) {
+                    int j = H - 1 - y;
+                    for (int x = 0; x < W; ++x) {
+                        double u = (x + 0.5) / (double)W;
+                        double v = (j + 0.5) / (double)H;
+                        ray r = active_cam.get_ray(u, v);
+                        vec3 a, n;
+                        bool hit;
+                        first_hit_aov(r, world, a, n, hit);
+                        size_t idx = (size_t)y * W + x;
+                        display_rgb[idx * 3 + 0] = (uint8_t)(std::clamp(srgb_encode(a.x()), 0.0, 1.0) * 255.999);
+                        display_rgb[idx * 3 + 1] = (uint8_t)(std::clamp(srgb_encode(a.y()), 0.0, 1.0) * 255.999);
+                        display_rgb[idx * 3 + 2] = (uint8_t)(std::clamp(srgb_encode(a.z()), 0.0, 1.0) * 255.999);
+                    }
+                }
+            }
+        } else if (view_mode == ViewMode::NORMAL) {
+            if (use_gpu && gpu.has_scene) {
+                gpu_read_aov(gpu, aov_alb, aov_nrm);
+                for (size_t i = 0; i < (size_t)W * H; ++i) {
+                    display_rgb[i * 3 + 0] = (uint8_t)(std::clamp(0.5f * aov_nrm[i * 4 + 0] + 0.5f, 0.0f, 1.0f) * 255.999f);
+                    display_rgb[i * 3 + 1] = (uint8_t)(std::clamp(0.5f * aov_nrm[i * 4 + 1] + 0.5f, 0.0f, 1.0f) * 255.999f);
+                    display_rgb[i * 3 + 2] = (uint8_t)(std::clamp(0.5f * aov_nrm[i * 4 + 2] + 0.5f, 0.0f, 1.0f) * 255.999f);
+                }
+            } else {
+                for (int y = 0; y < H; ++y) {
+                    int j = H - 1 - y;
+                    for (int x = 0; x < W; ++x) {
+                        double u = (x + 0.5) / (double)W;
+                        double v = (j + 0.5) / (double)H;
+                        ray r = active_cam.get_ray(u, v);
+                        vec3 a, n;
+                        bool hit;
+                        first_hit_aov(r, world, a, n, hit);
+                        size_t idx = (size_t)y * W + x;
+                        display_rgb[idx * 3 + 0] = (uint8_t)(std::clamp(0.5 * n.x() + 0.5, 0.0, 1.0) * 255.999);
+                        display_rgb[idx * 3 + 1] = (uint8_t)(std::clamp(0.5 * n.y() + 0.5, 0.0, 1.0) * 255.999);
+                        display_rgb[idx * 3 + 2] = (uint8_t)(std::clamp(0.5 * n.z() + 0.5, 0.0, 1.0) * 255.999);
+                    }
+                }
+            }
         }
 
         SDL_UpdateTexture(tex, nullptr, display_rgb.data(), W * 3);
@@ -604,9 +721,12 @@ int run_interactive_renderer(int argc, char **argv) {
             frames_since_title = 0;
             last_title_time = frame_end;
 
+            const char *mode_str = (view_mode == ViewMode::BEAUTY) ? "Beauty" :
+                                   (view_mode == ViewMode::ALBEDO) ? "Albedo AOV" : "Normal AOV";
             std::snprintf(title_buf, sizeof(title_buf),
-                          "rt_view [%s] %s | %dx%d | SPP: %d | %.1f FPS (%.1f ms) | Eye: (%.2f, %.2f, %.2f) | Speed: %.1f",
-                          use_gpu ? "GPU" : "CPU", scene_name.c_str(), W, H, accum_spp,
+                          "rt_view [%s] %s | %s%s | %dx%d | SPP: %d | %.1f FPS (%.1f ms) | Eye: (%.2f, %.2f, %.2f) | Speed: %.1f",
+                          use_gpu ? "GPU" : "CPU", scene_name.c_str(), mode_str,
+                          accum_paused ? " [PAUSED]" : "", W, H, accum_spp,
                           current_fps, current_ms, fly_cam.eye.x(), fly_cam.eye.y(), fly_cam.eye.z(), fly_cam.speed);
             SDL_SetWindowTitle(win, title_buf);
         }
