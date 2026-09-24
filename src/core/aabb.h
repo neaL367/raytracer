@@ -23,8 +23,9 @@ public:
     // value already computed while narrowing, so callers can order children
     // without repeating the box test.
     bool hit_entry(const ray &r, double t_min, double t_max, double &entry) const {
+        const vec3 &inv = r.inv_direction();
         for (int a = 0; a < 3; ++a) {
-            double invD = 1.0 / r.direction().e[a];
+            double invD = inv.e[a];
             double t0 = (minimum.e[a] - r.origin().e[a]) * invD;
             double t1 = (maximum.e[a] - r.origin().e[a]) * invD;
             if (invD < 0.0)

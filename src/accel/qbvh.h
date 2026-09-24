@@ -218,9 +218,10 @@ private:
     unsigned box_mask(const ray &r, double t_min, double t_max, double entry[4]) const {
 #ifdef QBVH_SSE2
         const vec3 &o = r.origin();
-        const vec3 &d = r.direction();
-        double ox[3] = {o.x(), o.y(), o.z()};
-        double dd[3] = {d.x(), d.y(), d.z()};
+        const vec3 &inv = r.inv_direction();
+        const __m128d o4[3] = { _mm_set1_pd(o.x()), _mm_set1_pd(o.y()), _mm_set1_pd(o.z()) };
+        const __m128d iv[3] = { _mm_set1_pd(inv.x()), _mm_set1_pd(inv.y()), _mm_set1_pd(inv.z()) };
+        const bool inv_neg[3] = { inv.x() < 0.0, inv.y() < 0.0, inv.z() < 0.0 };
         const double *mns[3] = {mnx, mny, mnz};
         const double *mxs[3] = {mxx, mxy, mxz};
         unsigned mask = 0;
@@ -228,18 +229,15 @@ private:
             __m128d tmn = _mm_set1_pd(t_min);
             __m128d tmx = _mm_set1_pd(t_max);
             for (int a = 0; a < 3; ++a) {
-                double invD = 1.0 / dd[a];
                 __m128d lo = _mm_loadu_pd(mns[a] + half * 2);
                 __m128d hi = _mm_loadu_pd(mxs[a] + half * 2);
-                if (invD < 0.0) {
+                if (inv_neg[a]) {
                     __m128d t = lo;
                     lo = hi;
                     hi = t;
                 }
-                __m128d o4 = _mm_set1_pd(ox[a]);
-                __m128d iv = _mm_set1_pd(invD);
-                __m128d t0 = _mm_mul_pd(_mm_sub_pd(lo, o4), iv);
-                __m128d t1 = _mm_mul_pd(_mm_sub_pd(hi, o4), iv);
+                __m128d t0 = _mm_mul_pd(_mm_sub_pd(lo, o4[a]), iv[a]);
+                __m128d t1 = _mm_mul_pd(_mm_sub_pd(hi, o4[a]), iv[a]);
                 __m128d gt0 = _mm_cmpgt_pd(t0, tmn);
                 tmn = _mm_or_pd(_mm_and_pd(gt0, t0), _mm_andnot_pd(gt0, tmn));
                 __m128d lt1 = _mm_cmplt_pd(t1, tmx);

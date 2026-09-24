@@ -49,6 +49,18 @@ public:
         return true;
     }
 
+    bool hit_any(const ray &r, double t_min, double t_max) const override {
+        double denom = dot(normal, r.direction());
+        if (std::abs(denom) < 1e-8)
+            return false;
+        double t = dot(center - r.origin(), normal) / denom;
+        if (t < t_min || t > t_max)
+            return false;
+        vec3 p = r.at(t);
+        double dist2 = (p - center).length_squared();
+        return (dist2 <= radius * radius && dist2 >= inner_radius * inner_radius);
+    }
+
     bool bounding_box(aabb &box) const override {
         const double pad = 1e-4;
         // Exact half-extent of planar disk projected onto axis i: R * sqrt(1 - n_i^2)

@@ -122,6 +122,28 @@ public:
         return true;
     }
 
+    bool hit_any(const ray &r, double t_min, double t_max) const override {
+        const double eps = 1e-8;
+        vec3 p0 = vert_at(0, r.time()), p1 = vert_at(1, r.time()),
+             p2 = vert_at(2, r.time());
+        vec3 e1 = p1 - p0, e2 = p2 - p0;
+        vec3 pvec = cross(r.direction(), e2);
+        double det = dot(e1, pvec);
+        if (fabs(det) < eps)
+            return false;
+        double inv = 1.0 / det;
+        vec3 tvec = r.origin() - p0;
+        double u = dot(tvec, pvec) * inv;
+        if (u < 0.0 || u > 1.0)
+            return false;
+        vec3 qvec = cross(tvec, e1);
+        double v = dot(r.direction(), qvec) * inv;
+        if (v < 0.0 || u + v > 1.0)
+            return false;
+        double t = dot(e2, qvec) * inv;
+        return (t >= t_min && t <= t_max);
+    }
+
     bool bounding_box(aabb &box) const override {        const double pad = 1e-4; // zero-thickness plane needs slab volume
         // Union of both motion endpoints: loose under motion, always correct.
         vec3 ps[6] = {v0, v1, v2, v0b, v1b, v2b};

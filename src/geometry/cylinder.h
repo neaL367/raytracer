@@ -112,11 +112,54 @@ public:
 
         rec.mat = mat;
         rec.hit_obj = nullptr;
-        rec.hit_prim = this;
         rec.tangent = u_axis;
         rec.has_tangent = true;
 
         return true;
+    }
+
+    bool hit_any(const ray &r, double t_min, double t_max) const override {
+        vec3 dp = r.origin() - base;
+        vec3 d_proj = r.direction() - dot(r.direction(), axis) * axis;
+        vec3 dp_proj = dp - dot(dp, axis) * axis;
+
+        double a = d_proj.length_squared();
+        double half_b = dot(d_proj, dp_proj);
+        double c = dp_proj.length_squared() - radius * radius;
+        double disc = half_b * half_b - a * c;
+
+        if (disc >= 0.0 && a > 1e-12) {
+            double sqrtd = std::sqrt(disc);
+            double root = (-half_b - sqrtd) / a;
+            if (root >= t_min && root <= t_max) {
+                double h = dot(r.at(root) - base, axis);
+                if (h >= 0.0 && h <= length)
+                    return true;
+            }
+            root = (-half_b + sqrtd) / a;
+            if (root >= t_min && root <= t_max) {
+                double h = dot(r.at(root) - base, axis);
+                if (h >= 0.0 && h <= length)
+                    return true;
+            }
+        }
+
+        if (capped) {
+            double denom = dot(r.direction(), axis);
+            if (std::abs(denom) > 1e-8) {
+                double t_base = dot(base - r.origin(), axis) / denom;
+                if (t_base >= t_min && t_base <= t_max) {
+                    if ((r.at(t_base) - base).length_squared() <= radius * radius)
+                        return true;
+                }
+                double t_top = dot(top - r.origin(), axis) / denom;
+                if (t_top >= t_min && t_top <= t_max) {
+                    if ((r.at(t_top) - top).length_squared() <= radius * radius)
+                        return true;
+                }
+            }
+        }
+        return false;
     }
 
     bool bounding_box(aabb &box) const override {

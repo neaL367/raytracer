@@ -42,6 +42,20 @@ public:
         return true;
     }
 
+    bool hit_any(const ray &r, double t_min, double t_max) const override {
+        double denom = dot(normal, r.direction());
+        if (fabs(denom) < 1e-8)
+            return false;
+        double t = (D - dot(normal, r.origin())) / denom;
+        if (t < t_min || t > t_max)
+            return false;
+        vec3 p = r.at(t);
+        vec3 pq = p - Q;
+        double alpha = dot(w, cross(pq, v));
+        double beta = dot(w, cross(u, pq));
+        return (alpha >= 0.0 && alpha <= 1.0 && beta >= 0.0 && beta <= 1.0);
+    }
+
     bool bounding_box(aabb &box) const override {
         const double pad = 1e-4;
         vec3 c1 = Q + u, c2 = Q + v, c3 = Q + u + v;

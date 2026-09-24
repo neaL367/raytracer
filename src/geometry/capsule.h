@@ -139,6 +139,74 @@ public:
         return true;
     }
 
+    bool hit_any(const ray &r, double t_min, double t_max) const override {
+        // 1. Test infinite cylinder section
+        vec3 dp = r.origin() - a;
+        vec3 d_proj = r.direction() - dot(r.direction(), axis) * axis;
+        vec3 dp_proj = dp - dot(dp, axis) * axis;
+
+        double a_cyl = d_proj.length_squared();
+        double half_b = dot(d_proj, dp_proj);
+        double c_cyl = dp_proj.length_squared() - radius * radius;
+        double disc = half_b * half_b - a_cyl * c_cyl;
+
+        if (disc >= 0.0 && a_cyl > 1e-12) {
+            double sqrtd = std::sqrt(disc);
+            double root = (-half_b - sqrtd) / a_cyl;
+            if (root >= t_min && root <= t_max) {
+                double s = dot(r.at(root) - a, axis);
+                if (s >= 0.0 && s <= length)
+                    return true;
+            }
+            root = (-half_b + sqrtd) / a_cyl;
+            if (root >= t_min && root <= t_max) {
+                double s = dot(r.at(root) - a, axis);
+                if (s >= 0.0 && s <= length)
+                    return true;
+            }
+        }
+
+        // 2. Test spherical end cap at a
+        vec3 oc_a = r.origin() - a;
+        double a_ray = r.direction().length_squared();
+        double hb_a = dot(oc_a, r.direction());
+        double c_a = oc_a.length_squared() - radius * radius;
+        double disc_a = hb_a * hb_a - a_ray * c_a;
+        if (disc_a >= 0.0 && a_ray > 1e-12) {
+            double sqrtd_a = std::sqrt(disc_a);
+            double root = (-half_b - sqrtd_a) / a_ray;
+            if (root >= t_min && root <= t_max) {
+                if (dot(r.at(root) - a, axis) < 0.0)
+                    return true;
+            }
+            root = (-half_b + sqrtd_a) / a_ray;
+            if (root >= t_min && root <= t_max) {
+                if (dot(r.at(root) - a, axis) < 0.0)
+                    return true;
+            }
+        }
+
+        // 3. Test spherical end cap at b
+        vec3 oc_b = r.origin() - b;
+        double hb_b = dot(oc_b, r.direction());
+        double c_b = oc_b.length_squared() - radius * radius;
+        double disc_b = hb_b * hb_b - a_ray * c_b;
+        if (disc_b >= 0.0 && a_ray > 1e-12) {
+            double sqrtd_b = std::sqrt(disc_b);
+            double root = (-half_b - sqrtd_b) / a_ray;
+            if (root >= t_min && root <= t_max) {
+                if (dot(r.at(root) - b, axis) > 0.0)
+                    return true;
+            }
+            root = (-half_b + sqrtd_b) / a_ray;
+            if (root >= t_min && root <= t_max) {
+                if (dot(r.at(root) - b, axis) > 0.0)
+                    return true;
+            }
+        }
+        return false;
+    }
+
     bool bounding_box(aabb &box) const override {
         const double pad = 1e-4;
         vec3 lo(std::min(a.x(), b.x()) - radius - pad,

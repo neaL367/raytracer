@@ -65,6 +65,24 @@ public:
         return true;
     }
 
+    bool hit_any(const ray &r, double t_min, double t_max) const override {
+        vec3 cen = center(r.time());
+        vec3 oc = r.origin() - cen;
+        double a = dot(r.direction(), r.direction());
+        double half_b = dot(oc, r.direction());
+        double c = dot(oc, oc) - radius * radius;
+        double discriminant = half_b * half_b - a * c;
+        if (discriminant < 0.0)
+            return false;
+        double sqrtd = std::sqrt(discriminant);
+
+        double root = (-half_b - sqrtd) / a;
+        if (root >= t_min && root <= t_max)
+            return true;
+        root = (-half_b + sqrtd) / a;
+        return (root >= t_min && root <= t_max);
+    }
+
     bool bounding_box(aabb &box) const override {
         // Union of both endpoints: loose under motion, always correct.
         aabb b0(c0 - vec3(radius, radius, radius), c0 + vec3(radius, radius, radius));

@@ -133,6 +133,53 @@ public:
         return true;
     }
 
+    bool hit_any(const ray &r, double t_min, double t_max) const override {
+        double dr = (r1 - r0) / (length > 1e-8 ? length : 1.0);
+        vec3 dp = r.origin() - base;
+        double d_dot_a = dot(r.direction(), axis);
+        double dp_dot_a = dot(dp, axis);
+        vec3 d_rad = r.direction() - d_dot_a * axis;
+        vec3 dp_rad = dp - dp_dot_a * axis;
+
+        double a = dot(d_rad, d_rad) - dr * dr * d_dot_a * d_dot_a;
+        double half_b = dot(d_rad, dp_rad) - dr * (r0 + dr * dp_dot_a) * d_dot_a;
+        double c = dot(dp_rad, dp_rad) - (r0 + dr * dp_dot_a) * (r0 + dr * dp_dot_a);
+        double disc = half_b * half_b - a * c;
+
+        if (disc >= 0.0 && std::abs(a) > 1e-12) {
+            double sqrtd = std::sqrt(disc);
+            double root = (-half_b - sqrtd) / a;
+            if (root >= t_min && root <= t_max) {
+                double s = dp_dot_a + root * d_dot_a;
+                if (s >= 0.0 && s <= length)
+                    return true;
+            }
+            root = (-half_b + sqrtd) / a;
+            if (root >= t_min && root <= t_max) {
+                double s = dp_dot_a + root * d_dot_a;
+                if (s >= 0.0 && s <= length)
+                    return true;
+            }
+        }
+
+        if (capped) {
+            double denom = dot(r.direction(), axis);
+            if (std::abs(denom) > 1e-8) {
+                double t_base = dot(base - r.origin(), axis) / denom;
+                if (t_base >= t_min && t_base <= t_max) {
+                    if ((r.at(t_base) - base).length_squared() <= r0 * r0)
+                        return true;
+                }
+                double t_top = dot(top - r.origin(), axis) / denom;
+                if (t_top >= t_min && t_top <= t_max) {
+                    if ((r.at(t_top) - top).length_squared() <= r1 * r1)
+                        return true;
+                }
+            }
+        }
+        return false;
+    }
+
     bool bounding_box(aabb &box) const override {
         const double pad = 1e-4;
         double max_r = std::max(r0, r1);
