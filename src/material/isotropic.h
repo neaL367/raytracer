@@ -8,7 +8,10 @@ public:
     isotropic(const vec3 &a) : albedo(a) {}
     bool scatter(const ray &, const hit_record &rec,
                  vec3 &attenuation, ray &scattered) const override {
-        scattered = ray(rec.point, random_unit_vector());
+        vec3 dir = random_unit_vector();
+        if (near_zero(dir))
+            dir = rec.normal; // degenerate guard (fixed 0.5 draws hit exact zero)
+        scattered = ray(rec.point, dir);
         attenuation = albedo;
         return true;
     }

@@ -556,6 +556,54 @@ inline bool expand_for_gpu(const std::shared_ptr<hittable> &o, double c, double 
     return false; // unknown shape (or transformed volume): fail loudly
 }
 
+// Light power CDF over the GPU light TABLE (not the CPU light list):
+// tessellated shapes (disk/cylinder/...) register per-tri entries, so the
+// table and the CPU list differ in count. Weights = entry area x flat
+// emit luminance, mirroring the shader's forward/reverse densities, so
+// the GPU estimator stays internally consistent (unbiased). Layout:
+// cumulative per-entry + total tail; uniform fallback when total <= 0.
+inline void build_gpu_light_cdf(const flat_scene &flat, std::vector<float> &cdf,
+                                float &total) {
+    const gpu_scene &gs = flat.gs;
+    cdf.assign(flat.light_table.size(), 0.0f);
+    total = 0.0f;
+    for (size_t i = 0; i < flat.light_table.size(); ++i) {
+        int ty = flat.light_table[i].first;
+        int idx = flat.light_table[i].second;
+        double area = 0, lum = 0;
+        if (ty == 0 && idx >= 0 && (size_t)idx < gs.quads.size()) {
+            const GPUQuad &q = gs.quads[(size_t)idx];
+            double ux = q.u[0], uy = q.u[1], uz = q.u[2];
+            double vx = q.v[0], vy = q.v[1], vz = q.v[2];
+            double cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx;
+            area = std::sqrt(cx * cx + cy * cy + cz * cz);
+            lum = 0.2126 * q.emit[0] + 0.7152 * q.emit[1] + 0.0722 * q.emit[2];
+        } else if (ty == 1 && idx >= 0 && (size_t)idx < gs.spheres.size()) {
+            double r = gs.spheres[(size_t)idx].c[3];
+            area = 4.0 * 3.1415926535897932385 * r * r;
+            lum = 0.2126 * gs.spheres[(size_t)idx].emit[0] +
+                  0.7152 * gs.spheres[(size_t)idx].emit[1] +
+                  0.0722 * gs.spheres[(size_t)idx].emit[2];
+        } else if (ty == 2 && idx >= 0 && (size_t)idx < gs.tris.size()) {
+            const GPUTri &t = gs.tris[(size_t)idx];
+            double e1x = t.b[0] - t.a[0], e1y = t.b[1] - t.a[1], e1z = t.b[2] - t.a[2];
+            double e2x = t.c[0] - t.a[0], e2y = t.c[1] - t.a[1], e2z = t.c[2] - t.a[2];
+            double cx = e1y * e2z - e1z * e2y, cy = e1z * e2x - e1x * e2z,
+                   cz = e1x * e2y - e1y * e2x;
+            area = 0.5 * std::sqrt(cx * cx + cy * cy + cz * cz);
+            lum = 0.2126 * t.emit[0] + 0.7152 * t.emit[1] + 0.0722 * t.emit[2];
+        }
+        if (lum > 0 && area > 0)
+            total += (float)(area * lum);
+        cdf[i] = total;
+    }
+    if (total <= 0) {
+        for (size_t i = 0; i < flat.light_table.size(); ++i)
+            cdf[i] = (float)(i + 1);
+        total = (float)flat.light_table.size();
+    }
+}
+
 // Build typed arrays + SAH tree + flat nodes from a scene. False on
 // unknown shapes only. Emissive prims (any shape) register in the light
 // table; the emissive-first partition is legacy order, kept stable.

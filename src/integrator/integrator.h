@@ -45,8 +45,10 @@ struct render_params {
     const std::vector<std::shared_ptr<hittable>> &media;
     bool use_env = false;
     bool black_bg = false;
-    bool mix_pdf = false;
-    bool spectral = false; // M67: hero-wavelength transport (opt-in)
+    // Power-CDF light importance (always on): forward NEE picks by power,
+    // reverse densities match. Built once per render, read-only in Li().
+    const std::vector<double> *light_cdf = nullptr;
+    double light_power_total = 0.0;
 };
 
 class integrator {
@@ -61,18 +63,6 @@ public:
         double pdf_b_last = 0;
         medium_stack nest; // nested-dielectric path state (M57; air bottom)
         const double pi = 3.1415926535897932385;
-        // M67: one hero channel per path (0/1/2 = 650/550/450nm), drawn once.
-        // Off = legacy RGB (no draw, streams bit-exact). pick() wraps every
-        // material/light quantity below with the 1/3 sampling weight.
-        int hero = -1;
-        if (p.spectral) {
-            hero = (int)(random_double() * 3.0);
-            if (hero < 0)
-                hero = 0;
-            if (hero > 2)
-                hero = 2;
-            spectrum::hero_channel() = hero;
-        }
 
         for (int bounce = 0; bounce < p.max_depth; ++bounce) {
             hit_record rec;
@@ -85,24 +75,26 @@ public:
                 vec3 miss_L = p.use_env ? env_light::radiance(cur.direction())
                                       : env_light::sky(cur.direction());
                 if (p.use_env && !specular) {
-                    // MIS weight vs active env PDF (HDRI or analytic 1/4PI).
+                    // MIS weight vs the sun-cone mixture forward sampler.
                     double w = direction_pdf::power_weight(
-                        pdf_b_last, env_light::sample_pdf_for(cur.direction()));
+                        pdf_b_last,
+                        env_light::sample_pdf_mix_for(cur.direction()));
                     L += throughput * miss_L * w;
                 } else {
                     L += throughput * miss_L;
                 }
                 break;
             }
-            vec3 Le = spectrum::pick(rec.mat->emitted(rec), hero, p.spectral);
+            vec3 Le = rec.mat->emitted(rec);
             if (Le.length_squared() > 0) {
                 if (specular) {
                     L += throughput * Le;
                 } else {
                     // MIS weight for BSDF-found light: power heuristic over
-                    // the NEE density of the same path (single source: pdf.h).
-                    double pdf_l = direction_pdf::nee_value_for_hit(
-                        p.lights, rec.mat, rec.point, prev_point, cur.time());
+                    // the CDF-matched NEE density (single source: pdf.h).
+                    double pdf_l = direction_pdf::nee_value_for_hit_power(
+                        p.lights, *p.light_cdf, p.light_power_total, rec.mat,
+                        rec.point, prev_point, cur.time());
                     double w = (pdf_l <= 0) ? 1.0
                                             : direction_pdf::power_weight(pdf_b_last, pdf_l);
                     L += throughput * Le * w;
@@ -119,10 +111,8 @@ public:
             if (rec.mat->ior() != 1.0 || rec.mat->priority() != 0) {
                 double eta = 0, chord = 0;
                 vec3 exit_absorb;
-                // Hero-resolved IOR in spectral mode (dispersion-aware stack).
-                double iri = p.spectral ? rec.mat->ior_at(hero) : rec.mat->ior();
                 medium_stack::event ev =
-                    nest.resolve(iri, rec.mat->priority(), rec.hit_prim,
+                    nest.resolve(rec.mat->ior(), rec.mat->priority(), rec.hit_prim,
                                  rec.point, rec.mat->absorb(), eta, chord, exit_absorb);
                 if (ev != medium_stack::PASS) {
                     rec.nest_eta = eta;
@@ -134,9 +124,6 @@ public:
             }
             if (!rec.mat->scatter(cur, rec, attenuation, scattered))
                 break; // absorbed
-            // M67: channel-pick the fresh attenuation (single choke point:
-            // volumes ride scatter too, so phase albedos are covered).
-            attenuation = spectrum::pick(attenuation, hero, p.spectral);
             bool diffuse = rec.mat->is_diffuse();
             bool vol = rec.mat->is_volume(); // scattering event in media
             // Density gate (M60): thin media skip explicit NEE (back to
@@ -151,12 +138,12 @@ public:
                 vol_nee = volume_nee_fires(dens);
             }
 
-            if (diffuse && !p.lights.empty() && !p.mix_pdf) {
-                // Next-event estimation: uniform light + uniform point.
-                int li = (int)(random_double() * p.lights.size());
-                if (li >= (int)p.lights.size())
-                    li = (int)p.lights.size() - 1;
-                const auto &light = p.lights[(size_t)li];
+            if (diffuse && !p.lights.empty()) {
+                // Next-event estimation: power-CDF light + uniform point.
+                double pick_p = 1.0;
+                size_t li = pick_light_power(*p.light_cdf, p.light_power_total,
+                                             random_double(), pick_p);
+                const auto &light = p.lights[li];
                 double eu1 = random_double(), eu2 = random_double();
                 vec3 lp = light_point(light, eu1, eu2, cur.time());
                 vec3 toL = lp - rec.point;
@@ -175,34 +162,58 @@ public:
                     if (Tr > 0) {
                         double lu = 0, lv = 0;
                         light_uv(light, eu1, eu2, cur.time(), lu, lv);
-                        vec3 light_Le = spectrum::pick(
-                            light_emission(light, lp, lu, lv, dist), hero, p.spectral);
-                        double pdf_l = dist * dist /
-                                       ((double)p.lights.size() * area * cosA);
+                        vec3 light_Le = light_emission(light, lp, lu, lv, dist);
+                        // Forward pdf matches the pick: uniform 1/N or
+                        // power pick_p. Weight factor carries 1/pick_p.
+                        double pdf_l = pick_p * dist * dist / (area * cosA);
                         double pdf_b = cosine_pdf(cosS);
                         double w = direction_pdf::power_weight(pdf_l, pdf_b);
-                        // f*G/pdf_area: rho*Le*cosS*cosA*A*L/(PI*dist^2)
+                        // f*G/pdf_area: rho*Le*cosS*cosA*A/(PI*dist^2*pick_p)
                         L += throughput * attenuation * light_Le *
-                             (cosS * cosA * (double)p.lights.size() * area /
-                              (pi * dist * dist)) * w * Tr;
+                             (cosS * cosA * area / (pick_p * pi * dist * dist)) *
+                             w * Tr;
                     }
                 }
             }
 
-            if (p.use_env && diffuse && !p.mix_pdf) {
-                // Environment NEE: sample from the active env (analytic uniform
-                // sphere or HDRI CDF), shadow probe to infinity, power MIS
-                // against the cosine strategy. Draws RNG only when opted in.
+            if (p.use_env && diffuse) {
+                // Environment NEE: 50/50 sun-cone leg (analytic only; HDRI
+                // keeps its own CDF), shadow probe to infinity, power MIS
+                // against the cosine strategy.
                 double pdf_e = 0.0;
-                vec3 edir = env_light::sample_dir(random_double(), random_double(), pdf_e);
+                vec3 edir;
+                if (env_light::g_hdri() == nullptr && random_double() < 0.5) {
+                    double u1 = random_double(), u2 = random_double();
+                    double c = env_light::sun_cos_thresh();
+                    double z = 1.0 - (1.0 - c) * u1;
+                    double phi = 2.0 * pi * u2;
+                    double rr = std::sqrt(std::max(1.0 - z * z, 0.0));
+                    vec3 local(rr * std::cos(phi), rr * std::sin(phi), z);
+                    onb sun_frame;
+                    sun_frame.build_from_w(env_light::sun_dir());
+                    edir = sun_frame.local(local);
+                    double cone_pdf = env_light::sun_cone_pdf();
+                    double sph_pdf = env_light::analytic_sample_pdf();
+                    pdf_e = 0.5 * cone_pdf + 0.5 * sph_pdf;
+                } else {
+                    edir = env_light::sample_dir(random_double(), random_double(),
+                                                 pdf_e);
+                    if (env_light::g_hdri() == nullptr) {
+                        double cone_pdf =
+                            (dot(unit_vector(edir), env_light::sun_dir()) >=
+                             env_light::sun_cos_thresh())
+                                ? env_light::sun_cone_pdf()
+                                : 0.0;
+                        pdf_e = 0.5 * cone_pdf + 0.5 * pdf_e;
+                    }
+                }
                 double cosS = dot(rec.normal, edir);
                 if (cosS > 0 && pdf_e > 0) {
                     count_ray(); // env shadow ray
                     double Tr = shadow_transmittance(p.world, p.media, rec.point, edir, 1e30,
                                                      cur.time());
                     if (Tr > 0) {
-                        vec3 env_Le = spectrum::pick(env_light::radiance(edir), hero,
-                                                         p.spectral);
+                        vec3 env_Le = env_light::radiance(edir);
                         double pdf_b = cosine_pdf(cosS);
                         double w = direction_pdf::power_weight(pdf_e, pdf_b);
                         L += throughput * attenuation * env_Le *
@@ -211,15 +222,15 @@ public:
                 }
             }
 
-            if (vol_nee && !p.lights.empty() && !p.mix_pdf) {
+            if (vol_nee && !p.lights.empty()) {
                 // Volume NEE (M59): direct-light in-scattering at the event.
                 // Phase is uniform (no cosS gate, no cosS in the weight);
                 // MIS against the 1/4PI continuation, like surface NEE.
                 // Draws only on events, so event-free scenes stay byte-exact.
-                int li = (int)(random_double() * p.lights.size());
-                if (li >= (int)p.lights.size())
-                    li = (int)p.lights.size() - 1;
-                const auto &light = p.lights[(size_t)li];
+                double vpick_p = 1.0;
+                size_t vli = pick_light_power(*p.light_cdf, p.light_power_total,
+                                              random_double(), vpick_p);
+                const auto &light = p.lights[vli];
                 double eu1 = random_double(), eu2 = random_double();
                 vec3 lp = light_point(light, eu1, eu2, cur.time());
                 vec3 toL = lp - rec.point;
@@ -235,21 +246,19 @@ public:
                     if (Tr > 0) {
                         double lu = 0, lv = 0;
                         light_uv(light, eu1, eu2, cur.time(), lu, lv);
-                        vec3 light_Le = spectrum::pick(
-                            light_emission(light, lp, lu, lv, dist), hero, p.spectral);
-                        double pdf_l = dist * dist /
-                                       ((double)p.lights.size() * area * cosA);
+                        vec3 light_Le = light_emission(light, lp, lu, lv, dist);
+                        double pdf_l = vpick_p * dist * dist / (area * cosA);
                         double pdf_b = 1.0 / (4.0 * pi);
                         double w = direction_pdf::power_weight(pdf_l, pdf_b);
-                        // f*G/pdf: (rho/4PI)*Le*A*cosA/dist^2, N lights.
+                        // f*G/pdf: (rho/4PI)*Le*A*cosA/(dist^2*pick_p).
                         L += throughput * attenuation * light_Le *
-                             (cosA * (double)p.lights.size() * area /
-                              (4.0 * pi * dist * dist)) * w * Tr;
+                             (cosA * area / (vpick_p * 4.0 * pi * dist * dist)) *
+                             w * Tr;
                     }
                 }
             }
 
-            if (p.use_env && vol_nee && !p.mix_pdf) {
+            if (p.use_env && vol_nee) {
                 // Environment in-scattering: sample from active env, probe to
                 // infinity, power MIS against the uniform phase continuation.
                 double pdf_e = 0.0;
@@ -259,8 +268,7 @@ public:
                     double Tr = shadow_transmittance(p.world, p.media, rec.point, edir, 1e30,
                                                      cur.time());
                     if (Tr > 0) {
-                        vec3 env_Le = spectrum::pick(env_light::radiance(edir), hero,
-                                                         p.spectral);
+                        vec3 env_Le = env_light::radiance(edir);
                         double pdf_b = 1.0 / (4.0 * pi);
                         double w = direction_pdf::power_weight(pdf_e, pdf_b);
                         L += throughput * attenuation * env_Le * (1.0 / (4.0 * pi * pdf_e)) *
@@ -270,58 +278,35 @@ public:
             }
 
             if (diffuse) {
-                if (p.mix_pdf) {
-                    // Book mixture path (M61): direction + density from the
-                    // 50/50 blend, weight by cosine/mixture, no shadow rays.
-                    // Emission counts full (specular=true below): the blend
-                    // already importance-samples lights, no MIS weights.
-                    double pdf_mix = 0;
-                    vec3 mdir = direction_pdf::sample_mixture(p.world, p.lights, rec.point,
-                                                              rec.normal, cur.time(),
-                                                              pdf_mix);
-                    double cval =
-                        direction_pdf::cosine_value(unit_vector(mdir), rec.normal);
-                    if (pdf_mix <= 0)
-                        break; // degenerate: absorbed
-                    throughput = throughput * attenuation * (cval / pdf_mix);
-                    scattered = ray(rec.point, mdir);
-                } else {
-                    // Cosine sampling: f*cos/pdf = rho exact, no division.
-                    vec3 wi = unit_vector(scattered.direction());
-                    pdf_b_last = cosine_pdf(dot(wi, rec.normal));
-                    throughput = throughput * attenuation;
-                }
-                specular = p.mix_pdf; // mixture: full counts, no MIS anywhere
+                // Cosine sampling: f*cos/pdf = rho exact, no division.
+                vec3 wi = unit_vector(scattered.direction());
+                pdf_b_last = cosine_pdf(dot(wi, rec.normal));
+                throughput = throughput * attenuation;
+                specular = false;
             } else {
                 // First-class sampling density: delta materials report 0 and
                 // keep full light counts; isotropic now MIS-weights (1/4PI).
                 pdf_b_last = rec.mat->direction_pdf(scattered.direction(), rec);
                 throughput = throughput * attenuation;
                 specular = (pdf_b_last <= 0);
-                // Mixture mode: volumes continue pure, found lights full.
-                if (p.mix_pdf)
-                    specular = true;
             }
             prev_point = rec.point;
             scattered.set_time(cur.time()); // path shares primary time
             cur = scattered;
             count_ray(); // bounce ray
 
-            // Russian roulette past depth 3: unbiased, scales by 1/q.
+            // Russian roulette past depth 3: luminance survival probability
+            // (kills single-channel stragglers max-channel keeps), unbiased
+            // 1/q rescale. Mirrored in the GPU shader.
             if (bounce >= 3) {
-                double q = throughput.x();
-                if (throughput.y() > q)
-                    q = throughput.y();
-                if (throughput.z() > q)
-                    q = throughput.z();
+                double q = 0.2126 * throughput.x() + 0.7152 * throughput.y() +
+                           0.0722 * throughput.z();
                 q = q < 0.95 ? q : 0.95;
                 if (q <= 0 || random_double() > q)
                     break;
                 throughput = throughput / q;
             }
         }
-        spectrum::hero_channel() = -1; // release thread-local hero
-        // M67: single compensation for the 1/3 hero sampling probability.
-        return p.spectral ? L * 3.0 : L;
+        return L;
     }
 };

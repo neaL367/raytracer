@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <vector>
 
 struct light {
     light() {}
@@ -260,4 +261,56 @@ inline vec3 light_emission(const light &lt, const vec3 &lp, double u, double v,
     rec.v = v;
     rec.t = dist;
     return light_mat(lt)->emitted(rec);
+}
+
+// Power approx for importance picking: area * luminance at center sample.
+// Single NEE strategy: forward picks and reverse densities both use it.
+inline double light_power_approx(const light &lt) {
+    double area = light_area(lt);
+    if (area <= 0)
+        return 0.0;
+    vec3 lp = light_point(lt, 0.5, 0.5, 0.0);
+    double lu = 0.5, lv = 0.5;
+    light_uv(lt, 0.5, 0.5, 0.0, lu, lv);
+    vec3 Le = light_emission(lt, lp, lu, lv, 1.0);
+    double lum = 0.2126 * Le.x() + 0.7152 * Le.y() + 0.0722 * Le.z();
+    return lum > 0 ? area * lum : 0.0;
+}
+
+// CDF over light powers (cumulative, last entry = total). Falls back to
+// uniform (equal weights) when total power is zero.
+inline void build_light_cdf(const std::vector<light> &lights, std::vector<double> &cdf,
+                             double &total) {
+    cdf.assign(lights.size(), 0.0);
+    total = 0.0;
+    for (size_t i = 0; i < lights.size(); ++i) {
+        total += light_power_approx(lights[i]);
+        cdf[i] = total;
+    }
+    if (total <= 0) {
+        for (size_t i = 0; i < lights.size(); ++i)
+            cdf[i] = (double)(i + 1);
+        total = (double)lights.size();
+    }
+}
+
+// Pick light index by power CDF. Returns index + pick probability.
+inline size_t pick_light_power(const std::vector<double> &cdf, double total, double u,
+                                double &pick_p) {
+    size_t n = cdf.size();
+    double x = u * total;
+    size_t lo = 0, hi = n;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (cdf[mid] < x)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    size_t idx = lo < n ? lo : n - 1;
+    double prev = idx > 0 ? cdf[idx - 1] : 0.0;
+    pick_p = (cdf[idx] - prev) / total;
+    if (pick_p <= 0)
+        pick_p = 1.0 / (double)n;
+    return idx;
 }

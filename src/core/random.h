@@ -1,17 +1,23 @@
 #pragma once
 #include "vec3.h"
-#include <random>
+#include <cstdint>
 
-// Single RNG seam. Fixed seed for tests, reseeded per render.
-// Reason: deterministic tests, decorrelated pixels later.
-inline std::mt19937 &rng_engine() {
-    static thread_local std::mt19937 eng{42};
-    return eng;
+inline uint64_t &rng_state() {
+    static thread_local uint64_t s{0x9e3779b97f4a7c15ULL};
+    return s;
 }
-inline void rng_seed(unsigned s) { rng_engine().seed(s); }
-// Forensics hatch (M54): fixed 0.5 stream makes renders deterministic
-// functions of geometry (pixel centers, center light samples). Off by
-// default; tests never enable it.
+inline uint64_t rng_next() {
+    uint64_t z = (rng_state() += 0x9e3779b97f4a7c15ULL);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    return z ^ (z >> 31);
+}
+inline void rng_seed(unsigned s) {
+    uint64_t z = static_cast<uint64_t>(s) + 0x9e3779b97f4a7c15ULL;
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    rng_state() = z ^ (z >> 31);
+}
 inline bool &rng_fixed_flag() {
     static thread_local bool f = false;
     return f;
@@ -19,8 +25,7 @@ inline bool &rng_fixed_flag() {
 inline double random_double() {
     if (rng_fixed_flag())
         return 0.5;
-    static thread_local std::uniform_real_distribution<double> dist(0.0, 1.0);
-    return dist(rng_engine());
+    return (rng_next() >> 11) * 1.1102230246251565e-16;
 }
 inline double random_double(double lo, double hi) {
     return lo + (hi - lo) * random_double();

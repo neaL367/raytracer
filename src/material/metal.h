@@ -7,7 +7,7 @@ public:
     // Roughness 0 = delta mirror. VNDF sampling, weight F*G2/G1(V).
     metal(const vec3 &a, double r) : albedo(a), roughness(r < 0 ? 0 : (r > 1 ? 1 : r)) {}
     // Measured-data conductor (M67): n/k preset 1..4 (Au/Ag/Cu/Al, approx),
-    // exact complex Fresnel per hero channel instead of Schlick-from-F0.
+    // exact complex Fresnel per channel instead of Schlick-from-F0.
     // Works in RGB mode too (full 3-channel evaluation, no stream change).
     metal(int nk_preset, double r)
         : roughness(r < 0 ? 0 : (r > 1 ? 1 : r)), nk_id(nk_preset) {}
@@ -43,7 +43,7 @@ public:
         return R;
     }
     // Film-modulated reflectance (M68): Airy overcoat on the substrate,
-    // evaluated per hero channel. Substrate = measured n/k when present,
+    // evaluated per channel. Substrate = measured n/k when present,
     // else F0-as-dielectric-n (documented approximation).
     vec3 film_reflectance(double cos_vh) const {
         if (nk_id > 0) {
@@ -52,7 +52,7 @@ public:
                 double n = 0, k = 0;
                 spectrum::conductor_nk(nk_id, c, n, k);
                 R.e[c] = thinfilm::film_R(1.0, film_n, film_d, n, k, cos_vh,
-                                          spectrum::kHeroLambda[c]);
+                                          spectrum::kChannelLambda[c]);
             }
             return R;
         }

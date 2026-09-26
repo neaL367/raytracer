@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Estimator drift harness (M54/M62 parity verification).
-Runs a matrix of scenes x sampling modes x bounce depths x RNG modes (fixed-RNG vs sampled)
+Runs a matrix of scenes x bounce depths x RNG modes (fixed-RNG vs sampled)
 across CPU (raytracer) and GPU (rt_gpu), diffing the resulting images via rt_view --stats.
 
 Usage:
@@ -32,9 +32,9 @@ def find_binary(names, search_dirs):
     return None
 
 
-def run_cell(cpu_bin, gpu_bin, spv_bin, view_bin, scene, mode, depth, rng_mode,
+def run_cell(cpu_bin, gpu_bin, spv_bin, view_bin, scene, depth, rng_mode,
              spp, w, h, out_dir):
-    cell_id = f"{scene}_{mode}_d{depth}_{rng_mode}"
+    cell_id = f"{scene}_d{depth}_{rng_mode}"
     cpu_ppm = str(Path(out_dir) / f"cpu_{cell_id}.ppm")
     gpu_ppm = str(Path(out_dir) / f"gpu_{cell_id}.ppm")
     is_fixed = (rng_mode == "fixed")
@@ -46,7 +46,6 @@ def run_cell(cpu_bin, gpu_bin, spv_bin, view_bin, scene, mode, depth, rng_mode,
         "--width", str(w),
         "--height", str(h),
         "--spp", str(spp),
-        "--pdf", mode,
         "--maxdepth", str(depth),
         cpu_ppm,
     ]
@@ -61,7 +60,6 @@ def run_cell(cpu_bin, gpu_bin, spv_bin, view_bin, scene, mode, depth, rng_mode,
         "--width", str(w),
         "--height", str(h),
         "--spp", str(spp),
-        "--pdf", mode,
         "--maxdepth", str(depth),
         gpu_ppm,
     ]
@@ -97,7 +95,6 @@ def run_cell(cpu_bin, gpu_bin, spv_bin, view_bin, scene, mode, depth, rng_mode,
 
     return {
         "scene": scene,
-        "mode": mode,
         "depth": depth,
         "rng": rng_mode,
         "spp": spp,
@@ -115,7 +112,7 @@ def main():
     parser = argparse.ArgumentParser(description="Estimator Parity Drift Harness")
     parser.add_argument("--fast", action="store_true", help="Run fast subset (default scene, 64x36, 4spp, under 10s budget)")
     parser.add_argument("--scenes", default=None, help="Comma-separated scenes to test")
-    parser.add_argument("--modes", default="mis,mixture", help="Sampling modes (default: mis,mixture)")
+
     parser.add_argument("--depths", default="1,2,50", help="Bounce depths (default: 1,2,50)")
     parser.add_argument("--rng", default="fixed,sampled", help="RNG modes (default: fixed,sampled)")
     parser.add_argument("--spp", type=int, default=None, help="Samples per pixel")
@@ -174,7 +171,6 @@ def main():
 
     if args.fast:
         scenes = ["default"] if not args.scenes else [s.strip() for s in args.scenes.split(",")]
-        modes = ["mis", "mixture"] if not args.modes else [m.strip() for m in args.modes.split(",")]
         depths = [1, 2, 50]
         rng_modes = ["fixed", "sampled"]
         spp = args.spp or 4
@@ -182,7 +178,6 @@ def main():
         h = args.height or 36
     else:
         scenes = ["default", "showcase"] if not args.scenes else [s.strip() for s in args.scenes.split(",")]
-        modes = [m.strip() for m in args.modes.split(",")]
         depths = [int(d.strip()) for d in args.depths.split(",")]
         rng_modes = [r.strip() for r in args.rng.split(",")]
         spp = args.spp or 4
@@ -206,11 +201,11 @@ def main():
     results = {}
     failures = []
 
-    print(f"Running parity harness: {len(scenes)} scenes x {len(modes)} modes x {len(depths)} depths x {len(rng_modes)} RNG modes = {len(scenes)*len(modes)*len(depths)*len(rng_modes)} cells")
+    print(f"Running parity harness: {len(scenes)} scenes x {len(depths)} depths x {len(rng_modes)} RNG modes = {len(scenes)*len(depths)*len(rng_modes)} cells")
     print(f"Resolution: {w}x{h} @ {spp} spp | Output: {out_dir}\n")
 
-    header = f"| Scene | Mode | Depth | RNG | Mean Abs | Max Abs | Over 8 | CPU (s) | GPU (s) | Status |"
-    sep    = f"|:------|:-----|:------|:----|:---------|:--------|:-------|:--------|:--------|:-------|"
+    header = f"| Scene | Depth | RNG | Mean Abs | Max Abs | Over 8 | CPU (s) | GPU (s) | Status |"
+    sep    = f"|:------|:------|:----|:---------|:--------|:-------|:--------|:--------|:-------|"
     print(header)
     print(sep)
 
@@ -219,48 +214,47 @@ def main():
         if sc in ["cornell", "book2"] and not args.height:
             scene_h = w
 
-        for md in modes:
-            for d in depths:
-                for rng in rng_modes:
-                    key = f"{sc}/{md}/d{d}/{rng}"
-                    cell = run_cell(cpu_bin, gpu_bin, spv_bin, view_bin,
-                                    sc, md, d, rng, spp, w, scene_h, out_dir)
-                    results[key] = cell
+        for d in depths:
+            for rng in rng_modes:
+                key = f"{sc}/d{d}/{rng}"
+                cell = run_cell(cpu_bin, gpu_bin, spv_bin, view_bin,
+                                sc, d, rng, spp, w, scene_h, out_dir)
+                results[key] = cell
 
-                    cell_passed = True
-                    reason = ""
+                cell_passed = True
+                reason = ""
 
-                    if key in baseline_data:
-                        b = baseline_data[key]
-                        tol = args.tolerance_factor
-                        if rng == "fixed":
-                            max_allowed_mean = max(b["mean_abs"] * tol, b["mean_abs"] + 0.05)
-                            max_allowed_over8 = max(b["over8"] * tol, b["over8"] + 0.2)
-                        else:
-                            max_allowed_mean = max(b["mean_abs"] * tol, b["mean_abs"] + 2.0)
-                            max_allowed_over8 = max(b["over8"] * tol, b["over8"] + 2.0)
-
-                        if cell["mean_abs"] > max_allowed_mean:
-                            cell_passed = False
-                            reason = f"mean {cell['mean_abs']:.3f} > baseline {b['mean_abs']:.3f} * {tol}"
-                        elif cell["over8"] > max_allowed_over8:
-                            cell_passed = False
-                            reason = f"over8 {cell['over8']:.2f}% > baseline {b['over8']:.2f}% * {tol}"
+                if key in baseline_data:
+                    b = baseline_data[key]
+                    tol = args.tolerance_factor
+                    if rng == "fixed":
+                        max_allowed_mean = max(b["mean_abs"] * tol, b["mean_abs"] + 0.05)
+                        max_allowed_over8 = max(b["over8"] * tol, b["over8"] + 0.2)
                     else:
-                        if rng == "fixed":
-                            if cell["mean_abs"] > 1.0 or cell["over8"] > 3.0:
-                                cell_passed = False
-                                reason = f"fixed-RNG drift exceeded (mean={cell['mean_abs']:.3f}, over8={cell['over8']:.2f}%)"
-                        else:
-                            if cell["mean_abs"] > 50.0 or cell["over8"] > 60.0:
-                                cell_passed = False
-                                reason = f"sampled drift exceeded (mean={cell['mean_abs']:.3f}, over8={cell['over8']:.2f}%)"
+                        max_allowed_mean = max(b["mean_abs"] * tol, b["mean_abs"] + 2.0)
+                        max_allowed_over8 = max(b["over8"] * tol, b["over8"] + 2.0)
 
-                    status = "PASS" if cell_passed else "FAIL"
-                    if not cell_passed:
-                        failures.append((key, reason))
+                    if cell["mean_abs"] > max_allowed_mean:
+                        cell_passed = False
+                        reason = f"mean {cell['mean_abs']:.3f} > baseline {b['mean_abs']:.3f} * {tol}"
+                    elif cell["over8"] > max_allowed_over8:
+                        cell_passed = False
+                        reason = f"over8 {cell['over8']:.2f}% > baseline {b['over8']:.2f}% * {tol}"
+                else:
+                    if rng == "fixed":
+                        if cell["mean_abs"] > 1.0 or cell["over8"] > 3.0:
+                            cell_passed = False
+                            reason = f"fixed-RNG drift exceeded (mean={cell['mean_abs']:.3f}, over8={cell['over8']:.2f}%)"
+                    else:
+                        if cell["mean_abs"] > 50.0 or cell["over8"] > 60.0:
+                            cell_passed = False
+                            reason = f"sampled drift exceeded (mean={cell['mean_abs']:.3f}, over8={cell['over8']:.2f}%)"
 
-                    print(f"| {sc:5} | {md:7} | {d:5} | {rng:7} | {cell['mean_abs']:8.3f} | {cell['max_abs']:7} | {cell['over8']:5.2f}% | {cell['t_cpu']:7.3f} | {cell['t_gpu']:7.3f} | {status} |")
+                status = "PASS" if cell_passed else "FAIL"
+                if not cell_passed:
+                    failures.append((key, reason))
+
+                print(f"| {sc:5} | {d:5} | {rng:7} | {cell['mean_abs']:8.3f} | {cell['max_abs']:7} | {cell['over8']:5.2f}% | {cell['t_cpu']:7.3f} | {cell['t_gpu']:7.3f} | {status} |")
 
     if args.save_baseline:
         save_path = Path(args.save_baseline)

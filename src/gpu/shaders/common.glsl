@@ -198,9 +198,12 @@ float h32f(uint base, int bounce, int site, int k, int tag) {
              (uint(k) * 2u + uint(tag));
     return float(h32(h)) / 4294967296.0;
 }
+// fixed_rng: deterministic 0.5 tracking draws, matching the CPU fixed
+// stream (which returns 0.5 for every draw). Without this the counter
+// hashes diverge from the CPU stream even in fixed mode.
 bool fog_event(vec3 o, vec3 d, float rtime, int ns, float u01, float tmax,
                 out float tevent, out vec3 talb, uint hbase, int bounce, int site,
-                out int slot) {
+                out int slot, int fixed_rng) {
     tevent = 1e30;
     slot = -1;
     bool any = false;
@@ -237,14 +240,16 @@ bool fog_event(vec3 o, vec3 d, float rtime, int ns, float u01, float tmax,
             uint sbase = h32(hbase ^ (uint(i) * 0x9E3779B9u));
             float cursor = te;
             for (int k = 0; k < 1024; ++k) {
-                float s = -log(max(h32f(sbase, bounce, site, k, 0), 1e-7)) / sig;
+                float hs0 = (fixed_rng != 0) ? 0.5 : h32f(sbase, bounce, site, k, 0);
+                float s = -log(max(hs0, 1e-7)) / sig;
                 float x = cursor + s;
                 if (x > tx)
                     break;
                 vec3 p = o + d * x;
                 float m = 0.5 + 0.5 * sin(fr.x * p.x) * sin(fr.y * p.y) *
                                             sin(fr.z * p.z);
-                if (m > h32f(sbase, bounce, site, k, 1)) {
+                float ha = (fixed_rng != 0) ? 0.5 : h32f(sbase, bounce, site, k, 1);
+                if (m > ha) {
                     if (x < tevent) {
                         tevent = x;
                         talb = spheres[i].alb.xyz;
@@ -630,7 +635,7 @@ bool trace_solid(vec3 o, vec3 d, float rtime, float tmax, out float t, out vec3 
 // Draw-free (counter hashes / analytic): shadow calls consume no RNG.
 float shadow_transmittance(vec3 o, vec3 wi, float rtime, int ns, float dist,
                            uint hbase, int bounce, int site,
-                           int skip_ty, int skip_idx) {
+                           int skip_ty, int skip_idx, int fixed_rng) {
     float tmax = dist - 0.001;
     if (is_occluded(o, wi, rtime, tmax, skip_ty, skip_idx))
         return 0.0;
@@ -660,7 +665,8 @@ float shadow_transmittance(vec3 o, vec3 wi, float rtime, int ns, float dist,
             uint sbase = h32(hbase ^ (uint(i) * 0x9E3779B9u));
             float cursor = te;
             for (int k = 0; k < 1024; ++k) {
-                float s = -log(max(h32f(sbase, bounce, site, k, 0), 1e-7)) / sig;
+                float hs0 = (fixed_rng != 0) ? 0.5 : h32f(sbase, bounce, site, k, 0);
+                float s = -log(max(hs0, 1e-7)) / sig;
                 float x = cursor + s;
                 if (x > tx)
                     break;

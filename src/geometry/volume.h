@@ -221,6 +221,9 @@ inline double shadow_transmittance(const hittable &world,
                                    double time) {
     double tmax = dist - 0.001;
     ray shadow(origin, wi, time);
+    if (media.empty()) {
+        return world.hit_any(shadow, 0.001, tmax) ? 0.0 : 1.0;
+    }
     // Phase 1: nearest solid (media transparent to the search).
     double tmin = 0.001;
     for (int i = 0; i < 8; ++i) {

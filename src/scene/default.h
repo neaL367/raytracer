@@ -39,7 +39,7 @@ inline scene_data build_default(double aspect, double aperture, double sh0 = 0,
     auto right_mat = std::make_shared<dielectric>(1.5);
     auto light_mat = std::make_shared<diffuse_light>(vec3(6, 6, 6));
 
-    // ---- Objects: ground + mesh + hero spheres ----
+    // ---- Objects: ground + mesh + RGB spheres ----
     scene.objs.push_back(std::make_shared<sphere>(vec3(0, -100.5, -1), 100, ground_mat));
     std::vector<std::shared_ptr<triangle>> mesh;
     if (!obj_loader::load_obj("assets/cube.obj", mesh, cube_mat)) {

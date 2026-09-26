@@ -121,8 +121,8 @@ inline void fill_pixel_samples(int n, std::vector<sample_offset> &out) {
         out[(size_t)i] = {random_double(), random_double()};
 }
 
-// Perfect square -> strata, else jitter. n=1 returns center (M2 path).
-// Sobol is opt-in (--sampler sobol); the default stream stays frozen.
+// Perfect square -> strata, else jitter. Sobol utils remain for tests;
+// the renderer uses the stratified path only.
 inline std::vector<sample_offset> pixel_samples(int n) {
     std::vector<sample_offset> out;
     fill_pixel_samples(n, out);

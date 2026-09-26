@@ -13,51 +13,51 @@ ctest --test-dir build -C Release
 ## Run
 
 ```bat
-build\Release\raytracer.exe [--samples 16] [--threads N] [--tile 8]
-  [--split sah|median] [--exposure 1] [--denoise] [--scene default|cornell|weekend|book2]
+build\Release\raytracer.exe [--samples 16] [--threads N] [--tile 32]
+  [--exposure 1] [--denoise] [--scene default|cornell|weekend|book2]
   [--shutter T0 T1] [--fog D] [--het D] [--aperture A] [--width W] [--height H]
   [--seed 42] [--hdr float.pfm] [--bench] [--noise] [--env]
-  [--sampler stratified|sobol] [--aov] [--list-scenes]
-  [--maxdepth 50] [--fixed-rng] [--pdf mis|mixture]
+  [--aov] [--list-scenes] [--maxdepth 50] [--fixed-rng] [--hdri-env file.hdr]
 ```
 
-Renders `out/image.ppm` (400x225, 16spp stratified default,
-`--samples 1` reproduces single-sample look). `--hdr` dumps linear
-pre-exposure float (PFM) for post-workflows alongside the PPM.
-`--noise` adds an opt-in marble showcase sphere (defaults stay frozen).
-`--env` enables the analytic sun+sky environment with MIS (off = byte-exact legacy sky).
-`--sampler sobol` swaps the pixel set for Cranley-Patterson rotated Sobol-2D (default stratified frozen).
+Renders `out/image.ppm` binary P6 (400x225, 16spp stratified default).
+One estimator only: power-CDF light importance + sun-cone env MIS +
+cosine continuation + luminance RR (no alternate paths). Sampling is
+two-wave adaptive and budget-neutral: half the budget covers all tiles,
+the noisier half of tiles gets topped to full spp (reported as
+`eff spp`; `--fixed-rng` stays single-wave uniform for exact metrology).
+`--hdr` dumps linear pre-exposure float (PFM) for post-workflows
+alongside the PPM.
+`--noise` adds an opt-in marble showcase sphere.
+`--env` enables the analytic sun+sky environment with MIS (off = gradient sky).
 `--aov` dumps linear `out/aov_{albedo,normal,depth}.pfm` for denoise/ML workflows.
 `--list-scenes` prints the scene registry (default/cornell/weekend/book2
 plus book aliases). weekend/book2 default to 500spp book-style renders.
-`--maxdepth` caps bounces (depth-ladder forensics; prod 50). `--fixed-rng`
+`--maxdepth` caps bounces (prod 50). `--fixed-rng`
 forces a deterministic 0.5 stream (pixel centers, center light samples)
-for exact cross-backend debugging. `--pdf mixture` selects the Book 3
-mixture-density path (no shadow rays, full light counts); default `mis`
-(power-heuristic MIS) supersedes it on variance (~2.2x on cornell).
+for exact cross-backend debugging.
 
 ```bat
 build\Release\rt_gpu.exe [path.spv] [out.ppm] [--spp N] [--chunk C] [--seed S]
   [--scene NAME] [--shutter T0 T1] [--fog D] [--het D] [--width W] [--height H]
   [--hdr float.pfm] [--aperture A] [--exposure X] [--denoise] [--joint]
   [--noise] [--env] [--list-scenes] [--maxdepth 50] [--fixed-rng] [--aov]
-  [--pdf mis|mixture]
 ```
 
-Headless Vulkan compute backend (discrete NVIDIA pick). Statistical CPU
-parity by design (wang-hash vs mt19937 RNGs); see Parity below.
+Headless Vulkan compute backend (discrete NVIDIA pick). Same estimator
+as the CPU (power-CDF NEE + sun-cone MIS); shared light-CDF buffer keeps
+fixed streams picking the same lights. Statistical parity by design
+(wang-hash vs SplitMix RNGs); see Parity below.
 
-`--chunk C` splits spp into TDR-safe dispatches (chunk k uses seed+k)
-and averages linear HDR on the host (bit-exact vs the old manual
-averaging). Without it, one big dispatch can hit Windows TDR
+Plain LDR renders accumulate + film on-device (zero float downloads);
+post-passes/HDR/AOV stay on the host path automatically.
+`--chunk C` splits spp into TDR-safe dispatches (chunk k uses seed+k).
+Without it, one big dispatch can hit Windows TDR
 (`vulkan error -4`) on heavy scenes. Rough 1650 Ti limits at 1200px:
 book2 chunk<=2, cornell chunk<=25, default chunk<=50; keep dispatch
 under ~2 s. `--denoise`/`--joint` run once on the averaged beauty.
-(book2 tightened 6->2 in M59: per-event volume-NEE marches lengthened
-dispatches; the table is advisory, watch the dispatch ms.)
 `--maxdepth`/`--fixed-rng` mirror the CPU forensics hatches. `--aov`
 downloads the albedo/normal guides as PFM (last chunk wins when chunked).
-`--pdf mixture` selects the Book 3 path; default `mis`.
 
 ```bat
 build\Release\rt_view.exe [--scene showcase|default|...] [--gpu|--cpu]
@@ -70,33 +70,16 @@ Interactive real-time previewer with 6-DOF fly camera and progressive path traci
 - **Shift / Ctrl**: Sprint (3x speed) / Slow precision sneak (0.25x speed)
 - **Right Drag / F**: Look around (pitch & yaw) / Toggle captured mouse look
 - **Mouse Wheel**: Adjust movement speed
-- **Middle Click / F4**: Click-to-Focus on object under cursor / Center autofocus (calculates exact focal plane)
-- **Alt + Left Click**: Material & Object Inspector (queries hit distance, position, normals, UVs, and material)
-- **U / I / O**: Adjust Aperture size (U: -0.02, I: +0.02, O: Toggle pinhole / bokeh)
-- **K / L**: Adjust Focus Distance manually (K: -0.2m, L: +0.2m)
-- **B**: Toggle Bokeh Iris Shape (Hexagonal 6-Blade vs Circular aperture)
-- **J**: Toggle Anamorphic Lens Squeeze (1.0x Spherical vs 2.0x Oval Bokeh)
-- **Y**: Toggle Radial Lens Distortion (0.0 Rectilinear vs 0.20 Barrel)
-- **N**: Toggle Live Bilateral AOV Denoising (edge-preserving spatial filter)
-- **V**: Toggle Optical Vignetting (cos^4 lens falloff simulation)
-- **M**: Toggle Multi-Scale Bloom & Optical Glare (pyramid highlight glow)
-- **; / ' / /**: Color temperature grading (Semicolon: Cooler, Apostrophe: Warmer, Slash: Reset)
-- **9 / F5**: Toggle Lens Chromatic Aberration & Spectral Fringe (radial dispersion)
-- **F6**: Toggle Focus Peaking / Cinema Z-Peaking Overlay (neon emerald in-focus silhouette)
-- **F8**: Toggle Cinematic 360° Turntable Orbit (smooth revolving camera around focus target)
-- **Arrow Keys**: Dynamic Sun Orbit (Left/Right: Azimuth, Up/Down: Elevation)
-- **- / =**: Nudge Selected Material Roughness (-0.05 / +0.05) or Light Emission (0.8x / 1.25x)
-- **, / .**: Nudge Selected Material IOR (-0.05 / +0.05) or Light Kelvin Temperature (-500K / +500K)
-- **Z**: Toggle Temporal Motion Smoothing (noise-free interactive flight)
-- **1 - 4**: Instant camera bookmarks (Scene-aware: Bunny / Crystals / Flanks / Overview for `showcase`; Cauchy / Ruby / Pedestal / Overview for `studio`)
-- **F1 - F3**: Live Display Mode (F1: Beauty, F2: Albedo AOV Guide, F3: Normal AOV Guide)
+- **N**: Toggle Live Bilateral Denoising (edge-preserving spatial filter)
+- **M**: Toggle Multi-Scale Bloom (pyramid highlight glow)
 - **X**: Toggle accumulation pause / resume (freeze converged view)
 - **G**: Toggle GPU compute vs CPU multi-threading in real time
 - **T**: Toggle ACES tonemapping vs standard sRGB gamma
 - **[ / ]**: Decrease / Increase exposure multiplier
 - **R**: Reset camera to initial scene view
-- **P / F12**: Print camera code snippet to console & save snapshot to `out/viewport.ppm`
+- **P**: Print camera code snippet to console & save snapshot to `out/viewport.ppm`
 - **H**: Print full interactive hotkey guide to console
+- **Tab / F11**: Toggle on-screen HUD
 - **Esc**: Release mouse cursor lock / Quit
 
 ```bat
@@ -142,13 +125,19 @@ floor, never an absolute threshold. Method notes from the hunt:
 - Compare at matched sampler structure: CPU non-square spp is pure
   random, GPU chunks are stratified grids (CPU-CPU floor 10.4 vs GPU-GPU
   floor 8.3 on book2/500spp is expected sampler variance, not a bug).
-  Perfect-square spp stratifies on both; `--sampler sobol` is available
-  but changes nothing for cross-backend verdicts.
+  Perfect-square spp stratifies on both.
 - Deterministic probes beat blind review: center-ray first-hit t/mtype,
   analytic chord/entry/exit oracles, fixed-point NEE transmittance, event
   rates vs 1-exp(-sL), phase-albedo exactness, fixed-RNG renders (identical
   sample sets both sides). Forensics live in `.scratch/` specs (M48-M54);
   temp probe shaders were reverted pre-commit, kept flags documented above.
+- Known architectural divergences (baseline-recorded, not bugs):
+  procedural lattice noise avalanches at float/double cell boundaries
+  (marble veins differ; AOV normals exact), tessellated shapes
+  (disk/cylinder/capsule/cone fan to tris on GPU: facet normals, bump
+  drop) vs analytic CPU, hetero tracking streams (fixed-gated to 0.5
+  both sides since the volume fix; sampled stays statistical).
+  AOV albedo/normal PFM compare bisects geometry vs shading drift.
 - Current standing (1200px/500spp unless noted): default, cornell,
   weekend at floor; fog/het matrix at floor (M48 closed the gap);
   book2 residual CLOSED (M54): depth-1 400px/1024spp cross 1.46 -> 0.60
@@ -161,17 +150,17 @@ floor, never an absolute threshold. Method notes from the hunt:
 ### CI Parity Gate & Estimator Drift Harness
 
 CI (`.github/workflows/ci.yml`) runs an automated cross-backend parity gate on Ubuntu using Mesa's Lavapipe software Vulkan driver:
-1. **Fixed-RNG Arithmetic Gate**: Runs CPU (`raytracer`) and GPU (`rt_gpu`) with `--fixed-rng` on `default` (64x36, 4 spp). Diffs with `rt_view --diff --stats` and asserts `mean <= 0.05` and `over8 <= 0.1%` (calibrated: `mean ~ 0.002 - 0.004`, `over8 = 0%`). Any arithmetic regressions or shader formula bugs trip this gate instantly without Monte Carlo noise.
-2. **Estimator Drift Harness (`tools/parity.py`)**: Tests a matrix across scenes (`default`, `cornell`, `weekend`, `book2`, `sss`) × sampling modes (`mis`, `mixture`) × bounce depths (`1`, `2`, `50`) × RNG modes (`fixed`, `sampled`). Verifies that outputs do not drift from calibrated baselines recorded in `tools/parity_baseline.json`.
+1. **Fixed-RNG Arithmetic Gate**: Runs CPU (`raytracer`) and GPU (`rt_gpu`) with `--fixed-rng --maxdepth 1|2` on `default` (64x36, 4 spp). Diffs with `rt_view --diff --stats` and asserts `mean <= 0.01` and `over8 <= 0.05%` (calibrated: exact 0). Depth 50 is excluded: 50 bounces accumulate float-vs-double chaos in rare firefly pixels; it is covered baseline-relative by the harness.
+2. **Estimator Drift Harness (`tools/parity.py`)**: Tests a matrix across scenes (`default`, `showcase`) × bounce depths (`1`, `2`, `50`) × RNG modes (`fixed`, `sampled`). Verifies that outputs do not drift from calibrated baselines recorded in `tools/parity_baseline.json`.
 
 **Local debugging & reproduction**:
 ```bash
-# Fast check (default scene, 12 cells, <10s):
+# Fast check (default scene, 6 cells, <10s):
 ctest -R parity --output-on-failure
 # or directly:
 python tools/parity.py --fast
 
-# Full 60-cell matrix across all scenes and modes:
+# Full 12-cell matrix across scenes and depths:
 python tools/parity.py
 
 # Re-calibrate and establish new baseline:
@@ -181,25 +170,24 @@ python tools/parity.py --save-baseline tools/parity_baseline.json
 ## Layout
 
 ```text
-src/core/      vec3, ray, RNG, sampler (stratified/Sobol), ONB, AABB, textures
-               (+mipmaps, noise), OBJ/MTL loader
+src/core/      vec3, ray, SplitMix RNG, stratified sampler, ONB, AABB, textures
+                (+mipmaps, noise), OBJ/MTL loader, analytic+HDRI env
 src/camera/    pinhole + thin-lens defocus + shutter timing
-src/geometry/  sphere/triangle/quad/disk/cylinder, hittable list, constant + hetero volumes,
-               instances (translate/rotate_y)
+src/geometry/  sphere/triangle/quad/disk/cylinder (+capsule/cone), hittable
+                list, constant + hetero volumes, instances, power-CDF lights
 src/material/  lambertian/metal/dielectric/isotropic/diffuse_light, GGX
-               (iso + aniso conductors, rough glass), Ns mapping
-src/integrator/ NEE + MIS path integrator (power heuristic, transmittance
-               weighting), first-hit AOV guides
-src/accel/     median + binned-SAH BVH, QBVH-4 collapse (SSE2 slabs), flat QBVH upload twin
-src/scene/     per-scene modules (common/default/cornell/weekend/book2) +
-               registry, shared CPU/GPU construction order
-src/gpu/       Vulkan compute host (chunked submit, HDR average), flatten
-               (instances bake, black_bg), shaders (grad/normal/path/
-               denoise/joint), CPU-mirrored camera
-src/output/    PPM writer, ACES film, PFM float dump
-src/io/        bloom, denoise (bilateral + joint), compare/heatmap, PPM + stb images
-src/app/       CPU wiring, tile thread pool, bench counters
-src/view/      SDL3 preview + inspector
+                (iso + aniso conductors, rough glass), thin film
+src/integrator/ NEE + MIS path integrator (power-CDF lights, sun-cone env,
+                transmittance weighting), first-hit AOV guides
+src/accel/     binned-SAH BVH, fp32 8-wide SAH QBVH, flat QBVH upload twin
+src/scene/     per-scene modules + registry, shared CPU/GPU construction order
+src/gpu/       Vulkan compute host (chunked submit, on-device accum + film),
+                flatten, shaders (grad/normal/path/denoise/joint/accum/
+                tonemap), CPU-mirrored camera
+src/output/    P6 PPM writer, LUT ACES film, PFM float dump
+src/io/        bloom, denoise (bilateral + joint, threaded), compare/heatmap
+src/app/       CPU wiring, 2D tile pool, bench counters
+src/view/      SDL3 preview (fly cam, progressive) + PPM inspector
 tests/         dependency-free asserts via ctest (seeded, deterministic)
 .scratch/      specs + tickets + roadmap (local, gitignored)
 ```

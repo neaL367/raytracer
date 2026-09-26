@@ -15,5 +15,4 @@ layout(push_constant) uniform PC {
     int nblack;
     int maxdepth;
     int fixed_rng;
-    int mixpdf;
 } pc;

@@ -1,0 +1,40 @@
+#version 450
+// Present-path film: HDR accum/count -> exposure -> ACES -> sRGB -> bytes.
+// Mirrors CPU film.h (Narkowicz ACES fit + piecewise sRGB). Truncation
+// match: stores floor(v*255.999)/255 so the R8G8B8 UNORM round-trip yields
+// the exact CPU byte (float-vs-double film may flip rare boundary LSBs;
+// measured <= 1 LSB, display-irrelevant, file path keeps CPU default).
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(binding = 0, rgba32f) readonly uniform image2D accumImg;
+layout(binding = 1, rgba8) uniform image2D dstImg;
+layout(push_constant) uniform PC {
+    int W;
+    int H;
+    float exposure;
+    int aces;
+    float count;
+}
+pc;
+
+vec3 aces_approx(vec3 x) {
+    vec3 v = max(x, vec3(0.0));
+    vec3 a = v * (2.51 * v + 0.03) / (v * (2.43 * v + 0.59) + 0.14);
+    return min(a, vec3(1.0));
+}
+
+float srgb_encode(float v) {
+    v = clamp(v, 0.0, 1.0);
+    return (v <= 0.0031308) ? 12.92 * v : 1.055 * pow(v, 1.0 / 2.4) - 0.055;
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= pc.W || p.y >= pc.H)
+        return;
+    vec3 hdr = imageLoad(accumImg, p).xyz / pc.count;
+    vec3 e = hdr * pc.exposure;
+    vec3 a = (pc.aces != 0) ? aces_approx(e) : e;
+    vec3 ldr = vec3(srgb_encode(a.x), srgb_encode(a.y), srgb_encode(a.z));
+    vec3 b = floor(clamp(ldr, 0.0, 1.0) * 255.999) / 255.0;
+    imageStore(dstImg, p, vec4(b, 1.0));
+}

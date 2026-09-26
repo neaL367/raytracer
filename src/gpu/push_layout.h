@@ -42,5 +42,5 @@ struct PushConstants {
 #pragma warning(pop)
 #endif
 
-static_assert(kPushWordCount == 16, "Push constant word count must be 16");
-static_assert(sizeof(PushConstants) == 64, "Push constant block size must be 64 bytes");
+static_assert(kPushWordCount == 15, "Push constant word count must be 15");
+static_assert(sizeof(PushConstants) == 60, "Push constant block size must be 60 bytes");

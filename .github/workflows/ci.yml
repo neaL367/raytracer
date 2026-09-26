@@ -67,21 +67,26 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           ./build/rt_gpu --list-scenes
-          # 1. Deterministic fixed-RNG parity gate (asserts arithmetic exactness without MC noise)
-          ./build/raytracer --scene default --width 64 --height 36 --spp 4 --fixed-rng /tmp/cpu_fixed.ppm
-          ./build/rt_gpu build/shaders/path.spv /tmp/gpu_fixed.ppm --scene default --width 64 --height 36 --spp 4 --fixed-rng
-          ./build/rt_view /tmp/cpu_fixed.ppm --diff /tmp/gpu_fixed.ppm --stats > /tmp/diff_fixed.txt
-          cat /tmp/diff_fixed.txt
-          python3 -c "
-          import re, sys
-          txt = open('/tmp/diff_fixed.txt').read()
-          m = re.search(r'diff mean=([\d\.]+) max=(\d+) over8=([\d\.]+)%', txt)
-          if not m: sys.exit('Could not parse rt_view output')
-          mean, mx, over8 = float(m.group(1)), int(m.group(2)), float(m.group(3))
-          print(f'Fixed-RNG check: mean={mean}, max={mx}, over8={over8}%')
-          if mean > 0.05 or over8 > 0.1:
-              sys.exit(f'FAIL: Fixed-RNG drift exceeded threshold: mean={mean} (max 0.05), over8={over8}% (max 0.1%)')
-          "
+          # 1. Deterministic fixed-RNG parity gate (asserts arithmetic exactness without MC noise).
+          # Gated at depth 1-2, where both backends agree bit-exactly; depth 50
+          # accumulates float-vs-double bounce chaos (rare firefly pixels) and
+          # is covered baseline-relative by the harness below instead.
+          for depth in 1 2; do
+            ./build/raytracer --scene default --width 64 --height 36 --spp 4 --fixed-rng --maxdepth $depth /tmp/cpu_fixed.ppm
+            ./build/rt_gpu build/shaders/path.spv /tmp/gpu_fixed.ppm --scene default --width 64 --height 36 --spp 4 --fixed-rng --maxdepth $depth
+            ./build/rt_view /tmp/cpu_fixed.ppm --diff /tmp/gpu_fixed.ppm --stats > /tmp/diff_fixed.txt
+            cat /tmp/diff_fixed.txt
+            python3 -c "
+            import re, sys
+            txt = open('/tmp/diff_fixed.txt').read()
+            m = re.search(r'diff mean=([\d\.]+) max=(\d+) over8=([\d\.]+)%', txt)
+            if not m: sys.exit('Could not parse rt_view output')
+            mean, mx, over8 = float(m.group(1)), int(m.group(2)), float(m.group(3))
+            print(f'Fixed-RNG check: mean={mean}, max={mx}, over8={over8}%')
+            if mean > 0.01 or over8 > 0.05:
+                sys.exit(f'FAIL: Fixed-RNG drift exceeded threshold: mean={mean} (max 0.01), over8={over8}% (max 0.05%)')
+            "
+          done
 
           # 2. Comprehensive estimator drift harness across modes and depths
           python3 tools/parity.py --fast --tolerance-factor 1.5

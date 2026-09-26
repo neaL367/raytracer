@@ -285,8 +285,8 @@ static void t_emissive() {
     EXPECT_NEAR(p.z(), -3);
 }
 
-static void t_spectral_materials() {
-    test_current = "spectral_materials";
+static void t_optical_materials() {
+    test_current = "optical_materials";
     // Dispersive glass: B=0 bends identically for all heroes; B>0 splits.
     auto glass_plain = std::make_shared<dielectric>(1.5, 0.0, 0, vec3(0, 0, 0));
     auto glass_disp = std::make_shared<dielectric>(1.5, 0.0, 0, vec3(0, 0, 0), 0.02);
@@ -311,35 +311,21 @@ static void t_spectral_materials() {
         }
     }
     EXPECT_TRUE(use_seed >= 0);
-    vec3 dirs[3];
-    for (int c = 0; c < 3; ++c) {
-        spectrum::hero_channel() = c;
-        rng_seed((unsigned)use_seed);
-        EXPECT_TRUE(glass_disp->scatter(r, hr, att, sc));
-        dirs[c] = sc.direction();
-    }
-    spectrum::hero_channel() = -1;
-    // Prismatic split: red bends least, blue most (distinct directions).
-    EXPECT_TRUE((dirs[0] - dirs[2]).length() > 1e-4);
-    EXPECT_TRUE(fabs(dirs[0].length() - 1.0) < 1e-9);
-    // B=0: all heroes identical (no stream-independent split).
-    vec3 plain_dirs[3];
+    // Transport is RGB-only (no hero dispersion): same seed replays the
+    // same refraction, and B>0 bends identically to B=0 in transport.
+    rng_seed((unsigned)use_seed);
+    EXPECT_TRUE(glass_disp->scatter(r, hr, att, sc));
+    vec3 d0 = sc.direction();
+    EXPECT_TRUE(fabs(d0.length() - 1.0) < 1e-9);
+    rng_seed((unsigned)use_seed);
+    EXPECT_TRUE(glass_disp->scatter(r, hr, att, sc));
+    EXPECT_TRUE((sc.direction() - d0).length() == 0);
     sphere sp(vec3(0, 0, -1), 0.5, glass_plain);
     hit_record hrp;
     EXPECT_TRUE(sp.hit(r, 0.001, 1e30, hrp));
-    for (int c = 0; c < 3; ++c) {
-        spectrum::hero_channel() = c;
-        rng_seed((unsigned)use_seed);
-        EXPECT_TRUE(glass_plain->scatter(r, hrp, att, sc));
-        plain_dirs[c] = sc.direction();
-    }
-    spectrum::hero_channel() = -1;
-    EXPECT_TRUE((plain_dirs[0] - plain_dirs[1]).length() == 0);
-    EXPECT_TRUE((plain_dirs[1] - plain_dirs[2]).length() == 0);
-    // Legacy slot reproduces the B=0 hero path bit-exactly.
     rng_seed((unsigned)use_seed);
     EXPECT_TRUE(glass_plain->scatter(r, hrp, att, sc));
-    EXPECT_TRUE((sc.direction() - plain_dirs[0]).length() == 0);
+    EXPECT_TRUE((sc.direction() - d0).length() == 0);
     // Measured gold mirror: reddish attenuation, exact-Fresnel backed.
     metal gold(1, 0.0);
     vec3 R = gold.spectral_reflectance(1.0);
@@ -347,16 +333,15 @@ static void t_spectral_materials() {
     float alb[4]{}, alb2[4]{}, emit[4]{}, prm[4]{};
     EXPECT_TRUE(gold.export_gpu(alb, alb2, emit, prm));
     EXPECT_TRUE(alb2[2] == 1.0f); // preset id rides alb2.z
-    // Li resets the thread-local hero even in spectral mode.
+    // Empty-world Li returns sky only, components non-negative.
     integrator tracer;
     hittable_list empty;
     std::vector<light> none;
     std::vector<std::shared_ptr<hittable>> nomedia;
-    const render_params sparams{empty, none, 4, nomedia, false, false, false, true};
+    const render_params sparams{empty, none, 4, nomedia};
     rng_seed(300);
     vec3 L = tracer.Li(ray(vec3(0, 0, 0), vec3(0, 0, -1)), sparams);
     EXPECT_TRUE(L.x() >= 0 && L.y() >= 0 && L.z() >= 0);
-    EXPECT_TRUE(spectrum::hero_channel() == -1);
 }
 
 static void t_emissive_texture() {
@@ -474,12 +459,15 @@ static void t_denoise() {
     EXPECT_TRUE(s2[(size_t)4 * 8 + 3].x() < 0.5);  // dark side stays dark
     EXPECT_TRUE(s2[(size_t)4 * 8 + 4].x() > 0.5);  // bright side stays bright
     EXPECT_TRUE(s2[(size_t)4 * 8 + 3].x() < s2[(size_t)4 * 8 + 4].x());
-    // Noisy ramp: variance drops.
-    rng_seed(60);
+    // Noisy ramp: variance drops. Deterministic trig hash noise
+    // (RNG-independent, decorrelated from column index).
     std::vector<vec3> ramp(64);
     for (int i = 0; i < 64; ++i) {
         double g = (i % 8) / 7.0;
-        double n = (random_double() - 0.5) * 0.2;
+        double u = std::fmod(std::sin((double)i * 12.9898) * 43758.5453, 1.0);
+        if (u < 0)
+            u += 1.0;
+        double n = (u - 0.5) * 0.2;
         ramp[i] = vec3(g + n, g + n, g + n);
     }
     // Detrend: residual energy around the true ramp must fall.
@@ -705,58 +693,32 @@ static void t_pdf() {
     world.add(quad_lamp);
     std::vector<light> lights{light(quad_lamp)};
     vec3 origin(0, 0, 0), n(0, 1, 0);
-    // Straight up strikes the 2x2 lamp: dist=2, A=4, cos=1 -> pdf 1.
-    EXPECT_NEAR(direction_pdf::nee_value(world, lights, origin, vec3(0, 1, 0), 0.0), 1.0);
-    // Sideways misses everything -> 0. Downward misses -> 0.
-    EXPECT_NEAR(direction_pdf::nee_value(world, lights, origin, vec3(1, 0, 0), 0.0), 0.0);
-    EXPECT_NEAR(direction_pdf::nee_value(world, lights, origin, vec3(0, -1, 0), 0.0),
-                0.0);
-    // Matte (non-emissive) strike reports 0 even dead-on.
+    // Power-CDF reverse density, single 2x2 lamp: dist=2, A=4, cos=1,
+    // pick_p=1 -> pdf 1. Matte (non-emissive) strike reports 0 dead-on.
+    std::vector<double> cdf;
+    double total = 0;
+    build_light_cdf(lights, cdf, total);
+    EXPECT_TRUE(total > 0);
+    EXPECT_NEAR(direction_pdf::nee_value_for_hit_power(lights, cdf, total, lamp,
+                                                       vec3(0, 2, 0), origin, 0.0),
+                1.0);
+    auto matte_quad =
+        std::make_shared<quad>(vec3(-1, 2, -1), vec3(2, 0, 0), vec3(0, 0, 2),
+                               std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5)));
     hittable_list matte_world;
-    matte_world.add(std::make_shared<quad>(vec3(-1, 2, -1), vec3(2, 0, 0), vec3(0, 0, 2),
-                                           std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5))));
-    EXPECT_NEAR(direction_pdf::nee_value(matte_world, lights, origin, vec3(0, 1, 0), 0.0),
+    matte_world.add(matte_quad);
+    auto matte_mat = matte_quad->mat_ptr();
+    EXPECT_NEAR(direction_pdf::nee_value_for_hit_power(lights, cdf, total, matte_mat,
+                                                       vec3(0, 2, 0), origin, 0.0),
                 0.0);
     // Cosine lobe: normal incidence 1/PI, grazing 0.
     const double pi = 3.1415926535897932385;
     EXPECT_NEAR(direction_pdf::cosine_value(vec3(0, 1, 0), n), 1.0 / pi);
     EXPECT_NEAR(direction_pdf::cosine_value(vec3(1, 0, 0), n), 0.0);
-    // Mixture is the exact 50/50 blend.
-    double c = direction_pdf::cosine_value(vec3(0, 1, 0), n);
-    double l = direction_pdf::nee_value(world, lights, origin, vec3(0, 1, 0), 0.0);
-    EXPECT_NEAR(direction_pdf::mixture_value(world, lights, origin, vec3(0, 1, 0), n, 0.0),
-                0.5 * c + 0.5 * l);
-    // Sampler: unit dirs, self-consistent pdf, deterministic replay.
-    rng_seed(101);
-    double p1 = -1;
-    vec3 d1 = direction_pdf::sample_mixture(world, lights, origin, n, 0.0, p1);
-    EXPECT_TRUE(fabs(d1.length() - 1.0) < 1e-9 && p1 > 0);
-    EXPECT_NEAR(p1, direction_pdf::mixture_value(world, lights, origin, d1, n, 0.0));
-    rng_seed(101);
-    double p2 = -1;
-    vec3 d2 = direction_pdf::sample_mixture(world, lights, origin, n, 0.0, p2);
-    EXPECT_NEAR((d1 - d2).length(), 0.0);
-    EXPECT_NEAR(p1, p2);
-    // Empty lights: pure cosine branch, still positive density upward.
-    std::vector<light> none;
-    rng_seed(102);
-    double p3 = -1;
-    vec3 d3 = direction_pdf::sample_mixture(world, none, origin, n, 0.0, p3);
-    EXPECT_TRUE(p3 > 0 && dot(d3, n) > 0);
-    // Empty mixture pdf equals the cosine lobe exactly (not half).
-    EXPECT_NEAR(direction_pdf::mixture_value(world, none, origin, vec3(0, 1, 0), n,
-                                             0.0),
-                direction_pdf::cosine_value(vec3(0, 1, 0), n));
     // Power heuristic: equal densities split half; dominant takes ~all.
     EXPECT_NEAR(direction_pdf::power_weight(1.0, 1.0), 0.5);
     EXPECT_NEAR(direction_pdf::power_weight(3.0, 1.0), 0.9);
     EXPECT_NEAR(direction_pdf::power_weight(0.0, 0.0), 0.0);
-    // Traceless reverse matches the traced reverse on the same strike.
-    double traced = direction_pdf::nee_value(world, lights, origin, vec3(0, 1, 0), 0.0);
-    double direct = direction_pdf::nee_value_for_hit(lights, lamp, vec3(0, 2, 0), origin,
-                                                     0.0);
-    EXPECT_NEAR(traced, direct);
-    EXPECT_NEAR(direct, 1.0);
     // Direction densities: lambertian cosine, isotropic uniform, delta zero.
     hit_record mrec;
     mrec.normal = n;
@@ -1066,7 +1028,7 @@ void run_shading_tests() {
     t_glass_rough();
     t_emissive();
     t_emissive_texture();
-    t_spectral_materials();
+    t_optical_materials();
     t_ppm();
     t_pfm();
     t_film();

@@ -57,7 +57,7 @@ struct GpuContext {
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
     VkQueryPool query_pool = VK_NULL_HANDLE;
-    GpuBuffer scene_bufs[11];
+    GpuBuffer scene_bufs[12];
     bool has_scene = false;
 };
 
@@ -200,12 +200,12 @@ inline void gpu_init(GpuContext &g, int W, int H) {
         VKC_CHECK(vkMapMemory(g.device, g.staging.mem, 0, g.staging.bytes, 0, &g.staging_mapped));
     }
     {
-        VkDescriptorSetLayoutBinding b[14]{};
+        VkDescriptorSetLayoutBinding b[15]{};
         b[0].binding = 0;
         b[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
         b[0].descriptorCount = 1;
         b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-        for (uint32_t i = 1; i < 14; ++i) {
+        for (uint32_t i = 1; i < 15; ++i) {
             b[i].binding = i;
             b[i].descriptorCount = 1;
             b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -218,7 +218,7 @@ inline void gpu_init(GpuContext &g, int W, int H) {
         }
         VkDescriptorSetLayoutCreateInfo ci{};
         ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        ci.bindingCount = 14;
+        ci.bindingCount = 15;
         ci.pBindings = b;
         VKC_CHECK(vkCreateDescriptorSetLayout(g.device, &ci, nullptr, &g.layout));
         VkDescriptorPoolSize ps[3]{};
@@ -227,7 +227,7 @@ inline void gpu_init(GpuContext &g, int W, int H) {
         ps[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         ps[1].descriptorCount = 1;
         ps[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        ps[2].descriptorCount = 10;
+        ps[2].descriptorCount = 11;
         VkDescriptorPoolCreateInfo pi{};
         pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         pi.maxSets = 1;
@@ -258,11 +258,13 @@ inline void gpu_init(GpuContext &g, int W, int H) {
     }
 }
 
-// Upload 8 blobs as UBO + 7 SSBOs, wire descriptor set.
-// bufs[0] = camera UBO, [1..3] = prim SSBOs, [4] = BVH nodes,
-// [5] = leaf refs, [6] = image-texture texels, [7] = NEE light table.
-inline void gpu_set_scene(GpuContext &g, const void *data[11], const size_t bytes[11]) {
-    for (int i = 0; i < 11; ++i) {
+// Upload blobs as UBO + SSBOs, wire descriptor set.
+// bufs[0] = camera UBO -> binding 1; bufs[1..8] (prims, BVH, images,
+// light table) -> bindings 2..9; bufs[9..10] (HDRI tex + CDF) ->
+// bindings 12..13; bufs[11] (light power CDF) -> binding 14.
+// (Bindings 10..11 are the AOV storage images, not buffers.)
+inline void gpu_set_scene(GpuContext &g, const void *data[12], const size_t bytes[12]) {
+    for (int i = 0; i < 12; ++i) {
         size_t n = bytes[i] ? bytes[i] : 16;
         VkBufferCreateInfo ci{};
         ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -304,12 +306,12 @@ inline void gpu_set_scene(GpuContext &g, const void *data[11], const size_t byte
     VkDescriptorImageInfo ni2{};
     ni2.imageView = g.nrm_view;
     ni2.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    VkDescriptorBufferInfo bi[11]{};
-    for (int i = 0; i < 11; ++i) {
+    VkDescriptorBufferInfo bi[12]{};
+    for (int i = 0; i < 12; ++i) {
         bi[i].buffer = g.scene_bufs[i].buf;
         bi[i].range = g.scene_bufs[i].bytes;
     }
-    VkWriteDescriptorSet w[14]{};
+    VkWriteDescriptorSet w[15]{};
     w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     w[0].dstSet = g.set;
     w[0].dstBinding = 0;
@@ -351,7 +353,14 @@ inline void gpu_set_scene(GpuContext &g, const void *data[11], const size_t byte
     w[13].descriptorCount = 1;
     w[13].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     w[13].pBufferInfo = &bi[10];
-    vkUpdateDescriptorSets(g.device, 14, w, 0, nullptr);
+    // Binding 14: light power CDF SSBO (cumulative + total tail).
+    w[14].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w[14].dstSet = g.set;
+    w[14].dstBinding = 14;
+    w[14].descriptorCount = 1;
+    w[14].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    w[14].pBufferInfo = &bi[11];
+    vkUpdateDescriptorSets(g.device, 15, w, 0, nullptr);
     g.has_scene = true;
 }
 
@@ -368,7 +377,7 @@ inline void gpu_update_camera(GpuContext &g, const void *cam_ptr, size_t cam_byt
 // Dispatch spv with push constant block, copy image to host, report device ms.
 // out_rgba receives W*H*4 floats, top-first rows.
 inline double gpu_run(GpuContext &g, const std::string &spv_path, const PushConstants &push,
-                      std::vector<float> &out_rgba) {
+                      std::vector<float> &out_rgba, bool skip_readback = false) {
     if (!g.pipe || g.current_spv != spv_path) {
         if (g.pipe) {
             vkDestroyPipeline(g.device, g.pipe, nullptr);
@@ -448,19 +457,23 @@ inline double gpu_run(GpuContext &g, const std::string &spv_path, const PushCons
         vkCmdWriteTimestamp(g.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.query_pool, 0);
         vkCmdDispatch(g.cmd, (g.W + 15) / 16, (g.H + 15) / 16, 1);
         vkCmdWriteTimestamp(g.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.query_pool, 1);
-        VkImageMemoryBarrier b2 = b1;
-        b2.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-        b2.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        b2.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-        b2.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-        vkCmdPipelineBarrier(g.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr,
-                             1, &b2);
-        VkBufferImageCopy region{};
-        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        region.imageExtent = {(uint32_t)g.W, (uint32_t)g.H, 1};
-        vkCmdCopyImageToBuffer(g.cmd, g.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                               g.staging.buf, 1, &region);
+        // Present mode (--gpu-present): chunk stays on device for accum.comp;
+        // skip the float download (image left GENERAL for the next pass).
+        if (!skip_readback) {
+            VkImageMemoryBarrier b2 = b1;
+            b2.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+            b2.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            b2.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            b2.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            vkCmdPipelineBarrier(g.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                                 nullptr, 1, &b2);
+            VkBufferImageCopy region{};
+            region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            region.imageExtent = {(uint32_t)g.W, (uint32_t)g.H, 1};
+            vkCmdCopyImageToBuffer(g.cmd, g.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                   g.staging.buf, 1, &region);
+        }
         VKC_CHECK(vkEndCommandBuffer(g.cmd));
     }
     double dispatch_ms = 0;
@@ -480,7 +493,7 @@ inline double gpu_run(GpuContext &g, const std::string &spv_path, const PushCons
         vkGetPhysicalDeviceProperties(g.phys, &props);
         dispatch_ms = (double)(stamps[1] - stamps[0]) * props.limits.timestampPeriod / 1e6;
     }
-    {
+    if (!skip_readback) {
         const float *ptr = (const float *)g.staging_mapped;
         out_rgba.assign(ptr, ptr + (size_t)g.W * g.H * 4);
     }
@@ -1028,6 +1041,359 @@ inline void gpu_read_aov(GpuContext &g, std::vector<float> &out_alb,
         const float *ptr = (const float *)g.staging_mapped;
         outs[k]->assign(ptr, ptr + (size_t)g.W * g.H * 4);
     }
+}
+
+// Present path (--gpu-present): GPU-side chunk accumulation + film.
+// Contract: chunks dispatch via gpu_run(..., skip_readback=true), then
+// present_accum_add() folds g.image into the persistent sum (host never
+// sees floats); present_tonemap() films sum/count to LDR bytes for P6.
+// Zero float downloads: only W*H*4 bytes cross PCIe per render.
+struct PresentAccum {
+    VkImage img = VK_NULL_HANDLE;
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    bool ready = false;
+};
+
+inline void present_accum_ensure(GpuContext &g, PresentAccum &p) {
+    if (p.ready)
+        return;
+    VkImageCreateInfo ci{};
+    ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ci.imageType = VK_IMAGE_TYPE_2D;
+    ci.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    ci.extent = {(uint32_t)g.W, (uint32_t)g.H, 1};
+    ci.mipLevels = 1;
+    ci.arrayLayers = 1;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ci.usage = VK_IMAGE_USAGE_STORAGE_BIT;
+    ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VKC_CHECK(vkCreateImage(g.device, &ci, nullptr, &p.img));
+    VkMemoryRequirements req;
+    vkGetImageMemoryRequirements(g.device, p.img, &req);
+    VkMemoryAllocateInfo ai{};
+    ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    ai.allocationSize = req.size;
+    ai.memoryTypeIndex = vkc_find_memory(g.phys, req.memoryTypeBits,
+                                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VKC_CHECK(vkAllocateMemory(g.device, &ai, nullptr, &p.mem));
+    VKC_CHECK(vkBindImageMemory(g.device, p.img, p.mem, 0));
+    VkImageViewCreateInfo vi{};
+    vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    vi.image = p.img;
+    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    VKC_CHECK(vkCreateImageView(g.device, &vi, nullptr, &p.view));
+    p.ready = true;
+}
+
+// One-shot compute helper for the present shaders: two storage images,
+// N-byte push, timestamped. Mirrors the gpu_denoise scaffolding.
+inline double vkc_run_2img(GpuContext &g, const std::string &spv_path,
+                           VkImageView v0, VkImageView v1, const void *push,
+                           uint32_t push_bytes) {
+    std::ifstream f(spv_path, std::ios::binary | std::ios::ate);
+    if (!f) {
+        std::cerr << "missing shader: " << spv_path << "\n";
+        std::exit(1);
+    }
+    size_t n = (size_t)f.tellg();
+    f.seekg(0);
+    std::vector<char> code(n);
+    f.read(code.data(), (std::streamsize)n);
+    VkShaderModule mod;
+    {
+        VkShaderModuleCreateInfo mi{};
+        mi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        mi.codeSize = code.size();
+        mi.pCode = (const uint32_t *)code.data();
+        VKC_CHECK(vkCreateShaderModule(g.device, &mi, nullptr, &mod));
+    }
+    VkDescriptorSetLayout set_layout;
+    VkDescriptorPool pool;
+    VkPipelineLayout pipe_layout;
+    VkPipeline pipe;
+    {
+        VkDescriptorSetLayoutBinding b[2]{};
+        for (uint32_t i = 0; i < 2; ++i) {
+            b[i].binding = i;
+            b[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            b[i].descriptorCount = 1;
+            b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        }
+        VkDescriptorSetLayoutCreateInfo ci{};
+        ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        ci.bindingCount = 2;
+        ci.pBindings = b;
+        VKC_CHECK(vkCreateDescriptorSetLayout(g.device, &ci, nullptr, &set_layout));
+        VkDescriptorPoolSize ps{};
+        ps.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        ps.descriptorCount = 2;
+        VkDescriptorPoolCreateInfo pi{};
+        pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pi.maxSets = 1;
+        pi.poolSizeCount = 1;
+        pi.pPoolSizes = &ps;
+        VKC_CHECK(vkCreateDescriptorPool(g.device, &pi, nullptr, &pool));
+        VkPushConstantRange pc{};
+        pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        pc.size = push_bytes;
+        VkPipelineLayoutCreateInfo li{};
+        li.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        li.setLayoutCount = 1;
+        li.pSetLayouts = &set_layout;
+        li.pushConstantRangeCount = 1;
+        li.pPushConstantRanges = &pc;
+        VKC_CHECK(vkCreatePipelineLayout(g.device, &li, nullptr, &pipe_layout));
+        VkComputePipelineCreateInfo cp{};
+        cp.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        cp.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        cp.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        cp.stage.module = mod;
+        cp.stage.pName = "main";
+        cp.layout = pipe_layout;
+        VKC_CHECK(vkCreateComputePipelines(g.device, VK_NULL_HANDLE, 1, &cp, nullptr, &pipe));
+        vkDestroyShaderModule(g.device, mod, nullptr);
+    }
+    VkDescriptorSet set;
+    {
+        VkDescriptorSetAllocateInfo ai{};
+        ai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        ai.descriptorPool = pool;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts = &set_layout;
+        VKC_CHECK(vkAllocateDescriptorSets(g.device, &ai, &set));
+        VkDescriptorImageInfo ii[2]{};
+        ii[0].imageView = v0;
+        ii[0].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        ii[1].imageView = v1;
+        ii[1].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+        VkWriteDescriptorSet w[2]{};
+        for (int i = 0; i < 2; ++i) {
+            w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[i].dstSet = set;
+            w[i].dstBinding = (uint32_t)i;
+            w[i].descriptorCount = 1;
+            w[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            w[i].pImageInfo = &ii[i];
+        }
+        vkUpdateDescriptorSets(g.device, 2, w, 0, nullptr);
+    }
+    {
+        VKC_CHECK(vkResetCommandBuffer(g.cmd, 0));
+        VkCommandBufferBeginInfo bi{};
+        bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        VKC_CHECK(vkBeginCommandBuffer(g.cmd, &bi));
+        vkCmdResetQueryPool(g.cmd, g.query_pool, 0, 2);
+        vkCmdBindPipeline(g.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+        vkCmdBindDescriptorSets(g.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe_layout, 0, 1,
+                                &set, 0, nullptr);
+        vkCmdPushConstants(g.cmd, pipe_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, push_bytes,
+                           push);
+        vkCmdWriteTimestamp(g.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.query_pool, 0);
+        vkCmdDispatch(g.cmd, (g.W + 15) / 16, (g.H + 15) / 16, 1);
+        vkCmdWriteTimestamp(g.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, g.query_pool, 1);
+        VKC_CHECK(vkEndCommandBuffer(g.cmd));
+    }
+    double ms = 0;
+    {
+        VKC_CHECK(vkResetFences(g.device, 1, &g.fence));
+        VkSubmitInfo si{};
+        si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &g.cmd;
+        VKC_CHECK(vkQueueSubmit(g.queue, 1, &si, g.fence));
+        VKC_CHECK(vkWaitForFences(g.device, 1, &g.fence, VK_TRUE, UINT64_MAX));
+        uint64_t stamps[2] = {};
+        VKC_CHECK(vkGetQueryPoolResults(g.device, g.query_pool, 0, 2, sizeof stamps,
+                                        stamps, sizeof(uint64_t),
+                                        VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT));
+        VkPhysicalDeviceProperties props;
+        vkGetPhysicalDeviceProperties(g.phys, &props);
+        ms = (double)(stamps[1] - stamps[0]) * props.limits.timestampPeriod / 1e6;
+    }
+    vkDestroyPipeline(g.device, pipe, nullptr);
+    vkDestroyPipelineLayout(g.device, pipe_layout, nullptr);
+    vkDestroyDescriptorPool(g.device, pool, nullptr);
+    vkDestroyDescriptorSetLayout(g.device, set_layout, nullptr);
+    return ms;
+}
+
+// Fold the just-dispatched chunk (g.image, GENERAL after skip_readback run)
+// into the persistent sum. Host-synchronized by the run fence; the GENERAL
+// ->GENERAL barrier orders device writes against shader reads.
+inline double present_accum_add(GpuContext &g, PresentAccum &p,
+                                const std::string &spv_path, bool clear) {
+    present_accum_ensure(g, p);
+    {
+        VKC_CHECK(vkResetCommandBuffer(g.cmd, 0));
+        VkCommandBufferBeginInfo bi{};
+        bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        VKC_CHECK(vkBeginCommandBuffer(g.cmd, &bi));
+        VkImageMemoryBarrier bars[2]{};
+        for (int i = 0; i < 2; ++i) {
+            bars[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            bars[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+            bars[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            bars[i].image = (i == 0) ? g.image : p.img;
+            bars[i].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            bars[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            bars[i].dstAccessMask =
+                (i == 0) ? VK_ACCESS_SHADER_READ_BIT
+                         : (VkAccessFlags)(VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+        }
+        if (clear) {
+            bars[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            bars[1].srcAccessMask = 0;
+        }
+        vkCmdPipelineBarrier(g.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
+                             nullptr, 2, bars);
+        VKC_CHECK(vkEndCommandBuffer(g.cmd));
+        VKC_CHECK(vkResetFences(g.device, 1, &g.fence));
+        VkSubmitInfo si{};
+        si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &g.cmd;
+        VKC_CHECK(vkQueueSubmit(g.queue, 1, &si, g.fence));
+        VKC_CHECK(vkWaitForFences(g.device, 1, &g.fence, VK_TRUE, UINT64_MAX));
+    }
+    uint32_t push3[3] = {(uint32_t)g.W, (uint32_t)g.H, clear ? 1u : 0u};
+    return vkc_run_2img(g, spv_path, g.view, p.view, push3, 12);
+}
+
+// Film sum/count to top-first LDR bytes (P6-ready). UNORM dst created per
+// call; the shared staging buffer (px*16) easily fits px*4 download.
+inline double present_tonemap(GpuContext &g, PresentAccum &p, const std::string &spv_path,
+                              float exposure, int aces, float count,
+                              std::vector<unsigned char> &out_bytes) {
+    const size_t px = (size_t)g.W * g.H;
+    VkImage dst_img;
+    VkDeviceMemory dst_mem;
+    VkImageView dst_view;
+    {
+        VkImageCreateInfo ci{};
+        ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        ci.imageType = VK_IMAGE_TYPE_2D;
+        ci.format = VK_FORMAT_R8G8B8A8_UNORM;
+        ci.extent = {(uint32_t)g.W, (uint32_t)g.H, 1};
+        ci.mipLevels = 1;
+        ci.arrayLayers = 1;
+        ci.samples = VK_SAMPLE_COUNT_1_BIT;
+        ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ci.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VKC_CHECK(vkCreateImage(g.device, &ci, nullptr, &dst_img));
+        VkMemoryRequirements req;
+        vkGetImageMemoryRequirements(g.device, dst_img, &req);
+        VkMemoryAllocateInfo ai{};
+        ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        ai.allocationSize = req.size;
+        ai.memoryTypeIndex = vkc_find_memory(g.phys, req.memoryTypeBits,
+                                             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        VKC_CHECK(vkAllocateMemory(g.device, &ai, nullptr, &dst_mem));
+        VKC_CHECK(vkBindImageMemory(g.device, dst_img, dst_mem, 0));
+        VkImageViewCreateInfo vi{};
+        vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vi.format = VK_FORMAT_R8G8B8A8_UNORM;
+        vi.image = dst_img;
+        vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VKC_CHECK(vkCreateImageView(g.device, &vi, nullptr, &dst_view));
+    }
+    {
+        VKC_CHECK(vkResetCommandBuffer(g.cmd, 0));
+        VkCommandBufferBeginInfo bi{};
+        bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        VKC_CHECK(vkBeginCommandBuffer(g.cmd, &bi));
+        VkImageMemoryBarrier bars[2]{};
+        bars[0].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        bars[0].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        bars[0].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        bars[0].image = p.img;
+        bars[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        bars[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        bars[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        bars[1].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        bars[1].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        bars[1].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        bars[1].image = dst_img;
+        bars[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        bars[1].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(g.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0,
+                             nullptr, 2, bars);
+        VKC_CHECK(vkEndCommandBuffer(g.cmd));
+        VKC_CHECK(vkResetFences(g.device, 1, &g.fence));
+        VkSubmitInfo si{};
+        si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &g.cmd;
+        VKC_CHECK(vkQueueSubmit(g.queue, 1, &si, g.fence));
+        VKC_CHECK(vkWaitForFences(g.device, 1, &g.fence, VK_TRUE, UINT64_MAX));
+    }
+    struct TonePush {
+        int32_t W, H;
+        float exposure;
+        int32_t aces;
+        float count;
+    } tp{(int32_t)g.W, (int32_t)g.H, exposure, (int32_t)aces, count};
+    double ms = vkc_run_2img(g, spv_path, p.view, dst_view, &tp, 20);
+    {
+        VKC_CHECK(vkResetCommandBuffer(g.cmd, 0));
+        VkCommandBufferBeginInfo bi{};
+        bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        VKC_CHECK(vkBeginCommandBuffer(g.cmd, &bi));
+        VkImageMemoryBarrier b{};
+        b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        b.image = dst_img;
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        vkCmdPipelineBarrier(g.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr,
+                             1, &b);
+        VkBufferImageCopy region{};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageExtent = {(uint32_t)g.W, (uint32_t)g.H, 1};
+        vkCmdCopyImageToBuffer(g.cmd, dst_img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               g.staging.buf, 1, &region);
+        VKC_CHECK(vkEndCommandBuffer(g.cmd));
+        VKC_CHECK(vkResetFences(g.device, 1, &g.fence));
+        VkSubmitInfo si{};
+        si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &g.cmd;
+        VKC_CHECK(vkQueueSubmit(g.queue, 1, &si, g.fence));
+        VKC_CHECK(vkWaitForFences(g.device, 1, &g.fence, VK_TRUE, UINT64_MAX));
+        const unsigned char *ptr = (const unsigned char *)g.staging_mapped;
+        out_bytes.assign(ptr, ptr + px * 4);
+    }
+    vkDestroyImageView(g.device, dst_view, nullptr);
+    vkDestroyImage(g.device, dst_img, nullptr);
+    vkFreeMemory(g.device, dst_mem, nullptr);
+    return ms;
+}
+
+inline void present_accum_destroy(GpuContext &g, PresentAccum &p) {
+    if (p.view)
+        vkDestroyImageView(g.device, p.view, nullptr);
+    if (p.img)
+        vkDestroyImage(g.device, p.img, nullptr);
+    if (p.mem)
+        vkFreeMemory(g.device, p.mem, nullptr);
+    p.view = VK_NULL_HANDLE;
+    p.img = VK_NULL_HANDLE;
+    p.mem = VK_NULL_HANDLE;
+    p.ready = false;
 }
 
 inline void gpu_shutdown(GpuContext &g) {

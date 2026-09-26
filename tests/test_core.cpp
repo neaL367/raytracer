@@ -189,23 +189,9 @@ static void t_seed_streams() {
 static void t_spectrum() {
     test_current = "spectrum";
     // Hero wavelengths distinct, R/G/B ordered.
-    EXPECT_TRUE(spectrum::kHeroLambda[0] == 650.0);
-    EXPECT_TRUE(spectrum::kHeroLambda[1] == 550.0);
-    EXPECT_TRUE(spectrum::kHeroLambda[2] == 450.0);
-    // pick(): off = identity; on = hero channel value, 0 elsewhere.
-    // Weight-free: E[pick] over heroes = v/3, restored by the single x3
-    // at the end of Li (per-quantity weights would compound to 9x).
-    vec3 v(1, 2, 3);
-    vec3 id = spectrum::pick(v, 1, false);
-    EXPECT_TRUE(id.x() == 1 && id.y() == 2 && id.z() == 3);
-    vec3 pk = spectrum::pick(v, 1, true);
-    EXPECT_TRUE(pk.x() == 0 && pk.y() == 2 && pk.z() == 0);
-    vec3 mean(0, 0, 0);
-    for (int c = 0; c < 3; ++c)
-        mean = mean + spectrum::pick(v, c, true);
-    // Each channel picked exactly once across heroes: sum == v, and the
-    // single x3 in Li compensates the 1/3 sampling probability.
-    EXPECT_TRUE(mean.x() == 1 && mean.y() == 2 && mean.z() == 3);
+    EXPECT_TRUE(spectrum::kChannelLambda[0] == 650.0);
+    EXPECT_TRUE(spectrum::kChannelLambda[1] == 550.0);
+    EXPECT_TRUE(spectrum::kChannelLambda[2] == 450.0);
     // Cauchy: B=0 identity; B>0 normal dispersion (blue bends more).
     EXPECT_NEAR(spectrum::cauchy_ior(1.5, 0.0, 450.0), 1.5);
     double nred = spectrum::cauchy_ior(1.52, 0.0042, 650.0);
@@ -305,41 +291,6 @@ static void t_thinfilm() {
     EXPECT_TRUE(fabs(rgb0.x()-rgb0.y()) < 1e-9 && fabs(rgb0.y()-rgb0.z()) < 1e-9);
 }
 
-// M67: spectral parity — non-dispersive lambertian gives same RGB mean as RGB path.
-static void t_spectral_parity() {
-    test_current = "spectral_parity";
-    auto m = std::make_shared<lambertian>(vec3(0.8, 0.5, 0.2));
-    std::vector<std::shared_ptr<hittable>> objs = {
-        std::static_pointer_cast<hittable>(
-            std::make_shared<sphere>(vec3(0,0,-1), 0.5, m))};
-    qbvh_node world(objs, 0, objs.size());
-    std::vector<light> lights;
-    std::vector<std::shared_ptr<hittable>> media;
-    integrator tracer;
-    ray r(vec3(0, 0, 0), vec3(0, 0, -1));
-    const int N = 400;
-
-    rng_seed(77);
-    vec3 Lrgb(0, 0, 0);
-    render_params rp_rgb{world, lights, 4, media};
-    for (int i = 0; i < N; ++i) Lrgb = Lrgb + tracer.Li(r, rp_rgb);
-    Lrgb = Lrgb / (double)N;
-
-    rng_seed(77);
-    vec3 Lspc(0, 0, 0);
-    render_params rp_spc{world, lights, 4, media};
-    rp_spc.spectral = true;
-    for (int i = 0; i < N; ++i) Lspc = Lspc + tracer.Li(r, rp_spc);
-    Lspc = Lspc / (double)N;
-
-    // Per-channel means agree within 20% of their value.
-    for (int c = 0; c < 3; ++c) {
-        double ref = Lrgb.e[c];
-        double got = Lspc.e[c];
-        if (ref > 0.01)
-            EXPECT_TRUE(fabs(got - ref) / ref < 0.20);
-    }
-}
 void run_core_tests() {
     t_vec3();
     t_ray();
@@ -352,5 +303,4 @@ void run_core_tests() {
     t_spectrum();
     t_hdri_cdf();
     t_thinfilm();
-    t_spectral_parity();
 }

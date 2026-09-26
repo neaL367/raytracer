@@ -12,7 +12,7 @@ public:
     dielectric(double ri, double r, int pri)
         : ir(ri), roughness(r < 0 ? 0 : (r > 1 ? 1 : r)), prio(pri) {}
     // Absorbing glass (M58): Beer's law over the nested exit chord.
-    // Cauchy B (M67): dispersion for spectral hero paths, um^2; 0 = legacy.
+    // Cauchy B (M67): dispersion data, um^2 (transport uses constant IOR).
     dielectric(double ri, double r, int pri, const vec3 &sigma, double cauchyB = 0.0)
         : ir(ri), roughness(r < 0 ? 0 : (r > 1 ? 1 : r)), prio(pri), sigma(sigma),
           cauchyB(cauchyB < 0 ? 0 : cauchyB) {}
@@ -24,7 +24,7 @@ public:
     double ior_at(int channel) const override {
         if (channel < 0 || channel > 2)
             return ir;
-        return spectrum::cauchy_ior(ir, cauchyB, spectrum::kHeroLambda[channel]);
+        return spectrum::cauchy_ior(ir, cauchyB, spectrum::kChannelLambda[channel]);
     }
     double dispersion() const { return cauchyB; }
     // Thin-film overcoat, entry side (M68): d_nm = 0 (default) disables.
@@ -34,14 +34,11 @@ public:
     }
     double film_thickness() const { return film_d; }
     double film_ior() const { return film_n; }
-    // Film reflect prob at cos incidence, hero-resolved in spectral mode
-    // (else luminance-mean). n0 = air on entry, glass on exit (approx).
+    // Film reflect prob at cos incidence (luminance-mean over the RGB
+    // Airy evaluation). n0 = air on entry, glass on exit (approx).
     double film_prob(double cos_ti, double iri, bool front_face) const {
         double n0 = front_face ? 1.0 : iri;
         vec3 R = thinfilm::film_R_rgb(n0, film_n, film_d, iri, 0.0, cos_ti);
-        int hero = spectrum::hero_channel();
-        if (hero >= 0 && hero <= 2)
-            return R.e[hero];
         return (R.x() + R.y() + R.z()) / 3.0;
     }
     vec3 absorb() const override { return sigma; }
@@ -62,8 +59,7 @@ public:
         double cosVH = dot(Vl, H);
         if (cosVH <= 0)
             return false; // degenerate microfacet: absorbed
-        // Hero-resolved IOR (M67): legacy ir when spectral mode is off.
-        double iri = ior_at(spectrum::hero_channel());
+        double iri = ior();
         double eta = rec.nest_set ? rec.nest_eta : (rec.front_face ? (1.0 / iri) : iri); // n_i/n_o
         double sinT2 = eta * eta * (1.0 - cosVH * cosVH);
         double F = 0;
@@ -105,7 +101,7 @@ public:
     bool scatter_smooth(const ray &in, const hit_record &rec, vec3 &attenuation,
                         ray &scattered) const {
         attenuation = vec3(1, 1, 1); // glass absorbs nothing
-        double iri = ior_at(spectrum::hero_channel());
+        double iri = ior();
         double ratio = rec.nest_set ? rec.nest_eta : (rec.front_face ? (1.0 / iri) : iri);
         vec3 unit = unit_vector(in.direction());
         vec3 eff_n = resolve_normal(rec);

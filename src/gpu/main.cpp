@@ -32,8 +32,6 @@ int main(int argc, char **argv) {
     bool spp_set = false, width_set = false;
     int max_depth = 50; // bounce cap (depth ladder forensics)
     bool fixed_rng = false; // --fixed-rng: deterministic 0.5 stream (M54)
-    bool mix_pdf = false; // --pdf mixture: Book 3 mixture-density path
-    bool spectral = false; // --spectrum: M67 hero-wavelength transport
     int chunk_spp = 0; // --chunk C: spp per dispatch (TDR); 0 = one shot
     std::string scene_name = "default";
     std::string hdr_path; // empty = no float dump
@@ -95,10 +93,6 @@ int main(int argc, char **argv) {
             max_depth = std::max(1, std::atoi(argv[++i]));
         else if (a == "--fixed-rng")
             fixed_rng = true;
-        else if (a == "--pdf" && i + 1 < argc)
-            mix_pdf = (std::string(argv[++i]) == "mixture");
-        else if (a == "--spectrum")
-            spectral = true;
         else if (a.ends_with(".spv"))
             shader = a;
         else if (a.ends_with(".ppm"))
@@ -195,16 +189,32 @@ int main(int argc, char **argv) {
     size_t hdri_tex_bytes = hdri_tex_buf.empty() ? sizeof empty_hdri : hdri_tex_buf.size() * sizeof(float);
     const void *hdri_cdf_ptr = hdri_cdf_buf.empty() ? (const void*)empty_hdri : (const void*)hdri_cdf_buf.data();
     size_t hdri_cdf_bytes = hdri_cdf_buf.empty() ? sizeof empty_hdri : hdri_cdf_buf.size() * sizeof(float);
+    // Light power CDF over the GPU light TABLE (per-tri entries for
+    // tessellated shapes): weights mirror the shader densities, so the
+    // GPU estimator stays internally consistent (see flatten.h).
+    std::vector<float> light_cdf_buf;
+    {
+        float gtotal = 0;
+        build_gpu_light_cdf(flat, light_cdf_buf, gtotal);
+        light_cdf_buf.push_back(gtotal);
+    }
+    static const float empty_cdf[1] = {};
+    const void *light_cdf_ptr =
+        light_cdf_buf.size() > 1 ? (const void *)light_cdf_buf.data() : (const void *)empty_cdf;
+    size_t light_cdf_bytes =
+        light_cdf_buf.size() > 1 ? light_cdf_buf.size() * sizeof(float) : sizeof empty_cdf;
 
-    const void *data[11] = {&scene.cam, scene.spheres.data(), scene.quads.data(),
+    const void *data[12] = {&scene.cam, scene.spheres.data(), scene.quads.data(),
                             scene.tris.data(), flat.nodes.data(), flat.refs.data(),
-                            img_ptr, tab_ptr, light_ptr, hdri_tex_ptr, hdri_cdf_ptr};
-    const size_t bytes[11] = {sizeof scene.cam, scene.spheres.size() * sizeof(GPUSphere),
+                            img_ptr, tab_ptr, light_ptr, hdri_tex_ptr, hdri_cdf_ptr,
+                            light_cdf_ptr};
+    const size_t bytes[12] = {sizeof scene.cam, scene.spheres.size() * sizeof(GPUSphere),
                               scene.quads.size() * sizeof(GPUQuad),
                               scene.tris.size() * sizeof(GPUTri),
                               flat.nodes.size() * sizeof(GPUQNode),
                               flat.refs.size() * sizeof(GPURef), img_bytes, tab_bytes,
-                              light_bytes, hdri_tex_bytes, hdri_cdf_bytes};
+                              light_bytes, hdri_tex_bytes, hdri_cdf_bytes,
+                              light_cdf_bytes};
     gpu_set_scene(gpu, data, bytes);
 
     // Fog-slot count gates fog RNG draws (static streams bit-exact).
@@ -229,8 +239,6 @@ int main(int argc, char **argv) {
     push.nblack = sdata.black_bg ? 1 : 0;
     push.maxdepth = max_depth;
     push.fixed_rng = fixed_rng ? 1 : 0;
-    // mixpdf bit 0 = mixture, bit 1 = spectral (64-byte block stays intact).
-    push.mixpdf = (mix_pdf ? 1 : 0) | (spectral ? 2 : 0);
 
     // Chunked submit (M52): split spp into TDR-safe dispatches, accumulate
     // linear HDR on the host in fp64 (same order as the old python script:
@@ -238,20 +246,40 @@ int main(int argc, char **argv) {
     // Chunk k uses seed+k. Chunk 0/absent == legacy single dispatch.
     int per = (chunk_spp > 0) ? chunk_spp : spp;
     int nchunks = (spp + per - 1) / per;
+    // Present mode (on-device accum + film, byte out) is automatic for
+    // plain LDR renders; post-passes/HDR/AOV stay on the host path.
+    bool use_present = !do_denoise && !do_joint && !dump_aov && hdr_path.empty();
+    std::string shdir = shader.substr(0, shader.find_last_of("/\\") + 1);
     std::vector<double> acc((size_t)W * H * 4, 0.0);
     std::vector<float> rgba;
-    double dispatch_ms = 0;
+    std::vector<unsigned char> present_bytes;
+    PresentAccum pacc{};
+    double dispatch_ms = 0, present_ms = 0;
     int done = 0;
     for (int c = 0; c < nchunks; ++c) {
         int cspp = std::min(per, spp - done);
         push.spp = cspp;
         push.seed = seed + c;
-        dispatch_ms += gpu_run(gpu, shader, push, rgba);
-        // NOTE: divide (not multiply-by-reciprocal) to bit-match the old
-        // python averaging (a/n per chunk, same order).
-        for (size_t k = 0; k < acc.size(); ++k)
-            acc[k] += (double)rgba[k] / (double)nchunks;
+        if (use_present) {
+            // Zero float downloads: chunk stays on device, folded into the
+            // persistent fp32 sum (same equal-chunk weighting as host: /n).
+            dispatch_ms += gpu_run(gpu, shader, push, rgba, true);
+            present_ms += present_accum_add(gpu, pacc, shdir + "accum.spv", c == 0);
+        } else {
+            dispatch_ms += gpu_run(gpu, shader, push, rgba);
+            // NOTE: divide (not multiply-by-reciprocal) to bit-match the old
+            // python averaging (a/n per chunk, same order).
+            for (size_t k = 0; k < acc.size(); ++k)
+                acc[k] += (double)rgba[k] / (double)nchunks;
+        }
         done += cspp;
+    }
+    if (use_present) {
+        // Film sum/nchunks on device -> top-first RGBA bytes (P6-ready).
+        present_ms += present_tonemap(gpu, pacc, shdir + "tonemap.spv",
+                                      (float)exposure, 1, (float)nchunks,
+                                      present_bytes);
+        present_accum_destroy(gpu, pacc);
     }
     // Post-passes consume the averaged beauty (single dispatch feeds its
     // own output through the same path, unchanged).
@@ -312,10 +340,37 @@ int main(int argc, char **argv) {
         write_pfm("out/aov_albedo.pfm", alb_fb, W, H);
         write_pfm("out/aov_normal.pfm", nrm_fb, W, H);
     }
+    bool wrote_ok = false;
+    if (use_present) {
+        // Bytes are top-first RGBA from the device; emit P6 directly.
+        std::string buf;
+        buf.reserve((size_t)W * H * 3 + 32);
+        buf.append("P6\n");
+        buf.append(std::to_string(W));
+        buf.push_back(' ');
+        buf.append(std::to_string(H));
+        buf.append("\n255\n");
+        for (size_t i = 0; i < (size_t)W * H; ++i) {
+            buf.push_back((char)present_bytes[i * 4 + 0]);
+            buf.push_back((char)present_bytes[i * 4 + 1]);
+            buf.push_back((char)present_bytes[i * 4 + 2]);
+        }
+        std::filesystem::create_directories("out");
+        std::ofstream out(out_path, std::ios::binary);
+        if (out) {
+            out.write(buf.data(), (std::streamsize)buf.size());
+            wrote_ok = (bool)out;
+        }
+    }
     gpu_shutdown(gpu);
 
     std::filesystem::create_directories("out");
-    if (!write_ppm(out_path.c_str(), fb, W, H, exposure)) {
+    if (use_present) {
+        if (!wrote_ok) {
+            std::cerr << "write failed\n";
+            return 1;
+        }
+    } else if (!write_ppm(out_path.c_str(), fb, W, H, exposure)) {
         std::cerr << "write failed\n";
         return 1;
     }
@@ -327,6 +382,8 @@ int main(int argc, char **argv) {
     std::cout << "wrote " << out_path << " spp=" << spp
               << " dispatch=" << dispatch_ms << "ms wall="
               << std::chrono::duration<double>(t1 - t0).count() << "s";
+    if (use_present)
+        std::cout << " present=" << present_ms << "ms";
     if (nchunks > 1)
         std::cout << " chunks=" << nchunks;
     if (do_denoise)

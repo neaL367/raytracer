@@ -1,0 +1,24 @@
+#version 450
+// Present-path accumulation: adds one path-tracer chunk mean (rgba32f,
+// as written by path.comp into binding 0) into a persistent HDR sum.
+// clear != 0 zeroes first (first chunk / camera reset). One invocation
+// per pixel, so the read-modify-write is race-free across the dispatch
+// (chunks are host-sequenced by fence).
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(binding = 0, rgba32f) readonly uniform image2D chunkImg;
+layout(binding = 1, rgba32f) uniform image2D accumImg;
+layout(push_constant) uniform PC {
+    int W;
+    int H;
+    int clear;
+}
+pc;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= pc.W || p.y >= pc.H)
+        return;
+    vec3 c = imageLoad(chunkImg, p).xyz;
+    vec3 a = (pc.clear != 0) ? vec3(0.0) : imageLoad(accumImg, p).xyz;
+    imageStore(accumImg, p, vec4(a + c, 1.0));
+}

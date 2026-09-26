@@ -76,8 +76,16 @@ inline vec3 radiance(const vec3 &d) {
 // Analytic-only alias (kept for legacy sky miss branch without --env).
 inline vec3 legacy_sky(const vec3 &d) { return sky(d); }
 
-// Uniform-sphere sample PDF (1/4π) — used by the analytic path.
+// Uniform-sphere sample PDF (1/4π) — one leg of the sun-cone mixture.
 inline double analytic_sample_pdf() { return 1.0 / (4.0 * 3.1415926535897932385); }
+
+// Sun disc cone (matches analytic_radiance threshold): uniform cap sample,
+// one leg of the env mixture.
+inline double sun_cos_thresh() { return 0.9993; }
+inline double sun_solid_angle() {
+    return 2.0 * 3.1415926535897932385 * (1.0 - sun_cos_thresh());
+}
+inline double sun_cone_pdf() { return 1.0 / sun_solid_angle(); }
 
 // Effective PDF for a given direction (used by the MIS miss weight).
 // Returns the HDRI pdf when active, else 1/4π.
@@ -86,6 +94,17 @@ inline double sample_pdf_for(const vec3 &d) {
     if (h && !h->empty())
         return h->pdf(d);
     return analytic_sample_pdf();
+}
+
+// Mixture miss density (analytic only): matches the sun-cone forward
+// sampler, else BSDF-found sun hits mis-weight.
+inline double sample_pdf_mix_for(const vec3 &d) {
+    hdri_env *h = g_hdri();
+    if (h && !h->empty())
+        return h->pdf(d);
+    vec3 ud = unit_vector(d);
+    double cone = (dot(ud, sun_dir()) >= sun_cos_thresh()) ? sun_cone_pdf() : 0.0;
+    return 0.5 * cone + 0.5 * analytic_sample_pdf();
 }
 
 // Legacy scalar accessor kept for existing call sites that don't need

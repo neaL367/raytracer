@@ -18,6 +18,7 @@
 #include "io/bloom.h"
 #include "accel/bvh.h"
 #include "accel/qbvh.h"
+#include "accel/qbvh8.h"
 #include "accel/qbvh_flat.h"
 #include "material/material.h"
 #include "integrator/nesting.h"
@@ -302,12 +303,23 @@ static void t_hetero() {
         EXPECT_TRUE(m >= 0 && m <= 1); // majorant exact: tracking unbiased
     }
     // Miss escapes; seeded hit is deterministic and inside the chord.
+    // RNG-agnostic: find first hitting seed in 91..110 (any good uniform
+    // stream hits quickly at sigma 2), then require replay bit-exact.
     hit_record hr;
     EXPECT_TRUE(!het.hit(ray(vec3(5, 5, 0), vec3(0, 0, -1)), 0.001, 1e30, hr));
-    rng_seed(91);
-    EXPECT_TRUE(het.hit(ray(vec3(0, 0, 0), vec3(0, 0, -1)), 0.001, 1e30, hr));
+    unsigned hit_seed = 91;
+    bool found = false;
+    for (unsigned s = 91; s < 110; ++s) {
+        rng_seed(s);
+        if (het.hit(ray(vec3(0, 0, 0), vec3(0, 0, -1)), 0.001, 1e30, hr)) {
+            hit_seed = s;
+            found = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(found);
     EXPECT_TRUE(hr.t > 0 && hr.t < 2.0 && hr.mat == phase);
-    rng_seed(91);
+    rng_seed(hit_seed);
     hit_record hr2;
     EXPECT_TRUE(het.hit(ray(vec3(0, 0, 0), vec3(0, 0, -1)), 0.001, 1e30, hr2));
     EXPECT_NEAR(hr.t, hr2.t); // replay bit-exact
@@ -885,6 +897,32 @@ static void t_disk_cylinder_bloom() {
     EXPECT_NEAR(ln_cone.length(), 1.0);
 }
 
+static void t_qbvh8() {
+    test_current = "qbvh8";
+    auto m = std::make_shared<lambertian>(vec3(0.5, 0.5, 0.5));
+    std::vector<std::shared_ptr<hittable>> objs = {
+        std::static_pointer_cast<hittable>(
+            std::make_shared<sphere>(vec3(0, 0, -1), 0.5, m)),
+        std::static_pointer_cast<hittable>(std::make_shared<quad>(
+            vec3(-2, -1, -2), vec3(4, 0, 0), vec3(0, 0, 4), m))};
+    qbvh_node q4(objs, 0, objs.size());
+    qbvh8_node q8(objs, 0, objs.size());
+    // Same hits within float ulp; same miss behavior.
+    for (int k = 0; k < 12; ++k) {
+        double dx = -0.4 + 0.08 * k, dy = -0.3 + 0.05 * k;
+        ray r(vec3(0, 0, 0), unit_vector(vec3(dx, dy, -1)));
+        hit_record h4, h8;
+        bool a = q4.hit(r, 0.001, 1e30, h4);
+        bool b = q8.hit(r, 0.001, 1e30, h8);
+        EXPECT_TRUE(a == b);
+        if (a && b)
+            EXPECT_TRUE(std::fabs(h4.t - h8.t) < 1e-6);
+        EXPECT_TRUE(q4.hit_any(r, 0.001, 1e30) == q8.hit_any(r, 0.001, 1e30));
+    }
+    hit_record hm;
+    EXPECT_TRUE(!q8.hit(ray(vec3(0, 0, 0), vec3(0, 1, 0)), 0.001, 1e30, hm));
+}
+
 void run_geometry_tests() {
     t_sphere();
     t_list();
@@ -892,6 +930,7 @@ void run_geometry_tests() {
     t_aabb();
     t_bvh();
     t_qbvh();
+    t_qbvh8();
     t_qflat();
     t_sah();
     t_uv();

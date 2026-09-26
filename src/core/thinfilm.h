@@ -1,8 +1,7 @@
 #pragma once
 // Thin-film interference (M68): single lossless film on a substrate,
-// unpolarized Airy formula. Evaluated at the three hero wavelengths so
-// both RGB and spectral-hero paths share one routine (spectral picks the
-// hero channel downstream). d = 0 reproduces the bare interface exactly.
+// unpolarized Airy formula, evaluated per RGB channel. d = 0 reproduces
+// the bare interface exactly.
 //
 // Substrate may be dielectric (k=0) or conductor (n,k). The film itself
 // is lossless (real n_film). Incident medium n0 is real (air or glass).
@@ -57,7 +56,7 @@ inline vec3 film_R_rgb(double n0, double nf, double d_nm, double ns_n, double ns
                        double cos_ti) {
     vec3 R(0, 0, 0);
     for (int c = 0; c < 3; ++c)
-        R.e[c] = film_R(n0, nf, d_nm, ns_n, ns_k, cos_ti, spectrum::kHeroLambda[c]);
+        R.e[c] = film_R(n0, nf, d_nm, ns_n, ns_k, cos_ti, spectrum::kChannelLambda[c]);
     return R;
 }
 

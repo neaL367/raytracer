@@ -25,6 +25,7 @@
 #include "scene/scene.h"
 #include "integrator/integrator.h"
 #include "accel/qbvh.h"
+#include "accel/qbvh8.h"
 #include "output/film.h"
 #include "output/ppm.h"
 #include "gpu/vk_compute.h"
@@ -284,7 +285,6 @@ int run_interactive_renderer(int argc, char **argv) {
     double aperture = 0.0;
     std::string hdri_env_path;
     bool show_hud = true;
-    bool adaptive_res = true;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -310,8 +310,6 @@ int run_interactive_renderer(int argc, char **argv) {
             force_gpu = true;
         else if (a == "--no-hud")
             show_hud = false;
-        else if (a == "--no-dynamic-res")
-            adaptive_res = false;
     }
 
     std::cout << "rt_view: Initializing interactive scene '" << scene_name
@@ -336,17 +334,20 @@ int run_interactive_renderer(int argc, char **argv) {
     fly_camera fly_cam;
     fly_cam.init_from_camera(sdata.cam, initial_vfov);
     double focus_dist = 4.0;
-    int blades = 0;
-    double anamorphic = 1.0;
-    double distortion = 0.0;
-    camera active_cam = fly_cam.build_camera(aspect, aperture, focus_dist, blades, anamorphic, distortion);
+    camera active_cam = fly_cam.build_camera(aspect, aperture, focus_dist, 0, 1.0, 0.0);
 
-    // Build CPU QBVH
+    // Build CPU QBVH (fp32 8-wide) + power-CDF for NEE.
     std::cout << "rt_view: Building CPU QBVH acceleration structure (" << sdata.objs.size() << " primitives)...\n";
-    qbvh_node world(sdata.objs, 0, sdata.objs.size(), true);
+    qbvh8_node world(sdata.objs, 0, sdata.objs.size());
+    std::vector<double> view_cdf;
+    double view_total = 0.0;
+    if (!sdata.lights.empty())
+        build_light_cdf(sdata.lights, view_cdf, view_total);
     integrator tracer;
     render_params params{world, sdata.lights, max_depth, sdata.media,
-                         sdata.env_light, sdata.black_bg, false, false};
+                         sdata.env_light, sdata.black_bg};
+    params.light_cdf = view_cdf.empty() ? nullptr : &view_cdf;
+    params.light_power_total = view_total;
 
     // Try GPU initialization
     bool use_gpu = false;
@@ -370,8 +371,8 @@ int run_interactive_renderer(int argc, char **argv) {
             gpu_scene &gscene = flat.gs;
             gscene.cam = gpu_cam_from_cpu(active_cam.eye(), active_cam.corner(),
                                           active_cam.span_u(), active_cam.span_v(),
-                                          active_cam.lens_r(), blades,
-                                          anamorphic, distortion);
+                                          active_cam.lens_r(), 0,
+                                          1.0, 0.0);
 
             std::vector<int> img_table;
             std::vector<float> img_blob;
@@ -415,16 +416,30 @@ int run_interactive_renderer(int argc, char **argv) {
             size_t hdri_tex_bytes = hdri_tex_buf.empty() ? sizeof empty_hdri : hdri_tex_buf.size() * sizeof(float);
             const void *hdri_cdf_ptr = hdri_cdf_buf.empty() ? (const void*)empty_hdri : (const void*)hdri_cdf_buf.data();
             size_t hdri_cdf_bytes = hdri_cdf_buf.empty() ? sizeof empty_hdri : hdri_cdf_buf.size() * sizeof(float);
+            // Light power CDF over the GPU light table (see flatten.h).
+            std::vector<float> light_cdf_buf;
+            {
+                float gtotal = 0;
+                build_gpu_light_cdf(flat, light_cdf_buf, gtotal);
+                light_cdf_buf.push_back(gtotal);
+            }
+            static const float empty_cdf[1] = {};
+            const void *light_cdf_ptr =
+                light_cdf_buf.size() > 1 ? (const void *)light_cdf_buf.data() : (const void *)empty_cdf;
+            size_t light_cdf_bytes =
+                light_cdf_buf.size() > 1 ? light_cdf_buf.size() * sizeof(float) : sizeof empty_cdf;
 
-            const void *data[11] = {&gscene.cam, gscene.spheres.data(), gscene.quads.data(),
+            const void *data[12] = {&gscene.cam, gscene.spheres.data(), gscene.quads.data(),
                                     gscene.tris.data(), flat.nodes.data(), flat.refs.data(),
-                                    img_ptr, tab_ptr, light_ptr, hdri_tex_ptr, hdri_cdf_ptr};
-            const size_t bytes[11] = {sizeof gscene.cam, gscene.spheres.size() * sizeof(GPUSphere),
+                                    img_ptr, tab_ptr, light_ptr, hdri_tex_ptr, hdri_cdf_ptr,
+                                    light_cdf_ptr};
+            const size_t bytes[12] = {sizeof gscene.cam, gscene.spheres.size() * sizeof(GPUSphere),
                                       gscene.quads.size() * sizeof(GPUQuad),
                                       gscene.tris.size() * sizeof(GPUTri),
                                       flat.nodes.size() * sizeof(GPUQNode),
                                       flat.refs.size() * sizeof(GPURef), img_bytes, tab_bytes,
-                                      light_bytes, hdri_tex_bytes, hdri_cdf_bytes};
+                                      light_bytes, hdri_tex_bytes, hdri_cdf_bytes,
+                                      light_cdf_bytes};
             gpu_set_scene(gpu, data, bytes);
 
             int nfog = 0;
@@ -472,33 +487,26 @@ int run_interactive_renderer(int argc, char **argv) {
                                          SDL_TEXTUREACCESS_STREAMING, W, H);
     SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
 
-    enum class ViewMode { BEAUTY = 0, ALBEDO = 1, NORMAL = 2 };
-    ViewMode view_mode = ViewMode::BEAUTY;
     bool accum_paused = false;
 
     // Buffers for progressive accumulation and AOV inspection
     std::vector<vec3> accum_fb((size_t)W * H, vec3(0, 0, 0));
     std::vector<vec3> beauty_hdr((size_t)W * H, vec3(0, 0, 0));
     std::vector<uint8_t> display_rgb((size_t)W * H * 3, 0);
-    std::vector<uint8_t> prev_display_rgb((size_t)W * H * 3, 0);
-    std::vector<float> aov_alb((size_t)W * H * 4, 0.0f);
-    std::vector<float> aov_nrm((size_t)W * H * 4, 0.0f);
+    // Present path (GPU backend, plain beauty): on-device accumulation +
+    // film straight to display bytes; no float downloads, no host tonemap.
+    PresentAccum present{};
+    std::vector<unsigned char> present_bytes;
+    std::string shdir =
+        shader_path.substr(0, shader_path.find_last_of("/\\") + 1);
+    bool present_clear = true;
+    bool present_active = false;
     int accum_spp = 0;
     bool use_aces = true;
     bool relative_mouse = false;
     bool right_mouse_down = false;
-    bool temporal_smooth = true;
     bool live_denoise = false;
-    bool optical_vignette = false;
     bool bloom_enabled = false;
-    bool chromatic_aberration = false;
-    bool focus_peaking = false;
-    bool turntable_mode = false;
-    double turntable_rpm = 2.5;
-    double color_temp = 0.0;
-    std::shared_ptr<material> selected_mat = nullptr;
-    int motion_frames = 0;
-    bool was_motion_rendering = false;
 
     unsigned num_threads = std::max(1u, std::thread::hardware_concurrency());
     cpu_render_pool pool(num_threads);
@@ -518,28 +526,9 @@ int run_interactive_renderer(int argc, char **argv) {
               << "  Shift / Ctrl : Sprint (3x) / Sneak (0.25x precision)\n"
               << "  Right Drag/F : Mouse Look / Toggle Cursor Lock\n"
               << "  Mouse Wheel  : Adjust flight speed (current: " << fly_cam.speed << ")\n"
-              << "  Mid Click/F4 : Click-to-Focus / Center Autofocus (sets focal plane)\n"
-              << "  Alt + Left   : Material & Object Inspector (queries primitive under cursor)\n"
               << "  Tab / F11    : Toggle On-Screen Heads-Up Display (HUD) [ON/OFF]\n"
-              << "  F7           : Toggle Adaptive Viewport Resolution (0.5x Dynamic Motion Scale)\n"
-              << "  U / I / O    : Adjust Aperture (U: -0.02, I: +0.02, O: Toggle pinhole/bokeh)\n"
-              << "  K / L        : Adjust Focus Distance (K: -0.2m, L: +0.2m)\n"
-              << "  B            : Toggle Bokeh Iris Shape (Circular <-> 6-Blade Hexagon)\n"
-              << "  J            : Toggle Anamorphic Lens Squeeze (1.0x Spherical <-> 2.0x Oval)\n"
-              << "  Y            : Toggle Radial Lens Distortion (0.0 Rectilinear <-> 0.20 Barrel)\n"
-              << "  9 / F5       : Toggle Lens Chromatic Aberration [ON/OFF]\n"
-              << "  F6           : Toggle Focus Peaking / Cinema Z-Peaking Overlay [ON/OFF]\n"
-              << "  F8           : Toggle Cinematic 360 Turntable Orbit [ON/OFF]\n"
-              << "  Arrow Keys   : Dynamic Sun Orbit (Left/Right: Azimuth, Up/Down: Elevation)\n"
-              << "  - / =        : Nudge Roughness (-0.05 / +0.05) or Light Emission (0.8x / 1.25x)\n"
-              << "  , / .        : Nudge Glass IOR (-0.05 / +0.05) or Light Temperature (-500K / +500K)\n"
-              << "  Z            : Toggle Temporal Motion Smoothing [ON/OFF]\n"
-              << "  N            : Toggle Live Bilateral AOV Denoiser [ON/OFF]\n"
-              << "  V            : Toggle Optical Vignetting [ON/OFF]\n"
-              << "  M            : Toggle Multi-Scale Bloom & Optical Glare [ON/OFF]\n"
-              << "  ; / ' / /    : Color Temperature ( ; Cooler, ' Warmer, / Reset )\n"
-              << "  1 - 4        : Camera bookmarks (Bunny, Crystals, Disney, Wide)\n"
-              << "  F1 - F3      : Display Mode (F1: Beauty, F2: Albedo AOV, F3: Normal AOV)\n"
+              << "  N            : Toggle Live Bilateral Denoiser [ON/OFF]\n"
+              << "  M            : Toggle Multi-Scale Bloom [ON/OFF]\n"
               << "  X            : Toggle Accumulation Pause / Resume\n"
               << "  G            : Toggle GPU compute vs CPU multi-threading\n"
               << "  T            : Toggle ACES film tonemapping vs Linear/sRGB\n"
@@ -557,20 +546,6 @@ int run_interactive_renderer(int argc, char **argv) {
         if (dt > 0.1) dt = 0.1;
 
         bool cam_moved = false;
-
-        if (turntable_mode) {
-            double d_angle_deg = (turntable_rpm * 360.0 / 60.0) * dt;
-            vec3 target = fly_cam.eye + fly_cam.forward_dir() * focus_dist;
-            double rad = d_angle_deg * (3.1415926535897932385 / 180.0);
-            double dx = fly_cam.eye.x() - target.x();
-            double dz = fly_cam.eye.z() - target.z();
-            double cos_r = std::cos(rad), sin_r = std::sin(rad);
-            double new_dx = dx * cos_r - dz * sin_r;
-            double new_dz = dx * sin_r + dz * cos_r;
-            fly_cam.eye = vec3(target.x() + new_dx, fly_cam.eye.y(), target.z() + new_dz);
-            fly_cam.yaw += d_angle_deg;
-            cam_moved = true;
-        }
 
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
@@ -604,237 +579,20 @@ int run_interactive_renderer(int argc, char **argv) {
                 } else if (e.key.key == SDLK_RIGHTBRACKET) {
                     exposure = std::min(50.0, exposure * 1.25);
                     std::cout << "rt_view: Exposure = " << exposure << "\n";
-                } else if (e.key.key == SDLK_U) {
-                    aperture = std::max(0.0, aperture - 0.02);
-                    std::cout << "rt_view: Aperture = " << aperture << " (Focal Dist = " << focus_dist << "m)\n";
-                    cam_moved = true;
-                } else if (e.key.key == SDLK_I) {
-                    aperture = std::min(1.0, aperture + 0.02);
-                    std::cout << "rt_view: Aperture = " << aperture << " (Focal Dist = " << focus_dist << "m)\n";
-                    cam_moved = true;
-                } else if (e.key.key == SDLK_O) {
-                    aperture = (aperture <= 0.001) ? 0.08 : 0.0;
-                    std::cout << "rt_view: Aperture toggled to = " << aperture << "\n";
-                    cam_moved = true;
-                } else if (e.key.key == SDLK_K) {
-                    focus_dist = std::max(0.1, focus_dist - 0.2);
-                    std::cout << "rt_view: Focus Distance = " << focus_dist << "m (Aperture = " << aperture << ")\n";
-                    cam_moved = true;
-                } else if (e.key.key == SDLK_L) {
-                    focus_dist = std::min(50.0, focus_dist + 0.2);
-                    std::cout << "rt_view: Focus Distance = " << focus_dist << "m (Aperture = " << aperture << ")\n";
-                    cam_moved = true;
-                } else if (e.key.key == SDLK_Z) {
-                    temporal_smooth = !temporal_smooth;
-                    std::cout << "rt_view: Temporal Motion Smoothing [" << (temporal_smooth ? "ON" : "OFF") << "]\n";
-                } else if (e.key.key == SDLK_B) {
-                    blades = (blades == 0) ? 6 : 0;
-                    std::cout << "rt_view: Bokeh Iris Shape: [" << (blades >= 3 ? "Hexagonal 6-Blade" : "Circular") << "]\n";
-                    cam_moved = true;
                 } else if (e.key.key == SDLK_N) {
                     live_denoise = !live_denoise;
                     std::cout << "rt_view: Live Bilateral AOV Denoiser [" << (live_denoise ? "ON" : "OFF") << "]\n";
-                } else if (e.key.key == SDLK_V) {
-                    optical_vignette = !optical_vignette;
-                    std::cout << "rt_view: Optical Vignetting [" << (optical_vignette ? "ON" : "OFF") << "]\n";
                 } else if (e.key.key == SDLK_M) {
                     bloom_enabled = !bloom_enabled;
                     std::cout << "rt_view: Multi-Scale Bloom & Optical Glare [" << (bloom_enabled ? "ON" : "OFF") << "]\n";
-                } else if (e.key.key == SDLK_J) {
-                    anamorphic = (anamorphic == 1.0) ? 2.0 : 1.0;
-                    std::cout << "rt_view: Anamorphic Squeeze = " << anamorphic << "x ["
-                              << (anamorphic > 1.0 ? "2.0x Oval Bokeh" : "1.0x Spherical") << "]\n";
-                    cam_moved = true;
-                } else if (e.key.key == SDLK_Y) {
-                    distortion = (distortion == 0.0) ? 0.20 : 0.0;
-                    std::cout << "rt_view: Lens Distortion = " << distortion << " ["
-                              << (distortion != 0.0 ? "0.20 Barrel" : "0.0 Rectilinear") << "]\n";
-                    cam_moved = true;
-                } else if (e.key.key == SDLK_9 || e.key.key == SDLK_F5) {
-                    chromatic_aberration = !chromatic_aberration;
-                    std::cout << "rt_view: Lens Chromatic Aberration ["
-                              << (chromatic_aberration ? "ON" : "OFF") << "]\n";
-                } else if (e.key.key == SDLK_F6) {
-                    focus_peaking = !focus_peaking;
-                    std::cout << "rt_view: Focus Peaking (Z-Peaking) [" << (focus_peaking ? "ON" : "OFF") << "]\n";
-                } else if (e.key.key == SDLK_F7) {
-                    adaptive_res = !adaptive_res;
-                    std::cout << "rt_view: Adaptive Viewport Resolution ["
-                              << (adaptive_res ? "ON (0.5x Dynamic Motion Scale)" : "OFF (Full 1.0x)") << "]\n";
                 } else if (e.key.key == SDLK_TAB || e.key.key == SDLK_F11) {
                     show_hud = !show_hud;
                     std::cout << "rt_view: Heads-Up Display (HUD) [" << (show_hud ? "ON" : "OFF") << "]\n";
-                } else if (e.key.key == SDLK_F8) {
-                    turntable_mode = !turntable_mode;
-                    std::cout << "rt_view: Cinematic 360 Turntable Orbit [" << (turntable_mode ? "ON" : "OFF") << "]\n";
-                } else if (e.key.key == SDLK_LEFT) {
-                    double az, el;
-                    env_light::get_sun_angles(az, el);
-                    az = std::fmod(az - 5.0 + 360.0, 360.0);
-                    env_light::set_sun_angles(az, el);
-                    cam_moved = true;
-                    std::cout << "rt_view: [Sun Orbit] Azimuth = " << az << " deg, Elevation = " << el << " deg\n";
-                } else if (e.key.key == SDLK_RIGHT) {
-                    double az, el;
-                    env_light::get_sun_angles(az, el);
-                    az = std::fmod(az + 5.0, 360.0);
-                    env_light::set_sun_angles(az, el);
-                    cam_moved = true;
-                    std::cout << "rt_view: [Sun Orbit] Azimuth = " << az << " deg, Elevation = " << el << " deg\n";
-                } else if (e.key.key == SDLK_UP) {
-                    double az, el;
-                    env_light::get_sun_angles(az, el);
-                    el = std::clamp(el + 2.5, 2.0, 88.0);
-                    env_light::set_sun_angles(az, el);
-                    cam_moved = true;
-                    std::cout << "rt_view: [Sun Orbit] Azimuth = " << az << " deg, Elevation = " << el << " deg\n";
-                } else if (e.key.key == SDLK_DOWN) {
-                    double az, el;
-                    env_light::get_sun_angles(az, el);
-                    el = std::clamp(el - 2.5, 2.0, 88.0);
-                    env_light::set_sun_angles(az, el);
-                    cam_moved = true;
-                    std::cout << "rt_view: [Sun Orbit] Azimuth = " << az << " deg, Elevation = " << el << " deg\n";
-                } else if (e.key.key == SDLK_MINUS) {
-                    if (selected_mat) {
-                        if (auto m = dynamic_cast<metal*>(selected_mat.get())) {
-                            m->set_roughness(m->get_roughness() - 0.05);
-                            std::cout << "rt_view: [Live Material Tweaker] Metal Roughness = " << m->get_roughness() << "\n";
-                            cam_moved = true;
-                        } else if (auto d = dynamic_cast<dielectric*>(selected_mat.get())) {
-                            d->set_roughness(d->get_roughness() - 0.05);
-                            std::cout << "rt_view: [Live Material Tweaker] Glass Roughness = " << d->get_roughness() << "\n";
-                            cam_moved = true;
-                        } else if (auto dl = dynamic_cast<diffuse_light*>(selected_mat.get())) {
-                            dl->set_emit(dl->get_emit() * 0.8);
-                            std::cout << "rt_view: [Live Material Tweaker] Light Emission = ("
-                                      << dl->get_emit().x() << ", " << dl->get_emit().y() << ", " << dl->get_emit().z() << ")\n";
-                            cam_moved = true;
-                        }
-                    }
-                } else if (e.key.key == SDLK_EQUALS) {
-                    if (selected_mat) {
-                        if (auto m = dynamic_cast<metal*>(selected_mat.get())) {
-                            m->set_roughness(m->get_roughness() + 0.05);
-                            std::cout << "rt_view: [Live Material Tweaker] Metal Roughness = " << m->get_roughness() << "\n";
-                            cam_moved = true;
-                        } else if (auto d = dynamic_cast<dielectric*>(selected_mat.get())) {
-                            d->set_roughness(d->get_roughness() + 0.05);
-                            std::cout << "rt_view: [Live Material Tweaker] Glass Roughness = " << d->get_roughness() << "\n";
-                            cam_moved = true;
-                        } else if (auto dl = dynamic_cast<diffuse_light*>(selected_mat.get())) {
-                            dl->set_emit(dl->get_emit() * 1.25);
-                            std::cout << "rt_view: [Live Material Tweaker] Light Emission = ("
-                                      << dl->get_emit().x() << ", " << dl->get_emit().y() << ", " << dl->get_emit().z() << ")\n";
-                            cam_moved = true;
-                        }
-                    }
-                } else if (e.key.key == SDLK_COMMA) {
-                    if (selected_mat) {
-                        if (auto d = dynamic_cast<dielectric*>(selected_mat.get())) {
-                            d->set_ior(d->ior() - 0.05);
-                            std::cout << "rt_view: [Live Material Tweaker] Glass IOR = " << d->ior() << "\n";
-                            cam_moved = true;
-                        } else if (auto dl = dynamic_cast<diffuse_light*>(selected_mat.get())) {
-                            dl->set_temperature(dl->get_temperature() - 500.0);
-                            std::cout << "rt_view: [Live Material Tweaker] Light Temperature = "
-                                      << dl->get_temperature() << "K (Warmer) | Emission = ("
-                                      << dl->get_emit().x() << ", " << dl->get_emit().y() << ", " << dl->get_emit().z() << ")\n";
-                            cam_moved = true;
-                        }
-                    }
-                } else if (e.key.key == SDLK_PERIOD) {
-                    if (selected_mat) {
-                        if (auto d = dynamic_cast<dielectric*>(selected_mat.get())) {
-                            d->set_ior(d->ior() + 0.05);
-                            std::cout << "rt_view: [Live Material Tweaker] Glass IOR = " << d->ior() << "\n";
-                            cam_moved = true;
-                        } else if (auto dl = dynamic_cast<diffuse_light*>(selected_mat.get())) {
-                            dl->set_temperature(dl->get_temperature() + 500.0);
-                            std::cout << "rt_view: [Live Material Tweaker] Light Temperature = "
-                                      << dl->get_temperature() << "K (Cooler) | Emission = ("
-                                      << dl->get_emit().x() << ", " << dl->get_emit().y() << ", " << dl->get_emit().z() << ")\n";
-                            cam_moved = true;
-                        }
-                    }
-                } else if (e.key.key == SDLK_SEMICOLON) {
-                    color_temp = std::max(-0.4, color_temp - 0.05);
-                    std::cout << "rt_view: Color Temperature = " << color_temp << " (Cooler)\n";
-                } else if (e.key.key == SDLK_APOSTROPHE) {
-                    color_temp = std::min(0.4, color_temp + 0.05);
-                    std::cout << "rt_view: Color Temperature = " << color_temp << " (Warmer)\n";
-                } else if (e.key.key == SDLK_SLASH) {
-                    color_temp = 0.0;
-                    std::cout << "rt_view: Color Temperature reset to Neutral (0.0)\n";
-                } else if (e.key.key == SDLK_F4) {
-                    double u = 0.5, v = 0.5;
-                    camera probe_cam = fly_cam.build_camera(aspect, 0.0, 1.0);
-                    ray probe_r = probe_cam.get_ray(u, v);
-                    hit_record probe_rec;
-                    if (world.hit(probe_r, 1e-4, 1e30, probe_rec)) {
-                        focus_dist = std::max(0.05, probe_rec.t);
-                        std::cout << "rt_view: [Autofocus Center] Locked target at dist = " << focus_dist
-                                  << " m | Aperture: " << aperture << "\n";
-                        cam_moved = true;
-                    }
                 } else if (e.key.key == SDLK_R) {
                     fly_cam.init_from_camera(sdata.cam, initial_vfov);
                     focus_dist = 4.0;
                     cam_moved = true;
                     std::cout << "rt_view: Camera reset to origin.\n";
-                } else if (e.key.key == SDLK_1) {
-                    if (scene_name == "studio") {
-                        fly_cam.eye = vec3(0.0, 1.15, 1.45);
-                        fly_cam.yaw = -90.0; fly_cam.pitch = -4.0; fly_cam.vfov = 34.0;
-                        focus_dist = 1.45;
-                        std::cout << "rt_view: [Studio Bookmark 1] Centerpiece Cauchy Glass Sphere (dist=" << focus_dist << "m)\n";
-                    } else {
-                        fly_cam.eye = vec3(0.0, 0.68, 0.35);
-                        fly_cam.yaw = -90.0; fly_cam.pitch = -10.0; fly_cam.vfov = 38.0;
-                        focus_dist = 1.05;
-                        std::cout << "rt_view: [Bookmark 1] Focus on Centerpiece Stanford Bunny (dist=" << focus_dist << "m)\n";
-                    }
-                    cam_moved = true;
-                } else if (e.key.key == SDLK_2) {
-                    if (scene_name == "studio") {
-                        fly_cam.eye = vec3(-0.95, 0.90, 1.35);
-                        fly_cam.yaw = -90.0; fly_cam.pitch = -5.0; fly_cam.vfov = 30.0;
-                        focus_dist = 1.0;
-                        std::cout << "rt_view: [Studio Bookmark 2] Macro on Ruby Gemstone (dist=" << focus_dist << "m)\n";
-                    } else {
-                        fly_cam.eye = vec3(0.0, 0.30, 1.35);
-                        fly_cam.yaw = -90.0; fly_cam.pitch = -9.0; fly_cam.vfov = 44.0;
-                        focus_dist = 1.45;
-                        std::cout << "rt_view: [Bookmark 2] Focus on Soap Bubble & Cauchy Crystal Pair (dist=" << focus_dist << "m)\n";
-                    }
-                    cam_moved = true;
-                } else if (e.key.key == SDLK_3) {
-                    if (scene_name == "studio") {
-                        fly_cam.eye = vec3(1.2, 0.85, 1.7);
-                        fly_cam.yaw = -125.0; fly_cam.pitch = -8.0; fly_cam.vfov = 40.0;
-                        focus_dist = 1.6;
-                        std::cout << "rt_view: [Studio Bookmark 3] Pedestal Gold Ring & Columns (dist=" << focus_dist << "m)\n";
-                    } else {
-                        fly_cam.eye = vec3(0.0, 0.15, 1.85);
-                        fly_cam.yaw = -90.0; fly_cam.pitch = -6.0; fly_cam.vfov = 52.0;
-                        focus_dist = 2.30;
-                        std::cout << "rt_view: [Bookmark 3] Focus on Disney Car Paint & Velvet Flanks (dist=" << focus_dist << "m)\n";
-                    }
-                    cam_moved = true;
-                } else if (e.key.key == SDLK_4) {
-                    fly_cam.init_from_camera(sdata.cam, initial_vfov);
-                    focus_dist = (scene_name == "studio") ? 3.2 : 4.0;
-                    cam_moved = true;
-                    std::cout << "rt_view: [Bookmark 4] Wide Studio Overview (dist=" << focus_dist << "m)\n";
-                } else if (e.key.key == SDLK_F1) {
-                    view_mode = ViewMode::BEAUTY;
-                    std::cout << "rt_view: Display mode [F1: Beauty]\n";
-                } else if (e.key.key == SDLK_F2) {
-                    view_mode = ViewMode::ALBEDO;
-                    std::cout << "rt_view: Display mode [F2: Albedo AOV Guide]\n";
-                } else if (e.key.key == SDLK_F3) {
-                    view_mode = ViewMode::NORMAL;
-                    std::cout << "rt_view: Display mode [F3: Normal AOV Guide]\n";
                 } else if (e.key.key == SDLK_X) {
                     accum_paused = !accum_paused;
                     std::cout << "rt_view: Accumulation " << (accum_paused ? "[PAUSED]" : "[RESUMED]") << "\n";
@@ -845,33 +603,16 @@ int run_interactive_renderer(int argc, char **argv) {
                               << " Shift/Ctrl   : Sprint 3x / Sneak 0.25x precision\n"
                               << " Right Drag   : Look around (pitch & yaw)\n"
                               << " F            : Toggle captured mouse look mode\n"
-                              << " Mid Click/F4 : Click-to-Focus / Center Autofocus (sets focal plane)\n"
+                              << " Mouse Wheel  : Adjust movement speed\n"
                               << " Tab / F11    : Toggle On-Screen Heads-Up Display (HUD)\n"
-                              << " F7           : Toggle Adaptive Viewport Resolution (0.5x Dynamic Motion Scale)\n"
-                              << " U / I / O    : Adjust Aperture (U: -0.02, I: +0.02, O: Toggle pinhole/bokeh)\n"
-                              << " K / L        : Adjust Focus Distance (K: -0.2m, L: +0.2m)\n"
-                              << " B            : Toggle Bokeh Iris Shape (Hexagonal 6-Blade vs Circular)\n"
-                              << " J            : Toggle Anamorphic Lens Squeeze (1.0x vs 2.0x Oval Bokeh)\n"
-                              << " Y            : Toggle Lens Radial Distortion (0.0 Rectilinear vs 0.20 Barrel)\n"
-                              << " 9 / F5       : Toggle Lens Chromatic Aberration & Spectral Fringe\n"
-                              << " F6           : Toggle Focus Peaking / Cinema Z-Peaking Overlay\n"
-                              << " F8           : Toggle Cinematic 360 Turntable Orbit\n"
-                              << " Arrow Keys   : Dynamic Sun Orbit (Left/Right: Azimuth, Up/Down: Elevation)\n"
-                              << " - / =        : Nudge Roughness (-0.05 / +0.05) or Light Emission (0.8x / 1.25x)\n"
-                              << " , / .        : Nudge Glass IOR (-0.05 / +0.05) or Light Temperature (-500K / +500K)\n"
-                              << " N            : Toggle Live Bilateral AOV Denoising\n"
-                              << " V            : Toggle Optical Vignetting\n"
-                              << " M            : Toggle Multi-Scale Bloom & Optical Glare\n"
-                              << " ; / ' / /    : Color Temperature (Cooler / Warmer / Reset to 0.0)\n"
-                              << " Z            : Toggle Temporal Motion Smoothing [ON/OFF]\n"
-                              << " 1 - 4        : Camera bookmarks (Bunny / Crystals / Disney / Wide)\n"
-                              << " F1 - F3      : Display Mode (F1: Beauty, F2: Albedo AOV, F3: Normal AOV)\n"
+                              << " N            : Toggle Live Bilateral Denoising\n"
+                              << " M            : Toggle Multi-Scale Bloom\n"
                               << " X            : Toggle Accumulation Pause / Resume\n"
                               << " G            : Toggle GPU compute vs CPU multi-threading\n"
                               << " T            : Toggle ACES film tonemapping vs Linear/sRGB\n"
                               << " [ / ]        : Exposure decrease / increase\n"
                               << " R            : Reset camera to origin\n"
-                              << " P / F12      : Save viewport snapshot to out/viewport.ppm\n"
+                              << " P            : Save viewport snapshot to out/viewport.ppm\n"
                               << " Esc          : Exit viewport\n\n";
                 } else if (e.key.key == SDLK_P || e.key.key == SDLK_F12) {
                     std::cout << "\n// Camera Snapshot (SPP: " << accum_spp << "):\n"
@@ -886,62 +627,37 @@ int run_interactive_renderer(int argc, char **argv) {
                               << "// yaw = " << fly_cam.yaw << ", pitch = " << fly_cam.pitch << "\n";
 
                     std::filesystem::create_directories("out");
-                    // Flip bottom-first for standard PPM
-                    std::vector<vec3> ppm_fb((size_t)W * H);
-                    double inv = (accum_spp > 0) ? (1.0 / accum_spp) : 1.0;
-                    for (int y = 0; y < H; ++y)
-                        for (int x = 0; x < W; ++x)
-                            ppm_fb[((size_t)H - 1 - y) * W + x] = accum_fb[(size_t)y * W + x] * inv;
-                    if (write_ppm("out/viewport.ppm", ppm_fb, W, H, exposure))
-                        std::cout << "rt_view: Saved current viewport to out/viewport.ppm\n\n";
+                    if (present_active && accum_spp > 0 && present_bytes.size() == (size_t)W * H * 4) {
+                        // Present bytes are already filmed (top-first RGBA):
+                        // emit P6 directly.
+                        std::string buf;
+                        buf.reserve((size_t)W * H * 3 + 32);
+                        buf.append("P6\n" + std::to_string(W) + " " + std::to_string(H) + "\n255\n");
+                        for (size_t i = 0; i < (size_t)W * H; ++i) {
+                            buf.push_back((char)present_bytes[i * 4 + 0]);
+                            buf.push_back((char)present_bytes[i * 4 + 1]);
+                            buf.push_back((char)present_bytes[i * 4 + 2]);
+                        }
+                        std::ofstream out("out/viewport.ppm", std::ios::binary);
+                        if (out) {
+                            out.write(buf.data(), (std::streamsize)buf.size());
+                            std::cout << "rt_view: Saved current viewport to out/viewport.ppm\n\n";
+                        }
+                    } else {
+                        // Flip bottom-first for standard PPM
+                        std::vector<vec3> ppm_fb((size_t)W * H);
+                        double inv = (accum_spp > 0) ? (1.0 / accum_spp) : 1.0;
+                        for (int y = 0; y < H; ++y)
+                            for (int x = 0; x < W; ++x)
+                                ppm_fb[((size_t)H - 1 - y) * W + x] = accum_fb[(size_t)y * W + x] * inv;
+                        if (write_ppm("out/viewport.ppm", ppm_fb, W, H, exposure))
+                            std::cout << "rt_view: Saved current viewport to out/viewport.ppm\n\n";
+                    }
                 }
             } else if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
                 if (e.button.button == SDL_BUTTON_RIGHT) {
                     right_mouse_down = true;
                     SDL_SetWindowRelativeMouseMode(win, true);
-                } else if (e.button.button == SDL_BUTTON_MIDDLE ||
-                           (e.button.button == SDL_BUTTON_LEFT && (SDL_GetModState() & SDL_KMOD_CTRL))) {
-                    int mx = std::clamp((int)e.button.x / scale, 0, W - 1);
-                    int my = std::clamp((int)e.button.y / scale, 0, H - 1);
-                    double u = (mx + 0.5) / (double)W;
-                    double v = (H - 1 - my + 0.5) / (double)H;
-                    camera probe_cam = fly_cam.build_camera(aspect, 0.0, 1.0);
-                    ray probe_r = probe_cam.get_ray(u, v);
-                    hit_record probe_rec;
-                    if (world.hit(probe_r, 1e-4, 1e30, probe_rec)) {
-                        focus_dist = std::max(0.05, probe_rec.t);
-                        std::cout << "rt_view: [Click-to-Focus] Locked target at (" << mx << ", " << my
-                                  << ") -> dist = " << focus_dist << " m | Aperture: " << aperture << "\n";
-                        cam_moved = true;
-                    } else {
-                        std::cout << "rt_view: [Click-to-Focus] Missed geometry (infinity)\n";
-                    }
-                } else if (e.button.button == SDL_BUTTON_LEFT && (SDL_GetModState() & SDL_KMOD_ALT)) {
-                    int mx = std::clamp((int)e.button.x / scale, 0, W - 1);
-                    int my = std::clamp((int)e.button.y / scale, 0, H - 1);
-                    double u = (mx + 0.5) / (double)W;
-                    double v = (H - 1 - my + 0.5) / (double)H;
-                    camera probe_cam = fly_cam.build_camera(aspect, 0.0, 1.0);
-                    ray probe_r = probe_cam.get_ray(u, v);
-                    hit_record probe_rec;
-                    if (world.hit(probe_r, 1e-4, 1e30, probe_rec)) {
-                        selected_mat = probe_rec.mat;
-                        std::cout << "\n=== [Object Inspector] ===\n"
-                                  << "  Screen Pixel   : (" << mx << ", " << my << ")\n"
-                                  << "  Hit Distance   : " << probe_rec.t << " m\n"
-                                  << "  World Position : (" << probe_rec.point.x() << ", "
-                                  << probe_rec.point.y() << ", " << probe_rec.point.z() << ")\n"
-                                  << "  Shading Normal : (" << probe_rec.normal.x() << ", "
-                                  << probe_rec.normal.y() << ", " << probe_rec.normal.z() << ")\n"
-                                  << "  Geo Normal     : (" << probe_rec.geo_normal.x() << ", "
-                                  << probe_rec.geo_normal.y() << ", " << probe_rec.geo_normal.z() << ")\n"
-                                  << "  Surface UV     : (" << probe_rec.u << ", " << probe_rec.v << ")\n"
-                                  << "  Primitive Ptr  : " << probe_rec.hit_prim << "\n"
-                                  << "  Material Ptr   : " << probe_rec.mat.get() << "\n"
-                                  << "  --> Selected for Live Editing: [-/=] Roughness, [, / .] IOR\n\n";
-                    } else {
-                        std::cout << "rt_view: [Object Inspector] Missed geometry (background / sky)\n";
-                    }
                 }
             } else if (e.type == SDL_EVENT_MOUSE_BUTTON_UP) {
                 if (e.button.button == SDL_BUTTON_RIGHT) {
@@ -978,38 +694,43 @@ int run_interactive_renderer(int argc, char **argv) {
                 cam_moved = true;
         }
 
-        if (cam_moved || right_mouse_down || relative_mouse || turntable_mode) {
-            motion_frames = 2;
-        }
-
-        bool is_motion_rendering = adaptive_res && !use_gpu && (motion_frames > 0);
-        if (motion_frames > 0)
-            motion_frames--;
-
-        // Clean reset when stopping motion to start crisp 1.0x progressive accumulation
-        if (was_motion_rendering && !is_motion_rendering) {
+        // Present mode needs host pixels only for denoise/bloom; plain
+        // beauty films on device. Switching modes resets accumulation.
+        bool want_present = use_gpu && !live_denoise && !bloom_enabled;
+        if (want_present != present_active && accum_spp > 0) {
             accum_spp = 0;
             std::fill(accum_fb.begin(), accum_fb.end(), vec3(0, 0, 0));
+            present_clear = true;
         }
-        was_motion_rendering = is_motion_rendering;
-
+        present_active = want_present;
         // Reset accumulation on camera movement
         if (cam_moved) {
             accum_spp = 0;
             std::fill(accum_fb.begin(), accum_fb.end(), vec3(0, 0, 0));
-            active_cam = fly_cam.build_camera(aspect, aperture, focus_dist, blades, anamorphic, distortion);
+            present_clear = true;
+            active_cam = fly_cam.build_camera(aspect, aperture, focus_dist, 0, 1.0, 0.0);
             if (gpu.has_scene) {
                 GPUCam gcam = gpu_cam_from_cpu(active_cam.eye(), active_cam.corner(),
                                                active_cam.span_u(), active_cam.span_v(),
-                                               active_cam.lens_r(), blades,
-                                               anamorphic, distortion);
+                                               active_cam.lens_r(), 0,
+                                               1.0, 0.0);
                 gpu_update_camera(gpu, &gcam, sizeof(gcam));
             }
         }
 
         // Render pass: dispatch progressive path tracing when not paused
         if (!accum_paused) {
-            if (use_gpu) {
+            if (use_gpu && present_active) {
+                // Present fast path: chunk stays on device, folded into the
+                // persistent sum; zero float downloads.
+                push.spp = 1;
+                push.seed = (uint32_t)accum_spp + 1;
+                gpu_run(gpu, shader_path, push, gpu_rgba, true);
+                present_accum_add(gpu, present, shdir + "accum.spv",
+                                  present_clear);
+                present_clear = false;
+                accum_spp += 1;
+            } else if (use_gpu) {
                 push.spp = 1;
                 push.seed = (uint32_t)accum_spp + 1;
                 gpu_run(gpu, shader_path, push, gpu_rgba);
@@ -1018,63 +739,40 @@ int run_interactive_renderer(int argc, char **argv) {
                 }
                 accum_spp += 1;
             } else {
-                if (is_motion_rendering) {
-                    // Adaptive 0.5x dynamic motion scale (4x CPU performance boost during flight)
-                    int sub_w = (W + 1) / 2;
-                    int sub_h = (H + 1) / 2;
-                    std::atomic<int> next_sub_row{0};
-                    pool.parallel_run([&](unsigned t) {
-                        rng_seed(42u + (unsigned)accum_spp * 10007u + t * 997u);
-                        for (;;) {
-                            int sry = next_sub_row.fetch_add(1, std::memory_order_relaxed);
-                            if (sry >= sub_h)
-                                break;
-                            int fy0 = sry * 2;
-                            int fy1 = std::min(fy0 + 2, H);
-                            int j = H - 1 - (fy0 + fy1) / 2;
-                            for (int srx = 0; srx < sub_w; ++srx) {
-                                int fx0 = srx * 2;
-                                int fx1 = std::min(fx0 + 2, W);
-                                double u = ((fx0 + fx1) * 0.5 + 0.5) / (double)W;
-                                double v = (j + 0.5) / (double)H;
-                                ray r = active_cam.get_ray(u, v);
-                                vec3 col = tracer.Li(r, params);
-                                for (int y = fy0; y < fy1; ++y) {
-                                    size_t row_idx = (size_t)y * W;
-                                    for (int x = fx0; x < fx1; ++x) {
-                                        accum_fb[row_idx + x] = col;
-                                    }
-                                }
-                            }
+                // Multi-threaded CPU progressive slice with persistent pool & dynamic scanline work-stealing
+                std::atomic<int> next_row{0};
+                pool.parallel_run([&](unsigned t) {
+                    rng_seed(42u + (unsigned)accum_spp * 10007u + t * 997u);
+                    for (;;) {
+                        int sy = next_row.fetch_add(1, std::memory_order_relaxed);
+                        if (sy >= H)
+                            break;
+                        int j = H - 1 - sy; // Screen row 0 is top; ray v=0 is bottom
+                        for (int i = 0; i < W; ++i) {
+                            double u = (i + random_double()) / (double)W;
+                            double v = (j + random_double()) / (double)H;
+                            ray r = active_cam.get_ray(u, v);
+                            vec3 col = tracer.Li(r, params);
+                            accum_fb[(size_t)sy * W + i] += col;
                         }
-                    });
-                    accum_spp = 1;
-                } else {
-                    // Multi-threaded CPU progressive slice with persistent pool & dynamic scanline work-stealing
-                    std::atomic<int> next_row{0};
-                    pool.parallel_run([&](unsigned t) {
-                        rng_seed(42u + (unsigned)accum_spp * 10007u + t * 997u);
-                        for (;;) {
-                            int sy = next_row.fetch_add(1, std::memory_order_relaxed);
-                            if (sy >= H)
-                                break;
-                            int j = H - 1 - sy; // Screen row 0 is top; ray v=0 is bottom
-                            for (int i = 0; i < W; ++i) {
-                                double u = (i + random_double()) / (double)W;
-                                double v = (j + random_double()) / (double)H;
-                                ray r = active_cam.get_ray(u, v);
-                                vec3 col = tracer.Li(r, params);
-                                accum_fb[(size_t)sy * W + i] += col;
-                            }
-                        }
-                    });
-                    accum_spp += 1;
-                }
+                    }
+                });
+                accum_spp += 1;
             }
         }
 
-        // Convert active view mode to display RGB24
-        if (view_mode == ViewMode::BEAUTY) {
+        // Convert accumulated beauty to display RGB24
+        if (present_active && accum_spp > 0 && gpu.has_scene) {
+            // Device film: sum/count -> exposure -> ACES/sRGB -> bytes.
+            present_tonemap(gpu, present, shdir + "tonemap.spv",
+                            (float)exposure, use_aces ? 1 : 0,
+                            (float)accum_spp, present_bytes);
+            for (size_t i = 0; i < (size_t)W * H; ++i) {
+                display_rgb[i * 3 + 0] = present_bytes[i * 4 + 0];
+                display_rgb[i * 3 + 1] = present_bytes[i * 4 + 1];
+                display_rgb[i * 3 + 2] = present_bytes[i * 4 + 2];
+            }
+        } else {
             double inv_spp = (accum_spp > 0) ? (1.0 / (double)accum_spp) : 1.0;
             std::atomic<int> next_row_hdr{0};
             pool.parallel_run([&](unsigned) {
@@ -1091,122 +789,28 @@ int run_interactive_renderer(int argc, char **argv) {
                 beauty_hdr = bilateral_denoise(beauty_hdr, W, H, 1.5, 0.15);
             if (bloom_enabled)
                 beauty_hdr = bloom::apply_bloom(beauty_hdr, W, H, 1.0, 0.08);
-            double half_w = W * 0.5, half_h = H * 0.5;
             std::atomic<int> next_row_disp{0};
             pool.parallel_run([&](unsigned) {
                 for (;;) {
                     int y = next_row_disp.fetch_add(1, std::memory_order_relaxed);
                     if (y >= H)
                         break;
-                    double dy = (y - half_h) / half_h;
                     for (int x = 0; x < W; ++x) {
-                        double dx = (x - half_w) / half_w;
                         size_t i = (size_t)y * W + x;
                         vec3 hdr = beauty_hdr[i];
-                        if (chromatic_aberration) {
-                            double r2 = dx * dx + dy * dy;
-                            int offset_x = (int)std::round(dx * r2 * 4.0);
-                            int offset_y = (int)std::round(dy * r2 * 4.0);
-                            int rx = std::clamp(x + offset_x, 0, W - 1);
-                            int ry = std::clamp(y + offset_y, 0, H - 1);
-                            int bx = std::clamp(x - offset_x, 0, W - 1);
-                            int by = std::clamp(y - offset_y, 0, H - 1);
-                            hdr = vec3(beauty_hdr[(size_t)ry * W + rx].x(),
-                                       hdr.y(),
-                                       beauty_hdr[(size_t)by * W + bx].z());
-                        }
-                        if (color_temp != 0.0)
-                            hdr = vec3(hdr.x() * (1.0 + color_temp), hdr.y(), hdr.z() * (1.0 - color_temp));
-                        if (optical_vignette) {
-                            hdr *= 1.0 / (1.0 + 0.45 * (dx * dx + dy * dy));
-                        }
                         vec3 ldr = use_aces ? tonemap(hdr, exposure)
                                             : vec3(srgb_encode(hdr.x() * exposure),
                                                    srgb_encode(hdr.y() * exposure),
                                                    srgb_encode(hdr.z() * exposure));
-                        if (focus_peaking) {
-                            auto get_lum = [&](int px, int py) {
-                                px = std::clamp(px, 0, W - 1);
-                                py = std::clamp(py, 0, H - 1);
-                                vec3 c = beauty_hdr[(size_t)py * W + px];
-                                return 0.2126 * c.x() + 0.7152 * c.y() + 0.0722 * c.z();
-                            };
-                            double y_c = get_lum(x, y);
-                            double y_l = get_lum(x - 1, y);
-                            double y_r = get_lum(x + 1, y);
-                            double y_u = get_lum(x, y - 1);
-                            double y_d = get_lum(x, y + 1);
-                            double lap = std::abs(4.0 * y_c - y_l - y_r - y_u - y_d) / (y_c + 0.05);
-                            if (lap > 0.22) {
-                                ldr = 0.25 * ldr + 0.75 * vec3(0.0, 1.0, 0.4);
-                            }
-                        }
                         uint8_t r = (uint8_t)(std::clamp(ldr.x(), 0.0, 1.0) * 255.999);
                         uint8_t g = (uint8_t)(std::clamp(ldr.y(), 0.0, 1.0) * 255.999);
                         uint8_t b = (uint8_t)(std::clamp(ldr.z(), 0.0, 1.0) * 255.999);
-                        if (temporal_smooth && accum_spp <= 2 && prev_display_rgb.size() == display_rgb.size() && prev_display_rgb[i * 3 + 0] != 0) {
-                            display_rgb[i * 3 + 0] = (uint8_t)(0.40f * r + 0.60f * prev_display_rgb[i * 3 + 0]);
-                            display_rgb[i * 3 + 1] = (uint8_t)(0.40f * g + 0.60f * prev_display_rgb[i * 3 + 1]);
-                            display_rgb[i * 3 + 2] = (uint8_t)(0.40f * b + 0.60f * prev_display_rgb[i * 3 + 2]);
-                        } else {
-                            display_rgb[i * 3 + 0] = r;
-                            display_rgb[i * 3 + 1] = g;
-                            display_rgb[i * 3 + 2] = b;
-                        }
+                        display_rgb[i * 3 + 0] = r;
+                        display_rgb[i * 3 + 1] = g;
+                        display_rgb[i * 3 + 2] = b;
                     }
                 }
             });
-            prev_display_rgb = display_rgb;
-        } else if (view_mode == ViewMode::ALBEDO) {
-            if (use_gpu && gpu.has_scene) {
-                gpu_read_aov(gpu, aov_alb, aov_nrm);
-                for (size_t i = 0; i < (size_t)W * H; ++i) {
-                    display_rgb[i * 3 + 0] = (uint8_t)(std::clamp(srgb_encode(aov_alb[i * 4 + 0]), 0.0, 1.0) * 255.999);
-                    display_rgb[i * 3 + 1] = (uint8_t)(std::clamp(srgb_encode(aov_alb[i * 4 + 1]), 0.0, 1.0) * 255.999);
-                    display_rgb[i * 3 + 2] = (uint8_t)(std::clamp(srgb_encode(aov_alb[i * 4 + 2]), 0.0, 1.0) * 255.999);
-                }
-            } else {
-                for (int y = 0; y < H; ++y) {
-                    int j = H - 1 - y;
-                    for (int x = 0; x < W; ++x) {
-                        double u = (x + 0.5) / (double)W;
-                        double v = (j + 0.5) / (double)H;
-                        ray r = active_cam.get_ray(u, v);
-                        vec3 a, n;
-                        bool hit;
-                        first_hit_aov(r, world, a, n, hit);
-                        size_t idx = (size_t)y * W + x;
-                        display_rgb[idx * 3 + 0] = (uint8_t)(std::clamp(srgb_encode(a.x()), 0.0, 1.0) * 255.999);
-                        display_rgb[idx * 3 + 1] = (uint8_t)(std::clamp(srgb_encode(a.y()), 0.0, 1.0) * 255.999);
-                        display_rgb[idx * 3 + 2] = (uint8_t)(std::clamp(srgb_encode(a.z()), 0.0, 1.0) * 255.999);
-                    }
-                }
-            }
-        } else if (view_mode == ViewMode::NORMAL) {
-            if (use_gpu && gpu.has_scene) {
-                gpu_read_aov(gpu, aov_alb, aov_nrm);
-                for (size_t i = 0; i < (size_t)W * H; ++i) {
-                    display_rgb[i * 3 + 0] = (uint8_t)(std::clamp(0.5f * aov_nrm[i * 4 + 0] + 0.5f, 0.0f, 1.0f) * 255.999f);
-                    display_rgb[i * 3 + 1] = (uint8_t)(std::clamp(0.5f * aov_nrm[i * 4 + 1] + 0.5f, 0.0f, 1.0f) * 255.999f);
-                    display_rgb[i * 3 + 2] = (uint8_t)(std::clamp(0.5f * aov_nrm[i * 4 + 2] + 0.5f, 0.0f, 1.0f) * 255.999f);
-                }
-            } else {
-                for (int y = 0; y < H; ++y) {
-                    int j = H - 1 - y;
-                    for (int x = 0; x < W; ++x) {
-                        double u = (x + 0.5) / (double)W;
-                        double v = (j + 0.5) / (double)H;
-                        ray r = active_cam.get_ray(u, v);
-                        vec3 a, n;
-                        bool hit;
-                        first_hit_aov(r, world, a, n, hit);
-                        size_t idx = (size_t)y * W + x;
-                        display_rgb[idx * 3 + 0] = (uint8_t)(std::clamp(0.5 * n.x() + 0.5, 0.0, 1.0) * 255.999);
-                        display_rgb[idx * 3 + 1] = (uint8_t)(std::clamp(0.5 * n.y() + 0.5, 0.0, 1.0) * 255.999);
-                        display_rgb[idx * 3 + 2] = (uint8_t)(std::clamp(0.5 * n.z() + 0.5, 0.0, 1.0) * 255.999);
-                    }
-                }
-            }
         }
 
         SDL_UpdateTexture(tex, nullptr, display_rgb.data(), W * 3);
@@ -1260,18 +864,10 @@ int run_interactive_renderer(int argc, char **argv) {
             std::snprintf(line_buf, sizeof(line_buf), "PERF: %.1f FPS (%.1f ms/frame)", current_fps, current_ms);
             SDL_RenderDebugText(ren, text_x, text_y, line_buf);
 
-            const char *mode_str = (view_mode == ViewMode::BEAUTY) ? "Beauty" :
-                                   (view_mode == ViewMode::ALBEDO) ? "Albedo AOV" : "Normal AOV";
-            SDL_SetRenderDrawColor(ren, 205, 215, 230, 255);
-            std::snprintf(line_buf, sizeof(line_buf), "MODE: %s", mode_str);
-            SDL_RenderDebugText(ren, text_x + 235.0f, text_y, line_buf);
-            text_y += line_step;
-
             // SPP & Scale
             SDL_SetRenderDrawColor(ren, accum_paused ? 255 : 240, accum_paused ? 180 : 245, accum_paused ? 50 : 255, 255);
-            const char *dyn_scale_str = (!use_gpu && is_motion_rendering) ? "0.5x Dynamic (Motion Boost)" : "1.0x Native";
-            std::snprintf(line_buf, sizeof(line_buf), "SPP : %d %s | SCALE: %s",
-                          accum_spp, accum_paused ? "[PAUSED]" : "", dyn_scale_str);
+            std::snprintf(line_buf, sizeof(line_buf), "SPP : %d %s",
+                          accum_spp, accum_paused ? "[PAUSED]" : "");
             SDL_RenderDebugText(ren, text_x, text_y, line_buf);
             text_y += line_step + 2.0f;
 
@@ -1287,38 +883,18 @@ int run_interactive_renderer(int argc, char **argv) {
             SDL_RenderDebugText(ren, text_x, text_y, line_buf);
             text_y += line_step;
 
-            std::snprintf(line_buf, sizeof(line_buf), "LENS: Focus %.2fm | Aperture f/%.2f | %s",
-                          focus_dist, aperture, (blades >= 3 ? "Hex 6-Blade" : "Circular"));
-            SDL_RenderDebugText(ren, text_x, text_y, line_buf);
-            text_y += line_step;
-
-            std::snprintf(line_buf, sizeof(line_buf), "ANAM: %.1fx | Distort: %.2f | Vignette: %s",
-                          anamorphic, distortion, optical_vignette ? "ON" : "OFF");
+            std::snprintf(line_buf, sizeof(line_buf), "LENS: Focus %.2fm | Aperture f/%.2f",
+                          focus_dist, aperture);
             SDL_RenderDebugText(ren, text_x, text_y, line_buf);
             text_y += line_step + 2.0f;
 
-            // 4. Atmosphere & Post-FX
-            double cur_az = 0.0, cur_el = 0.0;
-            env_light::get_sun_angles(cur_az, cur_el);
-            SDL_SetRenderDrawColor(ren, 255, 215, 120, 255); // Sun gold
-            std::snprintf(line_buf, sizeof(line_buf), "SUN : Az %.1f deg | El %.1f deg | C-Temp: %+.2f",
-                          cur_az, cur_el, color_temp);
-            SDL_RenderDebugText(ren, text_x, text_y, line_buf);
-            text_y += line_step;
-
+            // 4. Post-FX
             SDL_SetRenderDrawColor(ren, 175, 195, 220, 255);
-            std::snprintf(line_buf, sizeof(line_buf), "FX  : Bloom:%s Denoise:%s Peak:%s DynRes:%s",
+            std::snprintf(line_buf, sizeof(line_buf), "FX  : Bloom:%s Denoise:%s",
                           bloom_enabled ? "ON" : "OFF",
-                          live_denoise ? "ON" : "OFF",
-                          focus_peaking ? "ON" : "OFF",
-                          adaptive_res ? "ON" : "OFF");
+                          live_denoise ? "ON" : "OFF");
             SDL_RenderDebugText(ren, text_x, text_y, line_buf);
             text_y += line_step;
-
-            if (selected_mat) {
-                SDL_SetRenderDrawColor(ren, 255, 150, 220, 255);
-                SDL_RenderDebugText(ren, text_x, text_y, "INSPECT: Selected material active for [-/=], [, / .]");
-            }
 
             // Bottom quick hint ribbon
             if (win_h > 260) {
@@ -1332,7 +908,7 @@ int run_interactive_renderer(int argc, char **argv) {
 
                 SDL_SetRenderDrawColor(ren, 185, 205, 225, 255);
                 SDL_RenderDebugText(ren, 22.0f, bar_y + 7.0f,
-                                    "[Tab] HUD  [WASD] Fly  [Right-Drag] Look  [F4] Focus  [Alt+Click] Inspect  [F7] DynRes  [P] Snapshot  [H] Help");
+                                    "[Tab] HUD  [WASD] Fly  [Right-Drag] Look  [P] Snapshot  [H] Help");
             }
         }
 
@@ -1348,25 +924,19 @@ int run_interactive_renderer(int argc, char **argv) {
             frames_since_title = 0;
             last_title_time = frame_end;
 
-            const char *mode_str = (view_mode == ViewMode::BEAUTY) ? "Beauty" :
-                                   (view_mode == ViewMode::ALBEDO) ? "Albedo AOV" : "Normal AOV";
             std::snprintf(title_buf, sizeof(title_buf),
-                          "rt_view [%s] %s | %s%s | SPP: %d | %.1f FPS (%.1f ms) | Ap: %.2f | Foc: %.2fm | TS: %s | Bokeh: %s | Den: %s | Vig: %s | Bloom: %s | Chr: %s | Anam: %.1fx",
-                          use_gpu ? "GPU" : "CPU", scene_name.c_str(), mode_str,
+                          "rt_view [%s] %s%s | SPP: %d | %.1f FPS (%.1f ms) | Den: %s | Bloom: %s",
+                          use_gpu ? "GPU" : "CPU", scene_name.c_str(),
                           accum_paused ? " [PAUSED]" : "", accum_spp,
-                          current_fps, current_ms, aperture, focus_dist,
-                          temporal_smooth ? "ON" : "OFF",
-                          (blades >= 3 ? "Hex" : "Circ"),
+                          current_fps, current_ms,
                           (live_denoise ? "ON" : "OFF"),
-                          (optical_vignette ? "ON" : "OFF"),
-                          (bloom_enabled ? "ON" : "OFF"),
-                          (chromatic_aberration ? "ON" : "OFF"),
-                          anamorphic);
+                          (bloom_enabled ? "ON" : "OFF"));
             SDL_SetWindowTitle(win, title_buf);
         }
     }
 
     if (gpu.has_scene) {
+        present_accum_destroy(gpu, present);
         gpu_shutdown(gpu);
     }
 

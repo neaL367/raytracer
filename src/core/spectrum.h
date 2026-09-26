@@ -1,19 +1,8 @@
 #pragma once
-// Hero-wavelength spectral transport (M67): discrete 3-channel heroes.
-//
-// Instead of RGB throughput with one shared IOR, a spectral path carries a
-// single hero wavelength (one of 650/550/450nm, drawn uniformly per path)
-// and evaluates all wavelength-dependent physics (Cauchy dispersion,
-// complex conductor Fresnel, thin-film phase) at that wavelength. RGB
-// material colors are transported channel-wise: sampling hero channel c
-// with probability 1/3 and accumulating 3x into channel c is an unbiased
-// estimator of the legacy RGB image when dispersion is zero (B=0, no n/k,
-// no film). Legacy mode (hero off) is bit-exact: no new RNG draws, no
-// changed code paths.
-//
-// The discrete heroes keep film/GPU mirrors cheap (3 evaluations) while
-// showing real prismatic splits across paths. Continuous-lambda + CMF
-// accumulation is the documented follow-up, not this milestone.
+// Spectral utilities: channel wavelengths (thin-film RGB + n/k presets),
+// Cauchy dispersion, and the tiny complex Fresnel core. Transport is RGB
+// only (no hero-wavelength mode): materials evaluate wavelength-dependent
+// physics per channel or at luminance mean.
 #include "vec3.h"
 
 #include <cmath>
@@ -22,29 +11,8 @@
 
 namespace spectrum {
 
-// Hero wavelengths in nm, aligned to R/G/B channels 0/1/2.
-inline constexpr double kHeroLambda[3] = {650.0, 550.0, 450.0};
-
-// Active hero channel for the current path, or -1 when spectral mode is
-// off. Set by the integrator around Li(); materials read it in scatter().
-// Thread-local like rng_fixed_flag/mip_render_h (same lifetime rules).
-inline int &hero_channel() {
-    static thread_local int c = -1;
-    return c;
-}
-
-// Channel-pick: identity when spectral is off, else the hero channel
-// value with other channels zeroed. NO sampling weight here: the 1/3
-// hero probability is compensated once, by scaling the finished path
-// contribution x3 at the end of Li(). (Weighting per quantity would
-// compound to 9x in two-factor terms like throughput x emission.)
-inline vec3 pick(const vec3 &v, int hero, bool spectral) {
-    if (!spectral || hero < 0 || hero > 2)
-        return v;
-    vec3 z(0, 0, 0);
-    z.e[hero] = v.e[hero];
-    return z;
-}
+// Channel wavelengths in nm, aligned to R/G/B channels 0/1/2.
+inline constexpr double kChannelLambda[3] = {650.0, 550.0, 450.0};
 
 // Cauchy dispersion: n(l) = n_ref + B*(1/l^2 - 1/l_ref^2), l in um.
 // B = 0 (default) reproduces the legacy constant IOR exactly.
